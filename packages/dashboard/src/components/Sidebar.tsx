@@ -31,6 +31,14 @@ import {
 } from "./mergeOrgWithSessions";
 import { projectLabels } from "./projectLabels";
 import {
+  isShownSession,
+  projectsView,
+  sessionChip,
+  startedByTag,
+  TOOL_RUNS_EXPLAINER,
+  toolRunsToggleLabel,
+} from "./projectView";
+import {
   formatAge,
   isLightBg,
   recencyLabelOpacity,
@@ -453,7 +461,22 @@ export function Sidebar() {
   // without their live dot in the Projects panel.
   // Same-named project dirs ("work" under two parents) get distinguishing
   // labels ("aq/work" / "ax/work") instead of rendering as duplicates.
-  const labels = useMemo(() => projectLabels(projects), [projects]);
+  // Projects grouped by git repo (server-side); the panel hides automated runs
+  // unless asked and folds temp / deleted-directory projects into "Other".
+  const showAutomatedRuns = useStore((s) => s.showAutomatedRuns);
+  const setShowAutomatedRuns = useStore((s) => s.setShowAutomatedRuns);
+  const otherProjectsOpen = useStore((s) => s.otherProjectsOpen);
+  const toggleOtherProjects = useStore((s) => s.toggleOtherProjects);
+  const view = useMemo(
+    () => projectsView(projects, showAutomatedRuns),
+    [projects, showAutomatedRuns],
+  );
+  // Same-named dirs ("work" under two parents) get distinguishing labels,
+  // across BOTH sections so a name never repeats in the panel.
+  const labels = useMemo(
+    () => projectLabels([...view.main, ...view.other]),
+    [view],
+  );
   const liveSessionIds = useMemo(() => {
     const set = new Set<string>();
     for (const s of sessions) {
@@ -1067,7 +1090,7 @@ export function Sidebar() {
         </div>
 
         <div className="flex-1 py-1">
-          {projects.length === 0 && (
+          {view.main.length === 0 && view.other.length === 0 && (
             <p
               className="px-3 py-3 text-center text-xs"
               style={{ color: page.statusFg }}
@@ -1076,7 +1099,7 @@ export function Sidebar() {
             </p>
           )}
 
-          {projects.map((project) => (
+          {view.main.map((project) => (
             <ProjectItem
               key={project.path}
               project={project}
@@ -1086,6 +1109,71 @@ export function Sidebar() {
               onAgentContextMenu={openAgentMenu}
             />
           ))}
+
+          {view.other.length > 0 && (
+            <div
+              className="mt-1 border-t pt-1"
+              style={{ borderColor: page.border }}
+            >
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left"
+                style={{ color: page.statusFg }}
+                onClick={toggleOtherProjects}
+                aria-expanded={otherProjectsOpen}
+                title="Test and temp directories, and projects whose directories were deleted"
+              >
+                <span className="text-[10px] shrink-0">
+                  {otherProjectsOpen ? "▼" : "▶"}
+                </span>
+                <span className="flex-1 truncate text-xs">
+                  Other · test &amp; temp dirs
+                </span>
+                <span className="text-[10px] tabular-nums">
+                  {view.other.reduce((n, p) => n + p.sessions.length, 0)}
+                </span>
+              </button>
+              {otherProjectsOpen && (
+                // Indented under the group header so its projects read as its
+                // contents, not as more top-level projects.
+                <div className="pl-3">
+                  {view.other.map((project) => (
+                    <ProjectItem
+                      key={project.path}
+                      project={project}
+                      label={labels.get(project.path) ?? project.name}
+                      page={page}
+                      liveSessionIds={liveSessionIds}
+                      onAgentContextMenu={openAgentMenu}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {view.automatedTotal > 0 && (
+            <div className="mx-3 mt-2 mb-1">
+              <button
+                type="button"
+                className="rounded border border-dashed px-2 py-1 text-left text-[11px] cursor-pointer"
+                style={{ color: page.statusFg, borderColor: page.border }}
+                onClick={() => setShowAutomatedRuns(!showAutomatedRuns)}
+                aria-pressed={showAutomatedRuns}
+                title={TOOL_RUNS_EXPLAINER}
+              >
+                {toolRunsToggleLabel(view.automatedTotal, showAutomatedRuns)}
+              </button>
+              {/* Always visible, not just a tooltip: Terry asked what these
+                  are, and a tooltip doesn't answer on touch or at a glance. */}
+              <p
+                className="mt-1 text-[10px] leading-snug"
+                style={{ color: page.statusFg }}
+              >
+                {TOOL_RUNS_EXPLAINER}
+              </p>
+            </div>
+          )}
         </div>
       </aside>
       {agentMenu && (
@@ -2353,6 +2441,18 @@ export const ProjectItem = React.memo(function ProjectItem({
     expanded ? s.agentStatuses : NO_STATUSES,
   );
   const toggleProjectExpanded = useStore((s) => s.toggleProjectExpanded);
+  const showAutomatedRuns = useStore((s) => s.showAutomatedRuns);
+  // Sessions whose directory was deleted (merged worktrees) wait behind a
+  // per-project toggle. A project with nothing else (it sits in "Other") shows
+  // them directly: hiding everything behind a toggle would be an empty row.
+  const [showRemoved, setShowRemoved] = React.useState(false);
+  const shownSessions = project.sessions.filter((s) =>
+    isShownSession(s, showAutomatedRuns),
+  );
+  const removedCount = project.sessions.length - shownSessions.length;
+  const onlyRemoved = shownSessions.length === 0;
+  const rowSessions =
+    showRemoved || onlyRemoved ? project.sessions : shownSessions;
 
   const accent = THEMES[useStore((s) => s.theme)].terminal.yellow;
 
@@ -2395,7 +2495,7 @@ export const ProjectItem = React.memo(function ProjectItem({
             className="text-[10px] tabular-nums transition-opacity duration-150 group-hover:opacity-0 group-focus-within/slot:opacity-0"
             style={{ color: page.statusFg }}
           >
-            {project.sessions.length}
+            {onlyRemoved ? project.sessions.length : shownSessions.length}
           </span>
           <button
             type="button"
@@ -2420,7 +2520,11 @@ export const ProjectItem = React.memo(function ProjectItem({
 
       {expanded && (
         <div>
-          {project.sessions.map((s) => {
+          {rowSessions.map((s) => {
+            // A session keeps its OWN directory: the project is the repo, but a
+            // worktree session ran (and is stored by Claude Code) under the
+            // worktree's path, so resuming from the repo root would miss it.
+            const sessionDir = s.cwd ?? project.path;
             const all = [...sessions, ...exitedSessions];
             const rec =
               all.find(
@@ -2451,6 +2555,8 @@ export const ProjectItem = React.memo(function ProjectItem({
             const liveStatus = rec?.id
               ? (agentStatuses[rec.id]?.status as AgentStatus | undefined)
               : undefined;
+            const chip = sessionChip(s, project);
+            const startedBy = startedByTag(s);
             const iconStatus: AgentStatus = isLive
               ? (liveStatus ?? (rec?.status as AgentStatus) ?? "running")
               : "unknown";
@@ -2470,7 +2576,7 @@ export const ProjectItem = React.memo(function ProjectItem({
               // SessionRow has no disabled state (agent-row parity), so the row
               // stays visually live and guards here instead of dimming.
               if (isBusy) return;
-              resumeSession(s.sessionId, project.path, s.summary, {
+              resumeSession(s.sessionId, sessionDir, s.summary, {
                 isAutonomosAgent: s.isAutonomosAgent,
                 provider: s.provider,
               }).catch(() => {});
@@ -2508,7 +2614,7 @@ export const ProjectItem = React.memo(function ProjectItem({
                     manager: rec?.manager,
                     resumeKey: s.sessionId,
                     provider: s.provider,
-                    workingDirectory: project.path,
+                    workingDirectory: sessionDir,
                     isAutonomosAgent: s.isAutonomosAgent,
                   });
                 }}
@@ -2546,8 +2652,14 @@ export const ProjectItem = React.memo(function ProjectItem({
                     className="flex items-center text-[10px]"
                     style={{ color: page.statusFg }}
                   >
-                    {s.gitBranch && (
-                      <span className="min-w-0 truncate">{s.gitBranch}</span>
+                    {chip && <span className="min-w-0 truncate">{chip}</span>}
+                    {startedBy && (
+                      <span
+                        className="shrink-0 pl-1.5"
+                        title={TOOL_RUNS_EXPLAINER}
+                      >
+                        {startedBy}
+                      </span>
                     )}
                     {state === "live" ? (
                       // Row-click jumps to the live agent; a subtle trailing ↗
@@ -2577,6 +2689,19 @@ export const ProjectItem = React.memo(function ProjectItem({
               </button>
             );
           })}
+          {removedCount > 0 && !onlyRemoved && (
+            <button
+              type="button"
+              className="ml-5 mr-3 my-1 rounded border border-dashed px-2 py-0.5 text-left text-[10px] cursor-pointer"
+              style={{ color: page.statusFg, borderColor: page.border }}
+              onClick={() => setShowRemoved((v) => !v)}
+              aria-pressed={showRemoved}
+            >
+              {showRemoved
+                ? "Hide sessions from removed directories"
+                : `Show ${removedCount} from removed directories`}
+            </button>
+          )}
         </div>
       )}
     </div>
