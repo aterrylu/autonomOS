@@ -54,6 +54,16 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv = process.env) 
   });
 }
 
+/** Poll `cond` until true or `ms` elapse (event-driven waits, no fixed sleeps). */
+async function until(cond: () => boolean, ms: number): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (cond()) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return cond();
+}
+
 const alive = (marker: string) => {
   try {
     execFileSync("pgrep", ["-f", marker], { stdio: "ignore" });
@@ -86,23 +96,30 @@ describe("scripts/run-bounded.sh", () => {
   });
 
   it("a gate that is itself killed releases the caller's output at once", async () => {
-    // The gate aborted (lefthook, Ctrl-C, a parent timeout): the watchdog's
-    // sleep must not survive and hold the output open for the whole bound.
+    // The gate aborted (lefthook, Ctrl-C, a parent timeout): its command group
+    // must stop, and the watchdog's sleep must not survive holding the output
+    // open for the whole bound (60s here). Event-driven, not a fixed window:
+    // signal only once the command is OBSERVED running (the trap is armed
+    // before the command starts), then wait for the outcome.
     const marker = `aborted-${process.pid}-${Date.now()}`;
-    const t0 = Date.now();
-    const child = spawn("bash", [BOUNDED, "60", "bash", "-c", `sleep 30 # ${marker}`], {
-      detached: true,
-    });
+    const child = spawn(
+      "bash",
+      [BOUNDED, "60", "node", "-e", "setInterval(() => {}, 1000)", marker],
+      { detached: true },
+    );
     child.stdout.on("data", () => {});
     child.stderr.on("data", () => {});
     const closed = new Promise<number | null>((res) => child.on("close", res));
-    await new Promise((res) => setTimeout(res, 500));
+    assert.ok(await until(() => alive(marker), 15_000), "command never started");
+
+    const signalledAt = Date.now();
     if (child.pid) process.kill(child.pid, "SIGTERM"); // the runner only
     const code = await closed;
-    assert.ok(Date.now() - t0 < 6_000, `output stayed open ${Date.now() - t0}ms`);
-    assert.equal(code, 143);
-    await new Promise((res) => setTimeout(res, 300));
-    assert.equal(alive(marker), false, "the command's group was stopped too");
+    // Generous vs scheduling noise, tiny vs the 60s a leaked sleep would hold.
+    const heldMs = Date.now() - signalledAt;
+    assert.ok(heldMs < 5_000, `output stayed open ${heldMs}ms after the signal`);
+    assert.equal(code, 143, "the trap ran (not a bare death)");
+    assert.ok(await until(() => !alive(marker), 5_000), "the command's group was stopped too");
   });
 
   it("stops the WHOLE process group at the bound, names the stuck test file, exits 124", async () => {
