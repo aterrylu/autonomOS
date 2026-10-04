@@ -83,7 +83,15 @@ const CODEX_KNOWN: Record<string, string[]> = {
 
 /** Codex's fresh `--remote` TUI argv for one combination (no prompt). */
 function codexTuiArgv(v: Record<string, string>): string[] {
-  const base = ["--remote", EP, "-c", "check_for_update_on_startup=false"];
+  // Every Codex TUI runs inline (ADR-135): its alternate screen can't scroll.
+  const base = [
+    "--remote",
+    EP,
+    "-c",
+    "check_for_update_on_startup=false",
+    "-c",
+    'tui.alternate_screen="never"',
+  ];
   // Codex's all-in-one skip flag = exactly approval never + no sandbox.
   if (
     v.approval_policy === "never" &&
@@ -268,6 +276,8 @@ describe("codex: every launch-axis combination → exact TUI argv, daemon config
         EP,
         "-c",
         "check_for_update_on_startup=false",
+        "-c",
+        'tui.alternate_screen="never"',
       ]);
       // The per-turn axis is never set at launch, on any path.
       for (const a of [...tui, ...daemon, ...resume])
