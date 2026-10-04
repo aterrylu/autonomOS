@@ -122,6 +122,56 @@ describe("PermissionDialog", () => {
     );
   });
 
+  it("any other failure keeps the dialog open and says why (announced), so the pick isn't lost", async () => {
+    const user = userEvent.setup();
+    restartWithPermission.mockRejectedValueOnce(
+      new ApiError("Agent is already restarting", 409, { code: "RESTARTING" }),
+    );
+    open("a1");
+    render(<PermissionDialog />);
+    const dialog = await screen.findByTestId("permission-dialog");
+    await user.selectOptions(
+      within(dialog).getByLabelText("permission-mode"),
+      "acceptEdits",
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Restart with this" }),
+    );
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Restart failed: Agent is already restarting",
+    );
+    expect(useStore.getState().permissionDialogFor).toBe("a1");
+    expect(
+      (within(dialog).getByLabelText("permission-mode") as HTMLSelectElement)
+        .value,
+    ).toBe("acceptEdits");
+  });
+
+  it("Tab stays inside the dialog, and focus goes back to the opener on close", async () => {
+    const user = userEvent.setup();
+    const opener = document.createElement("button");
+    opener.textContent = "opener";
+    document.body.appendChild(opener);
+    opener.focus();
+    open("a1");
+    const { unmount } = render(<PermissionDialog />);
+    const dialog = await screen.findByTestId("permission-dialog");
+    const select = within(dialog).getByLabelText("permission-mode");
+    await waitFor(() => expect(document.activeElement).toBe(select));
+    // select → Cancel (the primary is disabled: no change) → wraps to select
+    await user.tab();
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    await user.tab();
+    expect(document.activeElement).toBe(select);
+    await user.tab({ shift: true });
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it("Codex: when the server says the thread can't take it, offer a FRESH conversation explicitly", async () => {
     const user = userEvent.setup();
     restartWithPermission.mockRejectedValueOnce(

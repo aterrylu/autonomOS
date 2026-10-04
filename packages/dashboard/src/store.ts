@@ -698,7 +698,9 @@ async function runRestart(
   get: () => AppState,
   id: string,
   body: RestartBody,
-  rethrowRefusals: boolean,
+  /** The Permission… dialog is waiting on this call: hand EVERY failure back
+   *  to it (it shows the reason in place and keeps the pick) instead of a toast. */
+  fromDialog: boolean,
 ): Promise<void> {
   // ONE server call (POST /:id/restart), which stops the agent, WAITS for
   // its process (and Codex daemon) to exit, then respawns it in the same
@@ -718,15 +720,16 @@ async function runRestart(
     try {
       await agentsApi.restart(id, body);
     } catch (err) {
-      // The dialog answers these itself (confirm / fresh conversation);
-      // nothing was stopped, so no toast and no refetch.
-      if (
-        rethrowRefusals &&
-        err instanceof ApiError &&
-        (err.code === "CONFIRM_NEVER_ASKS" ||
-          err.code === "PERMISSION_NEEDS_FRESH_CONVERSATION")
-      ) {
+      if (fromDialog) {
         restartingIds.delete(id);
+        // The two refusals are answered by the dialog (confirm / fresh
+        // conversation) and stop nothing; any other failure may have, so
+        // refresh the agent before the dialog shows why.
+        const refusal =
+          err instanceof ApiError &&
+          (err.code === "CONFIRM_NEVER_ASKS" ||
+            err.code === "PERMISSION_NEEDS_FRESH_CONVERSATION");
+        if (!refusal) await get().fetchSessions();
         throw err;
       }
       const reason = actionErrorReason(err);
@@ -752,7 +755,7 @@ async function runRestart(
   }
 }
 
-function actionErrorReason(err: unknown): string {
+export function actionErrorReason(err: unknown): string {
   if (err instanceof ApiError && err.unreachable)
     return "couldn't reach the autonomOS server";
   return err instanceof Error ? err.message : String(err);

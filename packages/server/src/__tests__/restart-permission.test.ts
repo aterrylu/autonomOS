@@ -205,6 +205,15 @@ describe("restart with a new permission", { timeout: 120_000 }, () => {
     );
   });
 
+  it("valid JSON that isn't an object (null, an array, a number) is a 400, not a crash", async () => {
+    const id = seed("claude-code", { "permission-mode": "manual" });
+    for (const body of [null, ["auto"], 3]) {
+      const res = await restart(id, body);
+      assert.equal(res.status, 400, `${JSON.stringify(body)} → ${res.status}`);
+    }
+    assert.equal(getAgent(id)?.status, "exited", "nothing restarted");
+  });
+
   it("no body: a plain restart respawns exactly as recorded", async () => {
     const id = seed("claude-code", { "permission-mode": "acceptEdits" });
     const res = await restart(id);

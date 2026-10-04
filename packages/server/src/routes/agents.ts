@@ -683,11 +683,17 @@ agentsRouter.post("/:id/restart", async (c) => {
   } = {};
   const raw = await c.req.text();
   if (raw.trim()) {
+    let value: unknown;
     try {
-      body = JSON.parse(raw);
+      value = JSON.parse(raw);
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
+    // `null`, an array or a scalar is valid JSON but not a body.
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return c.json({ error: "The body must be a JSON object" }, 400);
+    }
+    body = value;
   }
   const parsed = parsePermissionInput(agent.provider, body.permission);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);

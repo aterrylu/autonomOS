@@ -16,11 +16,11 @@ import {
   samePermission,
   widerAxes,
 } from "@autonomos/core";
-import { useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ApiError } from "../api/core";
 import { pushEscapeCloser } from "../shortcuts/escapeStack";
-import { THEMES, useStore } from "../store";
+import { actionErrorReason, THEMES, useStore } from "../store";
 import {
   knownDefault,
   neverAsksTone,
@@ -83,8 +83,34 @@ function Dialog({
 
   useEffect(() => pushEscapeCloser(onClose), [onClose]);
   useEffect(() => {
+    // Focus moves in on open and goes back to whatever opened it on close.
+    const opener =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     ref.current?.querySelector<HTMLElement>("select, button")?.focus();
+    return () => opener?.focus();
   }, []);
+
+  /** Keep Tab inside the dialog (it's aria-modal). */
+  function trapTab(e: KeyboardEvent) {
+    if (e.key !== "Tab" || !ref.current) return;
+    const items = [
+      ...ref.current.querySelectorAll<HTMLElement>(
+        "select:not(:disabled), button:not(:disabled), input:not(:disabled)",
+      ),
+    ];
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
 
   const unchanged = samePermission(picked, current);
   const widensToNever =
@@ -109,7 +135,7 @@ function Dialog({
       ) {
         setStep("needs-fresh");
       } else {
-        setError(err instanceof Error ? err.message : "Restart failed");
+        setError(`Restart failed: ${actionErrorReason(err)}`);
       }
     } finally {
       setBusy(false);
@@ -148,6 +174,7 @@ function Dialog({
         aria-modal="true"
         aria-labelledby="perm-dialog-title"
         data-testid="permission-dialog"
+        onKeyDown={trapTab}
         className="flex w-[560px] max-w-full flex-col gap-3 rounded-md p-4 text-xs shadow-lg"
         style={{
           background: page.bg,
@@ -190,6 +217,7 @@ function Dialog({
         {step === "confirm-never" && (
           <div
             data-testid="permission-confirm-never"
+            role="alert"
             className="rounded px-2 py-1.5 leading-relaxed"
             style={{ color: tone.fg, background: tone.bg }}
           >
@@ -202,6 +230,7 @@ function Dialog({
         {step === "needs-fresh" && (
           <div
             data-testid="permission-needs-fresh"
+            role="alert"
             className="rounded px-2 py-1.5 leading-relaxed"
             style={{ color: page.fg, background: "rgba(83,189,250,0.10)" }}
           >
@@ -212,7 +241,11 @@ function Dialog({
           </div>
         )}
 
-        {error && <div style={{ color: "#ea6c73" }}>{error}</div>}
+        {error && (
+          <div role="alert" style={{ color: "#ea6c73" }}>
+            {error}
+          </div>
+        )}
 
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} {...button(false)}>
