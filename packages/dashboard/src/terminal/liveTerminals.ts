@@ -19,6 +19,8 @@ import {
   isUserInput,
   PANE_OK,
   type PaneConnection,
+  parseReplayGeometry,
+  REPLAY_BEGIN_TOKEN,
   REPLAY_END_OSC,
   REPLAY_REPLY_CAP_MS,
   REPLAY_REPLY_CAP_UNCONFIRMED_MS,
@@ -323,6 +325,15 @@ export class LiveTerminal {
   private ackSeq = 0;
   /** performance.now() at this socket's onopen — the zero of sentAtMs. */
   private openedAt = 0;
+  /** Set by the replay-begin marker: re-fit to the pane once the replay ends. */
+  private refitAfterReplay = false;
+  /** The status transport went stale while this pane was in acked mode. Its
+   *  own socket MAY be half-open (no onclose ever fires there), so on
+   *  recovery it sends one probe instead of being cut blindly. */
+  private suspectSocket = false;
+  /** An in-flight liveness probe: an EMPTY acked frame. A healthy socket
+   *  acks it within milliseconds; no ack by ACK_GIVE_UP_MS → reconnect. */
+  private probe: { seq: number; t: number } | null = null;
   /** Acked frames in flight: seq → when sent, and what kind of key. */
   private readonly pending = new Map<
     number,
@@ -456,12 +467,35 @@ export class LiveTerminal {
     // replayed query has been answered (and dropped) by now, so live replies
     // from here on are real.
     this.terminal.parser.registerOscHandler(REPLAY_END_OSC, (data) => {
+      // Start of the replay: the PTY's size (?replayGeom=1). Full-screen TUIs
+      // draw on the alternate screen, which never reflows, so the replay must
+      // be parsed at the size it was drawn for. A fresh terminal is still at
+      // its 80x24 default here and used to show the content in an 80-column
+      // strip with the rest black. NOT the end of the replay: the reply
+      // window stays open until the end marker.
+      if (data.startsWith(REPLAY_BEGIN_TOKEN)) {
+        const geom = parseReplayGeometry(data);
+        if (geom) {
+          this.terminal.resize(geom.cols, geom.rows);
+          this.refitAfterReplay = true;
+        }
+        return true;
+      }
       serverSendsReplayMark = true;
       // Capability negotiation rides on the same marker: only a server that
       // SAYS it understands binary acked frames ever gets one. Everything
       // typed before this point went as plain text, the old way.
       if (data.includes(INPUT_ACK_TOKEN)) this.ackMode = true;
       this.endReplayWindow();
+      if (this.refitAfterReplay) {
+        // Back to the pane's size. The cache is invalidated so the fit is
+        // applied (and the PTY resized) even though the box itself didn't
+        // change: a real size change is what makes the TUI repaint.
+        this.refitAfterReplay = false;
+        this.lastFitW = 0;
+        this.lastFitH = 0;
+        this.scheduleFit();
+      }
       return true; // consumed; nothing to render
     });
 
@@ -752,9 +786,18 @@ export class LiveTerminal {
     this.connect();
   }
 
-  /** Transport went stale: this pane's socket shares the dead path. */
+  /** Transport went stale: this pane's socket MAY share the dead path.
+   *  With acked input the pane learns its own socket's health within ~1s of
+   *  the next keystroke, so it is NOT cut here: every reconnect is a full
+   *  reset + replay, and cutting every pane whenever the status heartbeat
+   *  went stale on a busy server replayed every pane over and over. Without
+   *  acks (older server) the pane has no other signal, so it still is. */
   transportLost(): void {
     if (this.disposed || this.ended || this.connection.kind === "lost") return;
+    if (this.ackMode) {
+      this.suspectSocket = true;
+      return;
+    }
     this.forceReconnect();
   }
 
@@ -765,7 +808,26 @@ export class LiveTerminal {
     if (this.connection.kind === "lost") {
       this.retryDelay = 1000;
       this.connect();
+      return;
     }
+    // Not cut while the transport was down (acked mode): find out whether
+    // this pane's own socket survived, instead of assuming. A pane someone is
+    // only WATCHING on a half-open socket would otherwise never recover.
+    if (this.suspectSocket) {
+      this.suspectSocket = false;
+      this.sendProbe();
+    }
+  }
+
+  private sendProbe(): void {
+    const ws = this.wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !this.ackMode) {
+      this.forceReconnect();
+      return;
+    }
+    const seq = ++this.ackSeq;
+    ws.send(encodeInputFrame(seq, performance.now() - this.openedAt, ""));
+    this.probe = { seq, t: Date.now() };
   }
 
   /** Input watchdog, driven by the module tick. Only attached panes — a
@@ -773,6 +835,16 @@ export class LiveTerminal {
    *  down: the status bar already says so, and a per-pane chip on top would
    *  just repeat it once per pane. */
   watchdogTick(now: number): void {
+    // A liveness probe nobody acked: the socket is half-open. Hidden panes
+    // too (they'd show stale output when reattached).
+    if (this.probe && now - this.probe.t >= ACK_GIVE_UP_MS) {
+      console.warn(
+        `[terminal] session ${this.sessionId.slice(0, 8)}: liveness probe unacknowledged for ${now - this.probe.t}ms — reconnecting the pane`,
+      );
+      this.probe = null;
+      this.forceReconnect();
+      return;
+    }
     if (this.ackMode) {
       this.ackTick(now);
       return;
@@ -856,6 +928,10 @@ export class LiveTerminal {
   /** A server ack: the keystroke is in the agent's PTY. A printing key now
    *  waits for the agent's echo (the "waiting / not responding" clock). */
   private onAck(seq: number): void {
+    if (this.probe?.seq === seq) {
+      this.probe = null;
+      return;
+    }
     const p = this.pending.get(seq);
     if (!p) return;
     this.pending.delete(seq);
@@ -1011,6 +1087,8 @@ export class LiveTerminal {
     this.strandInFlight();
     this.ackMode = false; // re-negotiated per socket, via the replay marker
     this.ackSeq = 0;
+    this.probe = null; // belonged to the socket being replaced
+    this.suspectSocket = false;
     // The zero for sentAtMs is taken BEFORE the socket exists, so it always
     // precedes the server's own open. The server then under-estimates a
     // frame's age by at most the handshake time. Taken in onopen instead, a
@@ -1019,7 +1097,7 @@ export class LiveTerminal {
     // would silently drop every key on a healthy socket.
     this.openedAt = performance.now();
     const ws = new WebSocket(
-      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1&inputAck=1`,
+      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1&inputAck=1&replayGeom=1`,
     );
     // Acks arrive as binary frames; ArrayBuffer keeps decoding synchronous.
     ws.binaryType = "arraybuffer";

@@ -110,6 +110,7 @@ import {
   markRunning,
   resolveAgent as resolveAgentFromStore,
 } from "./store.js";
+import { DecModeTracker } from "./terminalModes.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
 
@@ -139,11 +140,17 @@ export function redactArgForLog(a: string): string {
 function appendToOutputBuffer(
   managed: Pick<
     ManagedAttachment,
-    "outputBuffer" | "outputSize" | "lastOutputAt"
+    "outputBuffer" | "outputSize" | "lastOutputAt" | "modes"
   >,
   data: string,
 ): void {
   managed.lastOutputAt = Date.now();
+  managed.modes ??= {
+    head: new DecModeTracker(),
+    live: new DecModeTracker(),
+    trimmed: false,
+  };
+  managed.modes.live.feed(data);
   managed.outputBuffer.push(data);
   managed.outputSize += data.length;
   if (managed.outputSize <= OUTPUT_BUFFER_LIMIT) return;
@@ -157,6 +164,10 @@ function appendToOutputBuffer(
     drop++;
   }
   if (drop > 0) {
+    for (let k = 0; k < drop; k++) {
+      managed.modes.head.feed(managed.outputBuffer[k]);
+    }
+    managed.modes.trimmed = true;
     managed.outputBuffer.splice(0, drop);
     managed.outputSize -= freed;
   }
@@ -213,6 +224,12 @@ export interface ManagedAttachment {
    *  "the agent is silent" (it got my keys and printed nothing). */
   lastOutputAt?: number;
   lastInputAt?: number;
+  /** Sticky terminal modes (terminalModes.ts): `live` follows every chunk;
+   *  `head` is the state at the start of the retained buffer (fed each chunk
+   *  the 1MB trim drops). A reconnect replays `head.preamble()` before the
+   *  buffer, so a trim can't lose modes a TUI set once at startup. `trimmed`
+   *  records that the buffer has lost its start. Created on first output. */
+  modes?: { head: DecModeTracker; live: DecModeTracker; trimmed: boolean };
   /**
    * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
    * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is
@@ -284,6 +301,18 @@ function serverStoppingError(): SpawnError {
     503,
     "The server is shutting down — try again once it is back.",
   );
+}
+
+/** PERF/TEST ONLY — append to an attachment's REPLAY buffer as if its PTY had
+ *  produced `data`, without sending anything to live viewers. Goes through the
+ *  real buffer path (1MB trim + sticky-mode tracking), so a rig can put a REAL
+ *  agent in the long-session state (its own startup bytes trimmed away) in
+ *  seconds instead of an hour. Only the perf router calls it. */
+export function _appendToReplayBufferForTesting(
+  managed: ManagedAttachment,
+  data: string,
+): void {
+  appendToOutputBuffer(managed, data);
 }
 
 export function getAttachment(agentId: UUID): ManagedAttachment | undefined {
@@ -1112,9 +1141,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // Migrated (pre-#165) agents already satisfy this; adopted external sessions
     // do too (above).
     //
-    // NOT a permanent invariant: the onExit force-fresh safety net regenerates
-    // `providerSessionId` alone (leaving `id`), which RE-SPLITS them for that
-    // agent. Never treat the two as interchangeable — always resolve through
+    // NOT a permanent invariant: ADR-111's pre-spawn regeneration (no saved
+    // session to resume) changes `providerSessionId` alone (leaving `id`),
+    // which RE-SPLITS them for that agent. Never treat the two as interchangeable — always resolve through
     // getAgentByProviderSessionId (with the getAgent fallback), never by
     // assuming one equals the other.
     providerSessionId = crypto.randomUUID();
@@ -1301,7 +1330,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         );
       }
       // Regenerate the id (ADR-111). Written back to the record by the
-      // reattach markRunning below — the same channel the onExit net uses — so
+      // reattach markRunning below, so
       // every consumer that resolves by providerSessionId follows it.
       const oldSessionId = providerSessionId;
       providerSessionId = crypto.randomUUID();
@@ -1603,6 +1632,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     }
   }
 
+  onSpawnStarting(resolved.sessionId);
+
   const cols = params.cols ?? 120;
   const rows = params.rows ?? 40;
   let pty: IPty;
@@ -1663,6 +1694,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // synchronous block, before any watcher timer can fire.
   const startupWatcherAttached =
     getSettings().autoTrust !== false && provider.attachStartupWatcher != null;
+  // Read by the exit handler: a fast exit before this flips was a death AT a
+  // startup dialog, not a broken session.
+  let startupSettled = !startupWatcherAttached;
   if (startupWatcherAttached) {
     provider.attachStartupWatcher?.(pty, resolved, () => {
       // Staleness guard (mirrors the prompt-delivery write guard below): a
@@ -1672,6 +1706,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       // are still up. live is populated a few sync lines below, before any
       // watcher timer can fire, so the guard never misfires on our own spawn.
       if (live.get(resolved.sessionId)?.pty !== pty) return;
+      startupSettled = true;
       noteStartupSettled(resolved.sessionId);
     });
   }
@@ -1934,76 +1969,93 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       );
     }
 
-    // Resume-failure safety net (ADR-049, narrowed by ADR-100): a spawn that
-    // attempted a PRE-FLIGHT-GATED resume and died immediately almost certainly
-    // hit a session that exists on disk but won't resume (e.g. corrupt). Respawn
-    // FRESH so the agent recovers instead of being marked crashed (and vanishing
-    // from the dashboard). Arming is gated by resumeSafetyNetArmed: today only
-    // Claude Code reaches here (its hasResumableSession pre-flight proved a
-    // session existed). Codex does NOT — a bare providerThreadId no longer arms
-    // the net, so a Codex resume-crash falls through to markExited("crashed")
-    // with its thread INTACT (crash-but-resumable), rather than having a good
-    // conversation cleared. See resumeSafetyNetArmed / ADR-100.
-    //
-    // Force-fresh by (a) regenerating providerSessionId so Claude's pre-flight
-    // finds no JSONL for the new id and emits a fresh `--session-id`, and (b)
-    // clearing providerThreadId. Without (a), a Claude resume that crashed for a
-    // reason OTHER than a missing file would re-resume the same broken id every
-    // boot — a crash loop. With the pre-flight in place, the common "never
-    // conversed" case never reaches here; this catches the residual "session
-    // existed but resume still failed" case.
-    if (
-      !shuttingDown &&
-      attemptedResume &&
-      lifetime < 5_000 &&
-      exitCode !== 0
-    ) {
+    // Resume-failure safety net (ADR-049, narrowed by ADR-100, and since the
+    // home-directory finding: an existing session is NEVER replaced). A
+    // pre-flight-gated resume that died fast is retried with the SAME session
+    // (bounded); after that the agent is left stopped, session untouched, with
+    // a notice. It used to regenerate providerSessionId and start fresh, which
+    // threw away good conversations: the usual fast death is the start-up
+    // (e.g. a trust dialog CC reset to "No, exit" under our keys), not the
+    // session. A session that is truly gone never gets here: the pre-flight
+    // already starts those fresh before spawning (ADR-111).
+    if (lifetime >= RESUME_SURVIVAL_MS) resumeRetries.delete(persisted.id);
+    const failure = resumeFailureAction({
+      attemptedResume,
+      lifetimeMs: lifetime,
+      exitCode,
+      shuttingDown,
+      startupSettled,
+      retriesSoFar: resumeRetries.get(persisted.id) ?? 0,
+    });
+    if (failure.kind === "retry") {
+      resumeRetries.set(persisted.id, failure.attempt);
       live.delete(persisted.id);
       disposeCodexControl(persisted.id);
-      // One write resets both identity fields: a new providerSessionId (Claude's
-      // pre-flight finds no JSONL for it → fresh `--session-id`) and a cleared
-      // providerThreadId. The thread clear is now reachable only for a
-      // pre-flight-gated resume (Claude has no thread; a future thread-provider
-      // that earns a pre-flight would want its provably-bad thread cleared too) —
-      // NOT for Codex, which no longer arms the net (ADR-100).
-      markRunning(persisted.id, {
-        providerSessionId: crypto.randomUUID(),
-        providerThreadId: undefined,
-      });
-      // Existence-guarded: this exit handler runs async, so the record may
-      // have been DELETED since (which also reclaimed its notifications) — an
-      // unguarded push would re-create a notifications entry under an id
-      // nothing can resolve, the exact leak the reclamation closes.
+      console.warn(
+        `[runtime] ${persisted.id.slice(0, 8)} exited ${lifetime}ms into a resume` +
+          (failure.cause === "startup-dialog"
+            ? " while a startup dialog was still on screen"
+            : "") +
+          ` — its session is intact; retrying the same resume in ${failure.delayMs}ms (${failure.attempt}/${resumeRetryBackoffMs.length})`,
+      );
+      const t = retryScheduler.schedule(() => {
+        resumeRetryTimers.delete(persisted.id);
+        // Only if the agent is still meant to be running and nothing else
+        // (a kill, a delete) has taken it over meanwhile. A newer spawn
+        // (a restart) cancels this timer outright: see onSpawnStarting.
+        const record = getAgent(persisted.id);
+        if (
+          shuttingDown ||
+          !record ||
+          record.status !== "running" ||
+          live.has(persisted.id)
+        ) {
+          // Someone else took over (a kill, a delete, a restart): this retry
+          // run is over, so its count must not shorten the next one or leak.
+          resumeRetries.delete(persisted.id);
+          return;
+        }
+        resumeRetrySpawning.add(persisted.id);
+        void respawnAgent(record)
+          .finally(() => resumeRetrySpawning.delete(persisted.id))
+          .catch((err) => {
+            const updated = markCrashedUnlessLive(
+              persisted.id,
+              "resume retry after a fast exit",
+            );
+            if (updated)
+              emitAgentDelta({
+                type: "agent.exited",
+                id: persisted.id,
+                exitReason: "crashed",
+                version: updated.version,
+              });
+            console.error(
+              `[runtime] ${persisted.id.slice(0, 8)} resume retry failed to spawn:`,
+              err instanceof Error ? err.message : err,
+            );
+          });
+      }, failure.delayMs);
+      resumeRetryTimers.set(persisted.id, t);
+      return;
+    }
+    if (failure.kind === "give-up") {
+      resumeRetries.delete(persisted.id);
+      console.warn(
+        `[runtime] ${persisted.id.slice(0, 8)} resume failed ${resumeRetryBackoffMs.length + 1} times (${failure.cause}) — leaving it stopped, session kept`,
+      );
+      // Existence-guarded: the record may have been deleted meanwhile.
       if (getAgent(persisted.id)) {
         pushSystemNotification(
           persisted.id,
-          `Couldn't resume ${persisted.name}'s prior ${provider.displayName} session (its history may have been pruned) — starting fresh.`,
+          resumeGaveUpNotice(
+            persisted.name,
+            provider.displayName,
+            failure.cause,
+          ),
         );
       }
-      console.warn(
-        `[runtime] ${persisted.id.slice(0, 8)} crashed on resume — reset session id + cleared thread id, respawning fresh`,
-      );
-      const record = getAgent(persisted.id);
-      if (record) {
-        void respawnAgent(record).catch((err) => {
-          const updated = markCrashedUnlessLive(
-            persisted.id,
-            "fresh respawn after failed resume",
-          );
-          if (updated)
-            emitAgentDelta({
-              type: "agent.exited",
-              id: persisted.id,
-              exitReason: "crashed",
-              version: updated.version,
-            });
-          console.error(
-            `[runtime] ${persisted.id.slice(0, 8)} fresh respawn after failed resume also failed:`,
-            err instanceof Error ? err.message : err,
-          );
-        });
-      }
-      return;
+      // Falls through: marked crashed below, with providerSessionId intact.
     }
 
     if (!shuttingDown) {
@@ -2379,6 +2431,132 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
 
 /** How long a resumed PTY must stay alive before boot logs it as resumed. */
 const RESUME_SURVIVAL_MS = 5_000;
+
+/** A resume that dies this fast is retried with the SAME session, this many
+ *  times, after these delays (index = retries already spent). */
+export const RESUME_RETRY_BACKOFF_MS: readonly number[] = [2_000, 5_000];
+let resumeRetryBackoffMs: readonly number[] = RESUME_RETRY_BACKOFF_MS;
+/** Test hook: shorter retry delays (same count semantics). */
+export function _setResumeRetryBackoffForTesting(
+  ms: readonly number[] | null,
+): void {
+  resumeRetryBackoffMs = ms ?? RESUME_RETRY_BACKOFF_MS;
+}
+const resumeRetries = new Map<string, number>();
+/** The pending retry timer per agent, so any newer spawn can cancel it. */
+const resumeRetryTimers = new Map<string, unknown>();
+
+/** How a resume retry is scheduled. Real timers in production; a test drives
+ *  retries explicitly so it never races the clock. */
+export interface ResumeRetryScheduler {
+  schedule(fire: () => void, delayMs: number): unknown;
+  cancel(handle: unknown): void;
+}
+const realRetryScheduler: ResumeRetryScheduler = {
+  schedule: (fire, delayMs) => {
+    const t = setTimeout(fire, delayMs);
+    t.unref?.();
+    return t;
+  },
+  cancel: (handle) => clearTimeout(handle as NodeJS.Timeout),
+};
+let retryScheduler: ResumeRetryScheduler = realRetryScheduler;
+/** Test hook: what retry state an agent still holds (should be none once a
+ *  retry run is over, e.g. after a kill or delete). */
+export function _resumeRetryStateForTesting(agentId: string): {
+  count: number | undefined;
+  pending: boolean;
+} {
+  return {
+    count: resumeRetries.get(agentId),
+    pending: resumeRetryTimers.has(agentId),
+  };
+}
+
+/** Test hook: take over retry scheduling (null restores real timers). */
+export function _setResumeRetrySchedulerForTesting(
+  s: ResumeRetryScheduler | null,
+): void {
+  retryScheduler = s ?? realRetryScheduler;
+}
+/** Agents whose spawn right now IS a retry (keeps the count) rather than a
+ *  human start (restart/attach, which begins a fresh retry run). */
+const resumeRetrySpawning = new Set<string>();
+
+/** A spawn is starting for this agent: a pending retry is now stale, and a
+ *  spawn that isn't the retry itself starts a fresh retry run. */
+function onSpawnStarting(agentId: string): void {
+  const pending = resumeRetryTimers.get(agentId);
+  if (pending) {
+    retryScheduler.cancel(pending);
+    resumeRetryTimers.delete(agentId);
+  }
+  if (!resumeRetrySpawning.has(agentId)) resumeRetries.delete(agentId);
+}
+
+export type ResumeFailureCause = "startup-dialog" | "resume";
+export type ResumeFailureAction =
+  | { kind: "none" }
+  | {
+      kind: "retry";
+      attempt: number;
+      delayMs: number;
+      cause: ResumeFailureCause;
+    }
+  | { kind: "give-up"; cause: ResumeFailureCause };
+
+/**
+ * What to do when a spawn exits. Only a pre-flight-gated resume (the session
+ * PROVABLY exists on disk) that died fast and non-zero is a resume failure.
+ * There is deliberately no "start fresh" outcome: an existing session is
+ * never thrown away. A fast death is far more often the start-up than the
+ * session (e.g. a trust dialog answered "No, exit" because CC reset its
+ * selection under our keys); a session that is truly gone is caught by the
+ * pre-flight, which starts fresh BEFORE spawning (ADR-111). Pure, for tests.
+ */
+export function resumeFailureAction(input: {
+  attemptedResume: boolean;
+  lifetimeMs: number;
+  exitCode: number;
+  shuttingDown: boolean;
+  /** The startup watcher had reported its dialogs out of the way. */
+  startupSettled: boolean;
+  retriesSoFar: number;
+}): ResumeFailureAction {
+  if (
+    input.shuttingDown ||
+    !input.attemptedResume ||
+    input.lifetimeMs >= RESUME_SURVIVAL_MS ||
+    input.exitCode === 0
+  ) {
+    return { kind: "none" };
+  }
+  const cause: ResumeFailureCause = input.startupSettled
+    ? "resume"
+    : "startup-dialog";
+  if (input.retriesSoFar < resumeRetryBackoffMs.length) {
+    return {
+      kind: "retry",
+      attempt: input.retriesSoFar + 1,
+      delayMs: resumeRetryBackoffMs[input.retriesSoFar],
+      cause,
+    };
+  }
+  return { kind: "give-up", cause };
+}
+
+/** The operator's notice when the retries are spent. */
+export function resumeGaveUpNotice(
+  agentName: string,
+  providerDisplayName: string,
+  cause: ResumeFailureCause,
+): string {
+  const why =
+    cause === "startup-dialog"
+      ? `${providerDisplayName} closed while a startup dialog was still on screen`
+      : `${providerDisplayName} closed right after starting`;
+  return `Couldn't resume ${agentName}: ${why}, ${resumeRetryBackoffMs.length + 1} times. Its session is intact and was not replaced. Restart the agent to try again.`;
+}
 
 /** Log ✓ only once the resumed agent has actually stayed up, ✗ if it died.
  *  Unref'd so it never holds the process open. */

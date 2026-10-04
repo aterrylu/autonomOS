@@ -118,6 +118,11 @@ export interface MaskedSettings {
   /** Passive release check for the update badge (#323); default on. */
   updateCheck: boolean;
   customEnvVars: Record<string, string>;
+  /**
+   * Extra env keys an env preset may set, beyond the built-in allowlist
+   * (ADR-144). Operator-only: settings aren't reachable with an agent token.
+   */
+  envPresetExtraKeys: string[];
   statusLine: { enabled: boolean };
   /**
    * Each runtime's default permission, in its own canonical values (ADR-115) —

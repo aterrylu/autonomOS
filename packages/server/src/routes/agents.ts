@@ -46,6 +46,7 @@ import {
   resolveAgentByName,
   setManager,
 } from "../agents/store.js";
+import { PresetKeyError } from "../envPresets.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
   forgetAgentMessages,
@@ -483,7 +484,11 @@ agentsRouter.post("/", async (c) => {
     // Typed status when the throw site declared one; substring chain otherwise.
     return c.json(
       { error: message },
-      err instanceof SpawnError ? err.status : spawnErrorStatus(message),
+      err instanceof SpawnError
+        ? err.status
+        : err instanceof PresetKeyError
+          ? 422
+          : spawnErrorStatus(message),
     );
   }
 });
@@ -642,7 +647,11 @@ agentsRouter.post("/:id/attach", async (c) => {
     // Typed status when the throw site declared one; substring chain otherwise.
     return c.json(
       { error: message },
-      err instanceof SpawnError ? err.status : spawnErrorStatus(message),
+      err instanceof SpawnError
+        ? err.status
+        : err instanceof PresetKeyError
+          ? 422
+          : spawnErrorStatus(message),
     );
   }
 });
@@ -664,7 +673,11 @@ agentsRouter.post("/:id/restart", async (c) => {
     if (err instanceof ControlPlaneNotReadyError) throw err;
     const message = err instanceof Error ? err.message : "Unknown error";
     const status =
-      err instanceof SpawnError ? err.status : spawnErrorStatus(message);
+      err instanceof SpawnError
+        ? err.status
+        : err instanceof PresetKeyError
+          ? 422
+          : spawnErrorStatus(message);
     // restartAgent itself leaves the persistent notice when the agent ended up
     // stopped; a refusal (409 / 404 / 503) changed nothing.
     return c.json({ error: message }, status);

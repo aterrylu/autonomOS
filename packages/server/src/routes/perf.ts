@@ -9,6 +9,7 @@
 import type { UUID } from "@autonomos/core";
 import { Hono } from "hono";
 import {
+  _appendToReplayBufferForTesting,
   _registerSyntheticAttachment,
   getAttachment,
 } from "../agents/runtime.js";
@@ -132,6 +133,33 @@ perfRouter.get("/buffer/:id", (c) => {
     // consumer knows the preamble may be missing.
     likelyTruncated: managed.outputSize > 900 * 1024,
     data: managed.outputBuffer,
+  });
+});
+
+/** Pad a LIVE attachment's replay buffer with captured chunks (e.g. a real
+ *  Codex stream from /buffer), past the 1MB cap, so its own startup bytes are
+ *  trimmed away: the long-session state a reconnect replay must survive
+ *  (ADR-135). Works on REAL agents (not only synthetic sessions). Nothing is
+ *  written to the PTY or sent to viewers; only the next reconnect sees it. */
+perfRouter.post("/pad-buffer/:id", async (c) => {
+  const managed = getAttachment(c.req.param("id") as UUID);
+  if (!managed) return c.json({ error: "no live attachment" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    data?: string[];
+    repeat?: number;
+  };
+  if (!Array.isArray(body.data))
+    return c.json({ error: "data[] required" }, 400);
+  const repeat = Math.max(1, Math.floor(body.repeat ?? 1));
+  for (let i = 0; i < repeat; i++) {
+    for (const chunk of body.data) {
+      _appendToReplayBufferForTesting(managed, chunk);
+    }
+  }
+  return c.json({
+    bytes: managed.outputSize,
+    trimmed: managed.modes?.trimmed ?? false,
+    altScreen: managed.modes?.live.inAltScreen() ?? false,
   });
 });
 

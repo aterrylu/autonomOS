@@ -9,6 +9,7 @@ import {
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { isValidChannelId } from "../channels.js";
+import { extraPresetKeyProblem } from "../envPresets.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
 import {
   noteRuntimeDefaults,
@@ -40,6 +41,7 @@ function maskSettings(settings: AppSettings): MaskedSettings {
     autoTrust: settings.autoTrust !== false,
     updateCheck: settings.updateCheck !== false,
     customEnvVars: settings.customEnvVars ?? {},
+    envPresetExtraKeys: settings.envPresetExtraKeys ?? [],
     statusLine: { enabled: settings.statusLine?.enabled !== false },
     runtimeDefaults: Object.fromEntries(
       PERMISSION_RUNTIMES.map((r) => [
@@ -120,6 +122,26 @@ settingsRouter.put("/", async (c) => {
       }
     }
     partial.customEnvVars = vars;
+  }
+  if (body.envPresetExtraKeys !== undefined) {
+    // Every key is checked against the same policy presets use, so the one
+    // thing this setting can't do is re-open what the allowlist exists to
+    // close (a control-plane key, or one that runs code).
+    const keys = [
+      ...new Set(body.envPresetExtraKeys.map((k) => k.trim()).filter(Boolean)),
+    ];
+    const refused = keys
+      .map((k) => ({ key: k, reason: extraPresetKeyProblem(k) }))
+      .filter((r) => r.reason !== null);
+    if (refused.length > 0) {
+      return c.json(
+        {
+          error: `Can't allow ${refused.map((r) => `"${r.key}" (${r.reason})`).join(", ")}.`,
+        },
+        400,
+      );
+    }
+    partial.envPresetExtraKeys = keys;
   }
 
   if (body.runtimeDefaults !== undefined) {
