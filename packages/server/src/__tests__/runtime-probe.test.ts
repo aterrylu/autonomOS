@@ -155,6 +155,15 @@ describe("the table matches what the installed CLIs accept", () => {
     );
     assert.deepEqual([m.rejected, m.unlisted], [[], []]);
   });
+  it('Codex still accepts the inline-TUI value we spawn with (tui.alternate_screen="never", ADR-135)', () => {
+    // providers/codex.ts spawns every TUI with -c tui.alternate_screen="never"
+    // so the transcript lives in xterm scrollback. Re-capture this fixture on a
+    // Codex bump (same checkpoint as the permission axes): if Codex renames
+    // the key or drops the value, this fails here instead of panes silently
+    // going back to the alternate screen (wheel → prompt history).
+    const variants = parseCodexVariants(fx("codex-alt-screen-probe").output);
+    assert.ok(variants?.includes("never"), JSON.stringify(variants));
+  });
   it("Codex approval: removed values that still load aren't reported as new", () => {
     // What the loader actually accepts on 0.154: on-failure (coerced) + the two real values.
     const c = compareAxis(axis("codex", "approval_policy"), [

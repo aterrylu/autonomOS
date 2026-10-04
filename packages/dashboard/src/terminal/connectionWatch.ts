@@ -172,6 +172,23 @@ export function classifyIoProbe(
  * generous after (the dashboard is served by its own server, so they match).
  */
 export const REPLAY_END_OSC = 7777;
+
+/** OSC 7777 payload the server sends BEFORE the replay (?replayGeom=1):
+ *  `autonomos-replay-begin;cols=C;rows=R`, the PTY's size. */
+export const REPLAY_BEGIN_TOKEN = "autonomos-replay-begin";
+
+/** The PTY size in a replay-begin payload, or null if it isn't one or the
+ *  numbers are out of the range the server itself accepts for a resize. */
+export function parseReplayGeometry(
+  data: string,
+): { cols: number; rows: number } | null {
+  if (!data.startsWith(REPLAY_BEGIN_TOKEN)) return null;
+  const cols = Number(/(?:^|;)cols=(\d+)(?:;|$)/.exec(data)?.[1]);
+  const rows = Number(/(?:^|;)rows=(\d+)(?:;|$)/.exec(data)?.[1]);
+  if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
+  if (cols < 2 || cols > 500 || rows < 1 || rows > 200) return null;
+  return { cols, rows };
+}
 export const REPLAY_REPLY_CAP_MS = 60_000;
 export const REPLAY_REPLY_CAP_UNCONFIRMED_MS = 5_000;
 

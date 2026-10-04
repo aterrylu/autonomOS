@@ -1,0 +1,12 @@
+{
+ "argv": [
+  "codex",
+  "features",
+  "list",
+  "-c",
+  "tui.alternate_screen=__probe__"
+ ],
+ "exit": 1,
+ "output": "Error: failed to load bootstrap configuration\n\nCaused by:\n    unknown variant `__probe__`, expected one of `auto`, `always`, `never`\n    in `tui.alternate_screen`\n    \n",
+ "codexVersion": "0.159.3"
+}
