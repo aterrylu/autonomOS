@@ -7,7 +7,7 @@ import type {
 } from "@autonomos/core";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { agentsApi, type SpawnAgentBody } from "./api/agents";
+import { agentsApi, type RestartBody, type SpawnAgentBody } from "./api/agents";
 import { ApiError } from "./api/core";
 import { agentsPoll, projectsPoll, statusPoll } from "./api/polls";
 import { statusApi } from "./api/status";
@@ -689,6 +689,69 @@ export function applyProjectsSnapshot(projects: ProjectInfo[]): void {
 
 /** The reason to SHOW a person: the server's own message, or that it couldn't
  *  be reached. (apiErrorLabel below is the terse form for console lines.) */
+/**
+ * The restart flow behind Restart and the Permission… action: ONE server call
+ * (POST /:id/restart), the pane guard, and the outcome in the action toast.
+ * `rethrowRefusals` hands the refusals the dialog answers back to it.
+ */
+async function runRestart(
+  get: () => AppState,
+  id: string,
+  body: RestartBody,
+  rethrowRefusals: boolean,
+): Promise<void> {
+  // ONE server call (POST /:id/restart), which stops the agent, WAITS for
+  // its process (and Codex daemon) to exit, then respawns it in the same
+  // conversation. The old client-side kill → attach could respawn while
+  // the old process still ran, and every failure of it was console-only:
+  // Restart "literally did nothing". Now the outcome is always shown.
+  //
+  // Guard the pane against snapshot-driven teardown for the whole flow
+  // (and a beat past it): while the old PTY exits its WS closes (4010),
+  // and a snapshot landing then could tear the pane down — including a
+  // poll already in flight that lands late, after the re-open below.
+  // See restartingIds / RESTART_PANE_GUARD_MS.
+  const all = [...get().sessions, ...get().exitedSessions];
+  const name = all.find((s) => s.id === id)?.name ?? "the agent";
+  restartingIds.add(id);
+  try {
+    try {
+      await agentsApi.restart(id, body);
+    } catch (err) {
+      // The dialog answers these itself (confirm / fresh conversation);
+      // nothing was stopped, so no toast and no refetch.
+      if (
+        rethrowRefusals &&
+        err instanceof ApiError &&
+        (err.code === "CONFIRM_NEVER_ASKS" ||
+          err.code === "PERMISSION_NEEDS_FRESH_CONVERSATION")
+      ) {
+        restartingIds.delete(id);
+        throw err;
+      }
+      const reason = actionErrorReason(err);
+      console.error(
+        `[autonomOS] restartSession: restart of ${id} failed:`,
+        reason,
+      );
+      get().showActionToast(`Restart of ${name} failed: ${reason}`, false);
+      restartingIds.delete(id);
+      await get().fetchSessions();
+      return;
+    }
+    await get().fetchSessions();
+    get().showActionToast(`Restarted ${name}`, true);
+    // Re-open the pane and reconnect its terminal to the NEW PTY: the old
+    // socket closed (4010), so the live terminal is `ended`; switchPane is
+    // a no-op when the pane was already focused, so bump the reload nonce
+    // to re-run useTerminal's attach against the restarted process.
+    get().switchPane({ type: "session", id });
+    get().reloadTerminal(id);
+  } finally {
+    setTimeout(() => restartingIds.delete(id), RESTART_PANE_GUARD_MS);
+  }
+}
+
 function actionErrorReason(err: unknown): string {
   if (err instanceof ApiError && err.unreachable)
     return "couldn't reach the autonomOS server";
@@ -840,6 +903,13 @@ interface AppState {
   /** Restart an agent server-side (POST /:id/restart) and SAY how it went —
    *  "Restarted X" or "Restart failed: <reason>" in the action toast. */
   restartSession: (id: string) => Promise<void>;
+  /** Restart with a new permission (the Permission… action). Rethrows the
+   *  refusals the dialog answers (never-asks confirm, Codex fresh
+   *  conversation); every other outcome is a toast, like restartSession. */
+  restartWithPermission: (id: string, body: RestartBody) => Promise<void>;
+  /** The agent whose Permission… dialog is open, or null. */
+  permissionDialogFor: string | null;
+  openPermissionDialog: (id: string | null) => void;
   /** Brief feedback for a user action (Restarted X / Restart failed: why) —
    *  the ONLY place such an outcome is shown; never persisted. */
   actionToast: { id: number; ok: boolean; text: string } | null;
@@ -1293,50 +1363,10 @@ export const useStore = create<AppState>()(
             ACTION_TOAST_MS,
           );
         },
-        restartSession: async (id) => {
-          // ONE server call (POST /:id/restart), which stops the agent, WAITS for
-          // its process (and Codex daemon) to exit, then respawns it in the same
-          // conversation. The old client-side kill → attach could respawn while
-          // the old process still ran, and every failure of it was console-only:
-          // Restart "literally did nothing". Now the outcome is always shown.
-          //
-          // Guard the pane against snapshot-driven teardown for the whole flow
-          // (and a beat past it): while the old PTY exits its WS closes (4010),
-          // and a snapshot landing then could tear the pane down — including a
-          // poll already in flight that lands late, after the re-open below.
-          // See restartingIds / RESTART_PANE_GUARD_MS.
-          const all = [...get().sessions, ...get().exitedSessions];
-          const name = all.find((s) => s.id === id)?.name ?? "the agent";
-          restartingIds.add(id);
-          try {
-            try {
-              await agentsApi.restart(id);
-            } catch (err) {
-              const reason = actionErrorReason(err);
-              console.error(
-                `[autonomOS] restartSession: restart of ${id} failed:`,
-                reason,
-              );
-              get().showActionToast(
-                `Restart of ${name} failed: ${reason}`,
-                false,
-              );
-              restartingIds.delete(id);
-              await get().fetchSessions();
-              return;
-            }
-            await get().fetchSessions();
-            get().showActionToast(`Restarted ${name}`, true);
-            // Re-open the pane and reconnect its terminal to the NEW PTY: the old
-            // socket closed (4010), so the live terminal is `ended`; switchPane is
-            // a no-op when the pane was already focused, so bump the reload nonce
-            // to re-run useTerminal's attach against the restarted process.
-            get().switchPane({ type: "session", id });
-            get().reloadTerminal(id);
-          } finally {
-            setTimeout(() => restartingIds.delete(id), RESTART_PANE_GUARD_MS);
-          }
-        },
+        restartSession: (id) => runRestart(get, id, {}, false),
+        restartWithPermission: (id, body) => runRestart(get, id, body, true),
+        permissionDialogFor: null,
+        openPermissionDialog: (id) => set({ permissionDialogFor: id }),
         renameSession: async (id, name) => {
           const trimmed = name.trim();
           if (!trimmed) throw new Error("Name cannot be empty");

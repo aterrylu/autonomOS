@@ -45,7 +45,8 @@ describe("reloadTerminal", () => {
 describe("restartSession — terminal reconnect", () => {
   it("bumps the reload nonce after a successful restart (so the pane reconnects)", async () => {
     await useStore.getState().restartSession("a1");
-    expect(agentsApi.restart).toHaveBeenCalledWith("a1");
+    // A plain restart sends an empty body: respawn exactly as recorded.
+    expect(agentsApi.restart).toHaveBeenCalledWith("a1", {});
     expect(useStore.getState().terminalReloadNonce.a1).toBe(1);
     // And it re-opened the pane (the #353 refocus).
     expect(useStore.getState().switchPane).toHaveBeenCalledWith({
