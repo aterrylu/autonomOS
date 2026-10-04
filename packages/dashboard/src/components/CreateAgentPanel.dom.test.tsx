@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { AgentTemplate } from "@autonomos/core";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
@@ -31,9 +31,21 @@ const workerTemplate: AgentTemplate = {
 };
 
 let createSession: ReturnType<typeof vi.fn>;
+/** What GET /api/settings serves — the operator's per-runtime defaults. */
+let runtimeDefaults: Record<string, unknown>;
+let settingsDown = false;
+
+const caps = {
+  messaging: { inbound: true, outbound: true },
+  hooks: { eventCount: 13, requiresSetup: false },
+  liveStatus: { supported: true, method: "hooks" },
+  systemPrompt: { supported: true },
+};
 
 beforeEach(() => {
   createSession = vi.fn(() => Promise.resolve());
+  runtimeDefaults = {};
+  settingsDown = false;
 
   useStore.setState({
     projects: [],
@@ -52,12 +64,15 @@ beforeEach(() => {
       installed: true,
       version: "1.0.0",
       recommended: true,
-      capabilities: {
-        messaging: { inbound: true, outbound: true },
-        hooks: { eventCount: 13, requiresSetup: false },
-        liveStatus: { supported: true, method: "hooks" },
-        systemPrompt: { supported: true },
-      },
+      capabilities: caps,
+    },
+    {
+      name: "codex",
+      displayName: "Codex",
+      installed: true,
+      version: "0.154.0",
+      recommended: false,
+      capabilities: caps,
     },
   ];
   vi.stubGlobal(
@@ -70,6 +85,13 @@ beforeEach(() => {
       }
       if (typeof url === "string" && url.includes("/api/templates")) {
         return body({ dispatcher: dispatcherTemplate, worker: workerTemplate });
+      }
+      if (typeof url === "string" && url.includes("/api/settings")) {
+        if (settingsDown)
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: "down" }), { status: 500 }),
+          );
+        return body({ runtimeDefaults });
       }
       if (typeof url === "string" && url.includes("/api/env-presets")) {
         return body({});
@@ -143,11 +165,101 @@ describe("CreateAgentPanel", () => {
       provider: "claude-code",
       template: "dispatcher",
       appendSystemPrompt: dispatcherTemplate.systemPrompt,
-      // Auto-defaulting the dispatcher adopts its systemPrompt but NOT its mode
-      // (only a manual template pick does), so the browser-local default flows
-      // through — the fail-closed "ask" after the ADR-045 default flip.
-      permissionMode: "ask",
     });
+    // Nothing was picked here, so nothing is sent: the server resolves the
+    // template's pin, then the operator's default (ADR-115) — "the caller said
+    // nothing" must survive to the server (ADR-061).
+    expect(opts.permission).toBeUndefined();
+    expect(opts).not.toHaveProperty("permissionMode");
+  });
+
+  it("shows what the agent will run as, and where it comes from — amber when it never asks", async () => {
+    render(<CreateAgentPanel />);
+    // The dispatcher here pins the legacy `bypass`, which is what it ran.
+    const picker = await screen.findByTestId("permission-picker");
+    await waitFor(() =>
+      expect(
+        within(picker).getByText("pinned by the dispatcher template"),
+      ).toBeInTheDocument(),
+    );
+    const chip = picker.querySelector("[data-permission-chip]");
+    expect(chip?.textContent).toBe("bypassPermissions");
+    expect(
+      within(picker).getByText("Never asks before acting."),
+    ).toBeInTheDocument();
+  });
+
+  it("with no template, shows YOUR default from Settings → Runtimes", async () => {
+    runtimeDefaults = {
+      "claude-code": {
+        runtime: "claude-code",
+        values: { "permission-mode": "acceptEdits" },
+      },
+    };
+    const user = userEvent.setup();
+    render(<CreateAgentPanel />);
+    await user.click(await screen.findByText("None"));
+    const picker = screen.getByTestId("permission-picker");
+    await waitFor(() =>
+      expect(picker.querySelector("[data-permission-chip]")?.textContent).toBe(
+        "acceptEdits",
+      ),
+    );
+    expect(
+      within(picker).getByText("your Claude Code default"),
+    ).toBeInTheDocument();
+    expect(
+      within(picker).queryByText("Never asks before acting."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("claims nothing when your default can't be loaded (the server may spawn something that never asks)", async () => {
+    settingsDown = true;
+    const user = userEvent.setup();
+    render(<CreateAgentPanel />);
+    await user.click(await screen.findByText("None"));
+    const picker = screen.getByTestId("permission-picker");
+    await waitFor(() =>
+      expect(within(picker).getByTestId("default-unknown").textContent).toMatch(
+        /your Claude Code default \(couldn't load it/,
+      ),
+    );
+    expect(picker.querySelector("[data-permission-chip]")).toBeNull();
+    expect(
+      within(picker)
+        .getAllByRole("button")
+        .filter((b) => b.getAttribute("aria-pressed") === "true"),
+    ).toHaveLength(0);
+  });
+
+  it("a value picked here is sent in the runtime's own values", async () => {
+    const user = userEvent.setup();
+    render(<CreateAgentPanel />);
+    const picker = await screen.findByTestId("permission-picker");
+    await user.click(within(picker).getByRole("button", { name: /^plan/ }));
+    expect(within(picker).getByText("chosen here")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /create agent/i }));
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    expect(createSession.mock.calls[0][1].permission).toEqual({
+      "permission-mode": "plan",
+    });
+  });
+
+  it("Codex: its launch axes only — Plan is a Shift+Tab hint, not an option", async () => {
+    const user = userEvent.setup();
+    render(<CreateAgentPanel />);
+    await user.click(await screen.findByText("Codex"));
+    const picker = screen.getByTestId("permission-picker");
+    for (const axis of [
+      "approval_policy",
+      "sandbox_mode",
+      "approvals_reviewer",
+    ])
+      expect(within(picker).getByText(axis)).toBeInTheDocument();
+    expect(
+      within(picker).queryByText("collaboration_mode"),
+    ).not.toBeInTheDocument();
+    expect(within(picker).getByText("Shift+Tab")).toBeInTheDocument();
   });
 
   it("renders a card for each available template", async () => {

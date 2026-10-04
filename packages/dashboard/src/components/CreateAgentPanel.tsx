@@ -1,9 +1,8 @@
 import {
-  DEFAULT_PERMISSION_MODE,
-  PERMISSION_MODE_INFO,
-  type PermissionMode,
+  completePermission,
   type Provider,
   type ProviderInfo,
+  type RuntimePermission,
 } from "@autonomos/core";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -11,25 +10,28 @@ import { providersApi } from "../api/misc";
 import { presetsPoll, templatesPoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
-import { PermissionModeSelect } from "./PermissionModeSelect";
+import {
+  knownDefault,
+  PERMISSION_RUNTIMES,
+  PermissionChip,
+  PermissionNotes,
+  RUNTIME_NAMES,
+  RuntimeAxisFields,
+  templatePin,
+  unknownDefaultText,
+  useRuntimeDefaults,
+} from "./RuntimePermission";
 
 export function CreateAgentPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
-  const {
-    projects,
-    createSession,
-    status,
-    fetchProjects,
-    defaultPermissionMode,
-  } = useStore(
+  const { projects, createSession, status, fetchProjects } = useStore(
     useShallow((s) => ({
       projects: s.projects,
       createSession: s.createSession,
       status: s.status,
       fetchProjects: s.fetchProjects,
-      defaultPermissionMode: s.permissionMode,
     })),
   );
   // Shared polls, not a mount-time store fetch: a template/preset created in
@@ -49,11 +51,13 @@ export function CreateAgentPanel() {
   const [selectedProvider, setSelectedProvider] = useState("claude-code");
   // Optional model-override env preset applied at spawn (empty = default backend).
   const [selectedPreset, setSelectedPreset] = useState("");
-  // Per-spawn permission mode, seeded from the global default. A template with
-  // its own permissionMode overrides this when selected (see selectTemplate).
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    defaultPermissionMode,
-  );
+  // The operator's per-runtime defaults (Settings → Runtimes, server-side).
+  const runtimeDefaults = useRuntimeDefaults();
+  // Permissions picked HERE, per runtime. Only these are sent: an untouched
+  // form says nothing, and the server resolves template pin → your default.
+  const [picked, setPicked] = useState<
+    Partial<Record<Provider, RuntimePermission>>
+  >({});
   const [selectedDir, setSelectedDir] = useState("~");
   const [customDir, setCustomDir] = useState("");
   const [showCustomDir, setShowCustomDir] = useState(false);
@@ -85,21 +89,6 @@ export function CreateAgentPanel() {
     }
   }, [templates, selectedTemplate, autoDefaulted, nameManuallyEdited]);
 
-  // autonomOS doesn't wire up every mode for Codex yet (plan, auto).
-  // If the selected provider doesn't support the current mode, fall back to the
-  // safe mode so the dropdown and the eventual spawn agree — the option is also
-  // disabled in the dropdown, but a provider switch can strand a prior pick.
-  // Mirrors the server-side clamp in codexApprovalPolicy.
-  useEffect(() => {
-    if (
-      PERMISSION_MODE_INFO[permissionMode].unsupportedBy?.includes(
-        selectedProvider as Provider,
-      )
-    ) {
-      setPermissionMode(DEFAULT_PERMISSION_MODE);
-    }
-  }, [selectedProvider, permissionMode]);
-
   const templateList = Object.entries(templates);
   // Move Dispatcher to the front of the picker so the recommendation is the
   // first option after "None".
@@ -123,10 +112,8 @@ export function CreateAgentPanel() {
     // Explicit user pick — even if it's None, lock out the Dispatcher
     // auto-default for the rest of this panel's lifetime.
     setAutoDefaulted(true);
-    // Adopt the template's default permission mode (if it declares one) so the
-    // dropdown reflects what this template will spawn with; still overridable.
-    const tmplMode = tname ? templates[tname]?.permissionMode : undefined;
-    if (tmplMode) setPermissionMode(tmplMode);
+    // A new template brings its own pins: drop picks made for the old one.
+    setPicked({});
     if (!nameManuallyEdited) {
       if (tname && templates[tname]) {
         const role = templates[tname].role || tname;
@@ -157,7 +144,7 @@ export function CreateAgentPanel() {
         provider: selectedProvider,
         template: selectedTemplate || undefined,
         appendSystemPrompt: tmpl?.systemPrompt,
-        permissionMode,
+        permission: picked[selectedProvider as Provider]?.values,
         envPreset: selectedPreset || undefined,
       });
       // spawnSession's onSuccess switchPanes to the new agent, which solo-
@@ -293,15 +280,27 @@ export function CreateAgentPanel() {
         {/* Permissions */}
         <Section
           title="Permissions"
-          subtitle="How much autonomy this agent has over tool use"
+          subtitle="In the runtime's own values. The one marked default comes from Settings → Runtimes."
           page={page}
         >
-          <PermissionModeSelect
-            value={permissionMode}
-            onChange={setPermissionMode}
-            page={page}
-            provider={selectedProvider as Provider}
-          />
+          {PERMISSION_RUNTIMES.includes(selectedProvider as Provider) && (
+            <PermissionPicker
+              runtime={selectedProvider as Provider}
+              picked={picked[selectedProvider as Provider]}
+              pin={templatePin(
+                selectedTemplate ? templates[selectedTemplate] : null,
+                selectedProvider as Provider,
+              )}
+              templateName={selectedTemplate}
+              defaultPermission={knownDefault(
+                runtimeDefaults,
+                selectedProvider as Provider,
+              )}
+              defaultUnknown={unknownDefaultText(runtimeDefaults)}
+              onPick={(p) => setPicked((cur) => ({ ...cur, [p.runtime]: p }))}
+              page={page}
+            />
+          )}
         </Section>
 
         {/* Model Override Preset */}
@@ -421,6 +420,69 @@ export function CreateAgentPanel() {
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+/** What the agent will run with, and where that value comes from. */
+function PermissionPicker({
+  runtime,
+  picked,
+  pin,
+  templateName,
+  defaultPermission,
+  defaultUnknown,
+  onPick,
+  page,
+}: {
+  runtime: Provider;
+  picked: RuntimePermission | undefined;
+  pin: RuntimePermission | undefined;
+  templateName: string | null;
+  /** Undefined while the operator's default is unknown (loading / failed):
+   *  then nothing is claimed — the server spawns with the REAL default. */
+  defaultPermission: RuntimePermission | undefined;
+  defaultUnknown: string;
+  onPick: (p: RuntimePermission) => void;
+  page: { bg: string; fg: string; border: string; statusFg: string };
+}) {
+  const shown = picked ?? pin ?? defaultPermission;
+  const from = picked
+    ? "chosen here"
+    : pin
+      ? `pinned by the ${templateName} template`
+      : `your ${RUNTIME_NAMES[runtime]} default`;
+  return (
+    <div className="space-y-3" data-testid="permission-picker">
+      <RuntimeAxisFields
+        permission={shown ?? completePermission(runtime)}
+        noSelection={!shown}
+        onChange={onPick}
+        page={page}
+        variant="cards"
+        defaults={defaultPermission}
+        idPrefix={`spawn-${runtime}`}
+      />
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span style={{ color: page.statusFg }}>Will run as</span>
+        {shown ? (
+          <>
+            <PermissionChip permission={shown} page={page} />
+            <span className="text-[10px]" style={{ color: page.statusFg }}>
+              {from}
+            </span>
+          </>
+        ) : (
+          <span data-testid="default-unknown" style={{ color: page.fg }}>
+            your {RUNTIME_NAMES[runtime]} default ({defaultUnknown})
+          </span>
+        )}
+      </div>
+      {shown && (
+        <div className="max-w-xl">
+          <PermissionNotes permission={shown} page={page} />
+        </div>
+      )}
     </div>
   );
 }

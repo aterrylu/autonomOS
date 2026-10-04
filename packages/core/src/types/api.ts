@@ -83,6 +83,9 @@ export interface AgentTreeNode {
   status: AgentStatus;
   provider: Provider;
   permissionMode: PermissionMode;
+  /** The agent's permission in its runtime's own values (ADR-115) — what the
+   *  Org Chart inspector shows. Absent from an older server. */
+  permission?: RuntimePermission;
   children: AgentTreeNode[];
 }
 
@@ -128,6 +131,16 @@ export interface MaskedSettings {
    * including agent-initiated ones.
    */
   runtimeDefaults: Record<Provider, RuntimePermission>;
+  /** Recent changes to those defaults, newest last — through the dashboard or
+   *  out-of-band (settings.json edited directly). ADR-138. */
+  runtimeDefaultsLog?: Array<{
+    at: number;
+    runtime: Provider;
+    from: string;
+    to: string;
+    neverAsks: boolean;
+    source: "api" | "out-of-band";
+  }>;
 }
 
 export type ChannelStatus = "ok" | "disabled" | "not-installed" | "unknown";

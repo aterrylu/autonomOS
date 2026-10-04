@@ -47,6 +47,7 @@ import {
   pushSystemNotification,
   retractSystemNotification,
 } from "../routes/hooks.js";
+import { noteRuntimeDefaults } from "../runtimeDefaultsWatch.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
 import {
   assertControlPlaneReady,
@@ -971,6 +972,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     params.templatePermissions,
     params.templatePermissionMode,
   );
+  // Falling back to the operator's default is where a changed default takes
+  // effect — report an out-of-band change before any agent runs on it.
+  if (explicitPermission === undefined && templatePermission === undefined)
+    noteRuntimeDefaults();
   const newRecordPermission =
     explicitPermission ??
     templatePermission ??

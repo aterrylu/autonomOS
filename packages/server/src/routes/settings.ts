@@ -1,14 +1,20 @@
 import {
   type MaskedSettings,
+  neverAsks,
   PERMISSION_RUNTIMES,
   type Provider,
   parseRuntimePermission,
   type RuntimePermission,
+  widerAxes,
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { isValidChannelId } from "../channels.js";
 import { extraPresetKeyProblem } from "../envPresets.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
+import {
+  noteRuntimeDefaults,
+  runtimeDefaultsLog,
+} from "../runtimeDefaultsWatch.js";
 import {
   type AppSettings,
   getSettings,
@@ -43,11 +49,16 @@ function maskSettings(settings: AppSettings): MaskedSettings {
         runtimeDefaultPermission(r, settings),
       ]),
     ) as Record<Provider, RuntimePermission>,
+    runtimeDefaultsLog: runtimeDefaultsLog(settings),
   };
 }
 
 settingsRouter.get("/", (c) => {
-  return c.json(maskSettings(getSettings()));
+  const settings = getSettings();
+  // Reading the defaults is where an out-of-band edit (settings.json changed
+  // directly) gets noticed and reported (ADR-138).
+  noteRuntimeDefaults(settings);
+  return c.json(maskSettings(settings));
 });
 
 settingsRouter.put("/", async (c) => {
@@ -134,6 +145,10 @@ settingsRouter.put("/", async (c) => {
   }
 
   if (body.runtimeDefaults !== undefined) {
+    // Report anything changed out-of-band BEFORE applying this write, so the
+    // write's own report says only what the dashboard changed.
+    const current = getSettings();
+    noteRuntimeDefaults(current);
     // Merge per runtime: naming one runtime leaves the others' defaults alone;
     // `null` resets a runtime to the built-in default. Stored as the COMPLETE
     // canonical values, so a later table default change can't shift it.
@@ -150,6 +165,32 @@ settingsRouter.put("/", async (c) => {
       if (!parsed.ok) return c.json({ error: parsed.error }, 400);
       next[runtime] = { ...parsed.permission.values };
     }
+    // A default under which new agents NEVER ask before acting must be
+    // confirmed explicitly (the dashboard's confirm dialog sends it) whenever
+    // the change widens anything. Re-saving it, or narrowing it, doesn't.
+    const widened = (Object.keys(body.runtimeDefaults) as Provider[]).filter(
+      (r) => {
+        const after = runtimeDefaultPermission(r, {
+          ...current,
+          runtimeDefaults: next,
+        });
+        const before = runtimeDefaultPermission(r, current);
+        // Anything that ends in "never asks" and lets agents do MORE than
+        // before — the crossing itself, or widening an already never-asks
+        // default (e.g. never · read-only → never · danger-full-access).
+        return neverAsks(after) && widerAxes(before, after).length > 0;
+      },
+    );
+    if (widened.length > 0 && body.confirmNeverAsks !== true) {
+      return c.json(
+        {
+          error: `The new default for ${widened.join(", ")} never asks before acting. Confirm it (confirmNeverAsks: true) to save.`,
+          code: "CONFIRM_NEVER_ASKS",
+          runtimes: widened,
+        },
+        400,
+      );
+    }
     partial.runtimeDefaults = next;
   }
 
@@ -161,6 +202,11 @@ settingsRouter.put("/", async (c) => {
     console.error("Failed to save settings:", message);
     return c.json({ error: "Failed to save settings" }, 500);
   }
+
+  // After the save, outside its try: the file is written either way, and the
+  // watcher never throws (it reports its own failures).
+  if (partial.runtimeDefaults !== undefined)
+    noteRuntimeDefaults(updated, "api");
 
   // Invalidate usage cache so a credential change takes effect immediately.
   if (
