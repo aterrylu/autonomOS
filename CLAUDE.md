@@ -175,7 +175,7 @@ All app-level chords live in the registry at `packages/dashboard/src/shortcuts/r
 ## Key Conventions
 
 ### Decision Records (CRITICAL)
-Every architectural decision is its own file in [`docs/decisions/`](docs/decisions/README.md): `ADR-NNN-<slug>.md`, listed in the generated index `docs/decisions/README.md`. Start one with `make adr NEW="Short title"`. It takes the next free number (checking origin/main AND open PRs) and writes a template. Don't append to `docs/DECISIONS.md` (it's a pointer stub now, and CI rejects entries there), and don't edit the index (a bot PR regenerates it after merge). Each entry must include:
+Every architectural decision is its own file in [`docs/decisions/`](docs/decisions/README.md): `ADR-NNN-<slug>.md`, listed in the generated index `docs/decisions/README.md`. Start one with `make adr NEW="Short title"`. It takes the next free number (checking origin/main AND open PRs) and writes a template. Don't append to `docs/DECISIONS.md` (it's a pointer stub now, and CI rejects entries there), and don't edit the index (a bot PR regenerates it hourly, ADR-146). Each entry must include:
 - **Date** (YYYY-MM-DD) and **Decided by** (human vs agent)
 - **Context**: why this decision was needed
 - **Decision**: what was chosen

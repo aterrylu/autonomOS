@@ -1,12 +1,17 @@
 name: Decisions index
 
-# Regenerates docs/decisions/README.md (the ADR index) after pushes to main.
+# Regenerates docs/decisions/README.md (the ADR index) on an HOURLY schedule.
+#
+# Hourly, not per push (ADR-146): main lands a commit every 5-15 minutes and CI
+# takes ~25, so a bot PR after EVERY merge doubled the merge traffic and kept
+# knocking other approved PRs behind main. One rolling PR per hour, opened only
+# when main's index is actually stale, carries every ADR merged in that hour.
 #
 # PRs never edit the index. Every ADR-bearing PR would add a row at the same
 # spot, so the index would become the shared conflict hotspot that the
 # one-file-per-ADR layout exists to remove. Instead, this job rebuilds it from
 # main and delivers it as ONE rolling bot PR ("docs(decisions): regenerate
-# index"), updated on each push while main's index is stale.
+# index"), updated on each hourly run while main's index is stale.
 #
 # Why a PR and not a direct push: the "main: merge requirements (no bypass)"
 # ruleset has no bypass actors, so nothing (a bot included) can push to main.
@@ -23,16 +28,18 @@ name: Decisions index
 # secret the job falls back to GITHUB_TOKEN; that PR has to be closed and
 # reopened to start CI, and a human must approve it.
 #
-# Loop safety: merging the bot PR pushes a commit whose subject starts with
-# "docs(decisions): regenerate index", which the job skips; any later run finds
-# the index fresh and exits without pushing.
+# Loop safety: a scheduled run can't be triggered by the bot's own merge, and
+# any run after that merge finds the index fresh and exits without pushing. The
+# job's head-commit guard is kept for workflow_dispatch runs and is a no-op on a
+# schedule (no head commit).
 #
 # Concurrency is on the JOB, not the workflow: a skipped job (the bot's own merge)
 # never joins the group, so it can't cancel a real regeneration queued behind it.
 
 on:
-  push:
-    branches: [main]
+  schedule:
+    # :17 past each hour (off the top-of-hour rush); GitHub may delay a few minutes.
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -78,7 +85,7 @@ jobs:
 
             This PR changes exactly one file, `docs/decisions/README.md`: the ADR index, rebuilt by `scripts/decisions.ts index` from the `docs/decisions/ADR-*.md` files already on main. It adds, removes or updates index rows to match those files. No ADR file, code or config changes.
 
-            Opened by the decisions-index workflow after a push to main. PRs don't edit the index (that would recreate the shared-file conflict the per-file layout removed), so it's regenerated here. Auto-merge (squash) is on; it merges once approved and green. Reproduce locally: `make adr-index`.
+            Opened by the decisions-index workflow's hourly run. PRs don't edit the index (that would recreate the shared-file conflict the per-file layout removed), so it's regenerated here. Auto-merge (squash) is on; it merges once approved and green. Reproduce locally: `make adr-index`.
         run: |
           set -euo pipefail
           if [ "$HAS_PAT" != "true" ]; then
