@@ -8,12 +8,16 @@
 
 import {
   type AgentTreeNode,
+  completePermission,
   type ExitReason,
+  formatPermission,
   hierarchyOf,
   isExitReason,
+  neverAsks,
   permissionModeFromStored,
   toAgentTreeNode,
   type UUID,
+  widerAxes,
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
@@ -64,6 +68,7 @@ import {
   removeHandoffItem,
 } from "../handoffQueue.js";
 import { HttpError, httpErrorResponse } from "../httpError.js";
+import { getProvider } from "../providers/index.js";
 import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
 import { usageQueue } from "../usageQueue.js";
@@ -667,8 +672,67 @@ agentsRouter.post("/:id/restart", async (c) => {
   const param = c.req.param("id");
   const agent = resolveAgent(param) ?? getAgentByProviderSessionId(param);
   if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+
+  // Optional body (the Permission… action): restart with a new permission, in
+  // the runtime's own values, and/or a fresh conversation. No body = respawn
+  // exactly as recorded, as before.
+  let body: {
+    permission?: unknown;
+    freshConversation?: unknown;
+    confirmNeverAsks?: unknown;
+  } = {};
+  const raw = await c.req.text();
+  if (raw.trim()) {
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+  }
+  const parsed = parsePermissionInput(agent.provider, body.permission);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const permission = parsed.permission;
+  const freshConversation = body.freshConversation === true;
+  if (permission) {
+    const current = agent.permission ?? completePermission(agent.provider);
+    // Same rule as the defaults (ADR-138): widening an agent to a value that
+    // never asks needs an explicit confirm — refused BEFORE anything stops.
+    if (
+      neverAsks(permission) &&
+      widerAxes(current, permission).length > 0 &&
+      body.confirmNeverAsks !== true
+    ) {
+      return c.json(
+        {
+          error: `${formatPermission(permission)} never asks before acting. Confirm it (confirmNeverAsks: true) to restart ${agent.name} with it.`,
+          code: "CONFIRM_NEVER_ASKS",
+        },
+        400,
+      );
+    }
+    // A resumed Codex conversation keeps the policy it was created with
+    // (ADR-104): restarting into a change that can't apply would just say "not
+    // applied" afterwards. Refuse up front and let the caller choose a fresh
+    // conversation explicitly.
+    const provider = getProvider(agent.provider);
+    if (
+      !freshConversation &&
+      agent.providerThreadId &&
+      provider.resumeCannotApplyChange?.(current, permission)
+    ) {
+      return c.json(
+        {
+          error: `A resumed ${provider.displayName} conversation keeps the permissions it started with, so ${formatPermission(permission)} can't apply to ${agent.name}'s current conversation. Restart it with a fresh conversation to use it.`,
+          code: "PERMISSION_NEEDS_FRESH_CONVERSATION",
+        },
+        409,
+      );
+    }
+  }
   try {
-    return c.json(await restartAgent(agent.id));
+    return c.json(
+      await restartAgent(agent.id, { permission, freshConversation }),
+    );
   } catch (err) {
     if (err instanceof ControlPlaneNotReadyError) throw err;
     const message = err instanceof Error ? err.message : "Unknown error";
