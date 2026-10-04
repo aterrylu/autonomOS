@@ -12,6 +12,7 @@ import {
   hierarchyOf,
   isExitReason,
   permissionModeFromStored,
+  toAgentTreeNode,
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
@@ -260,17 +261,9 @@ agentsRouter.get("/tree", (c) => {
   const includeExited = c.req.query("includeExited") === "true";
   const tree = buildAgentTree<AgentTreeNode>({
     includeExited,
-    mapNode: (a) => ({
-      id: a.id,
-      claudeSessionId: a.id,
-      name: a.name,
-      template: a.template,
-      project: a.project,
-      status: a.status,
-      provider: a.provider,
-      permissionMode: a.permissionMode,
-      permission: a.permission,
-    }),
+    // The SAME mapper the dashboard's push bridge uses (buildAgentTreeNodes),
+    // so the polled and pushed trees can't drift apart field by field.
+    mapNode: toAgentTreeNode,
   });
   return c.json(tree);
 });
