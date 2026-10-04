@@ -247,6 +247,18 @@ export function pushSystemNotification(
   return id;
 }
 
+/** The notification key for a server-level notice (not about one agent). */
+export const SERVER_NOTICE_KEY = "autonomos:server";
+
+/**
+ * A server-level warning — about autonomOS itself, not one agent (e.g. a
+ * per-runtime default permission changed). Same panel and unread count as an
+ * agent's SystemWarning; the feed names it "autonomOS".
+ */
+export function pushServerNotification(message: string): string {
+  return pushSystemNotification(SERVER_NOTICE_KEY, message);
+}
+
 /** Withdraw a previously pushed SystemWarning. No-op if it already scrolled
  *  out of the 50-item cap, was cleared, or the id is unknown. The event guard
  *  makes the "retractable = SystemWarning" contract self-enforcing — if a
@@ -720,7 +732,10 @@ const notificationFeedHandler = (c: Context) => {
   let totalUnread = 0;
 
   for (const [sessionId, items] of notifications) {
-    const name = sessionNames.get(sessionId) ?? sessionId.slice(0, 8);
+    const name =
+      sessionId === SERVER_NOTICE_KEY
+        ? "autonomOS"
+        : (sessionNames.get(sessionId) ?? sessionId.slice(0, 8));
     for (const n of items) {
       // Show every USER-FACING notification — agent messages (SendUserMessage /
       // codex AgentMessage), SystemWarnings, Notifications, and PermissionRequests

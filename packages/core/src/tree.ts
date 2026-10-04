@@ -97,6 +97,7 @@ export function toAgentTreeNode(a: Agent): Omit<AgentTreeNode, "children"> {
     status: a.status,
     provider: a.provider,
     permissionMode: a.permissionMode,
+    permission: a.permission,
   };
 }
 

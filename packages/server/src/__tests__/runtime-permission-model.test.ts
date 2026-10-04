@@ -15,11 +15,14 @@ import {
   formatPermission,
   legacyModeFor,
   legacyModeWasClamped,
+  neverAsks,
   PERMISSION_MODES,
+  PERMISSIVENESS,
   type Provider,
   parseRuntimePermission,
   permissionFromLegacyMode,
   RUNTIME_PERMISSIONS,
+  widerAxes,
 } from "@autonomos/core";
 
 const RUNTIMES: Provider[] = ["claude-code", "codex", "gemini-cli"];
@@ -174,5 +177,66 @@ describe("formatPermission — the canonical display string", () => {
     const back = parseRuntimePermission("codex", formatPermission(p));
     assert.ok(back.ok);
     assert.deepEqual(back.permission, p);
+  });
+});
+
+describe("permissiveness: neverAsks and widerAxes (ADR-138)", () => {
+  it("neverAsks is exactly the old 'bypass' tier on every runtime", () => {
+    assert.equal(
+      neverAsks(
+        completePermission("claude-code", {
+          "permission-mode": "bypassPermissions",
+        }),
+      ),
+      true,
+    );
+    assert.equal(
+      neverAsks(completePermission("codex", { approval_policy: "never" })),
+      true,
+    );
+    assert.equal(
+      neverAsks(completePermission("gemini-cli", { "approval-mode": "yolo" })),
+      true,
+    );
+    assert.equal(
+      neverAsks(
+        completePermission("claude-code", { "permission-mode": "auto" }),
+      ),
+      false,
+    );
+  });
+  it("widerAxes names exactly what a switch would widen — and nothing when it narrows", () => {
+    const cx = (v: Record<string, string>) => completePermission("codex", v);
+    assert.deepEqual(
+      widerAxes(
+        cx({}),
+        cx({ approval_policy: "never", sandbox_mode: "read-only" }),
+      ),
+      [{ axis: "approval_policy", from: "on-request", to: "never" }],
+    );
+    assert.deepEqual(widerAxes(cx({ sandbox_mode: "read-only" }), cx({})), [
+      { axis: "sandbox_mode", from: "read-only", to: "danger-full-access" },
+    ]);
+    assert.deepEqual(widerAxes(cx({ approval_policy: "never" }), cx({})), []);
+    const cc = (m: string) =>
+      completePermission("claude-code", { "permission-mode": m });
+    assert.equal(
+      widerAxes(cc("dontAsk"), cc("manual")).length,
+      1,
+      "manual asks, dontAsk denies: manual is wider",
+    );
+    assert.equal(widerAxes(cc("auto"), cc("acceptEdits")).length, 0);
+  });
+  it("every value in the table has a rank (a new CLI value can't silently rank as 'least')", () => {
+    for (const r of RUNTIMES)
+      for (const axis of RUNTIME_PERMISSIONS[r].axes) {
+        if (axis.perTurn) continue;
+        const ranks = PERMISSIVENESS[r][axis.key] ?? [];
+        for (const v of axis.values)
+          assert.ok(
+            ranks.includes(v.value),
+            `${r} ${axis.key}=${v.value} has no rank`,
+          );
+      }
   });
 });
