@@ -25,7 +25,7 @@
 //
 // The index (docs/decisions/README.md) is NOT maintained by PRs — that would
 // recreate the shared hotspot this layout exists to remove. The
-// decisions-index workflow regenerates it hourly from main (ADR-146).
+// decisions-index workflow regenerates it hourly from main (ADR-147).
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";

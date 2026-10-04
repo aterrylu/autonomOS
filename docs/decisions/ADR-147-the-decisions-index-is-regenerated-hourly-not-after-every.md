@@ -1,4 +1,4 @@
-## ADR-146: The decisions index is regenerated hourly, not after every merge
+## ADR-147: The decisions index is regenerated hourly, not after every merge
 
 - **Date:** 2026-10-04
 - **Decided by:** Terry. He approved batching the index bot as part of the merge-throughput fix, relayed by TeamLead. Built by the release engineer agent (ReleaseRollout).

@@ -2,7 +2,7 @@ name: Decisions index
 
 # Regenerates docs/decisions/README.md (the ADR index) on an HOURLY schedule.
 #
-# Hourly, not per push (ADR-146): main lands a commit every 5-15 minutes and CI
+# Hourly, not per push (ADR-147): main lands a commit every 5-15 minutes and CI
 # takes ~25, so a bot PR after EVERY merge doubled the merge traffic and kept
 # knocking other approved PRs behind main. One rolling PR per hour, opened only
 # when main's index is actually stale, carries every ADR merged in that hour.
