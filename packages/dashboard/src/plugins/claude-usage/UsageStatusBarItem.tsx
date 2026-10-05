@@ -627,7 +627,12 @@ export function UsageStatusBarItem() {
   ]
     .flatMap(({ window, label }) => (window ? [{ window, label }] : []))
     .sort((a, b) => b.window.utilization - a.window.utilization)[0];
-  const showModel = topModel && topModel.window.utilization > headlineMax;
+  // With no headline window at all (a scoped-only plan, e.g. Fable-only), the
+  // named window IS the headline: show it even at 0%, or a fresh week renders
+  // a bare icon (codexbar #4126).
+  const noHeadline = !data.fiveHour && !data.sevenDay;
+  const showModel =
+    topModel && (noHeadline || topModel.window.utilization > headlineMax);
 
   // Stale marker: a poll failed (`error`) or the server is re-serving the last
   // successful reading (`data.error` with windows). Numbers stay visible.
