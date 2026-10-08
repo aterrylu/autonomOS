@@ -131,6 +131,7 @@ export function keepListening(o: {
   let waitingLogged = false;
   let inUse = false;
   let lastInUseWarn = Number.NEGATIVE_INFINITY;
+  let selfChecked = false;
   let stopped = false;
   let timer: unknown;
 
@@ -150,7 +151,23 @@ export function keepListening(o: {
         // device that opens it reaches that process, possibly a fake sign-in
         // page collecting the token (SecurityAudit, #480). Loud, repeated at
         // most once a minute while it lasts, with the owner when known.
-        const owner = o.ownerOf?.(o.host, o.port);
+        // The owner lookup (lsof) is synchronous and can take seconds, so it
+        // runs only when its answer is used: once on the FIRST collision (a
+        // self-collision ends for good) and when the throttled warning fires,
+        // never on every retry (nox, #480).
+        let owner: number | undefined;
+        let looked = false;
+        const lookup = () => {
+          if (!looked) {
+            looked = true;
+            owner = o.ownerOf?.(o.host, o.port);
+          }
+          return owner;
+        };
+        if (!selfChecked) {
+          selfChecked = true;
+          lookup();
+        }
         if (owner !== undefined && owner === (o.selfPid ?? process.pid)) {
           // Not a squatter: another of autonomOS's OWN --host entries already
           // covers this address (localhost = 127.0.0.1, a duplicate, or a
@@ -164,6 +181,7 @@ export function keepListening(o: {
         if (t - lastInUseWarn >= IN_USE_REPEAT_MS) {
           lastInUseWarn = t;
           inUse = true;
+          lookup();
           warn(
             `[bind] ⚠ SECURITY: another process${owner ? ` (pid ${owner})` : ""} is serving ${o.host}:${o.port}, so devices that open that address may reach IT, not autonomOS, and could be shown a fake sign-in page. Stop it; autonomOS keeps retrying every ${Math.round(interval / 1000)}s.`,
           );

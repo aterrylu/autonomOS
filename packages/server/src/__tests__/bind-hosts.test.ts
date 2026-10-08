@@ -152,6 +152,7 @@ describe("keepListening", () => {
     const logs: string[] = [];
     const warns: string[] = [];
     let clock = 0;
+    let lookups = 0;
     const t = instantTimers();
     keepListening({
       server,
@@ -160,7 +161,10 @@ describe("keepListening", () => {
       log: (l) => logs.push(l),
       warn: (l) => warns.push(l),
       now: () => clock,
-      ownerOf: () => 4242,
+      ownerOf: () => {
+        lookups += 1;
+        return 4242;
+      },
       setTimer: (fn) => {
         clock += 30_000; // each retry 30s apart
         return t.setTimer(fn);
@@ -184,6 +188,9 @@ describe("keepListening", () => {
       !logs.some((l) => /Tailscale still starting/.test(l)),
       "not mistaken for 'not up yet'",
     );
+    // lsof is synchronous: looked up for the 2 warnings only, not the
+    // in-between retry (nox, #480).
+    assert.equal(lookups, 2);
   });
 
   it("a self-collision (another of our own --host entries) is said plainly, not as a squatter, and not retried", async () => {
