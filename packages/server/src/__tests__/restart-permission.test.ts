@@ -13,7 +13,7 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, describe, it } from "node:test";
@@ -24,9 +24,13 @@ import {
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
+import { isolateHome } from "./helpers/isolate-home.js";
 
 // UNCONDITIONAL: workers inherit AUTONOMOS_CONFIG_DIR=<real dir> (#350).
 process.env.AUTONOMOS_CONFIG_DIR = `/tmp/aos-restart-perm-${randomUUID()}`;
+// The fake Claude Code inherits prepareSpawn, which pre-trusts the cwd in
+// .claude.json: under the real HOME every run wrote a trust key there.
+const isolated = isolateHome("aos-rp");
 
 const { setServerPort, setAuthToken, setInternalSocketPath } = await import(
   "../serverState.js"
@@ -114,6 +118,7 @@ afterEach(() => {
   for (const id of ids.splice(0)) killAttachment(id);
 });
 after(() => {
+  isolated.restore();
   _setProviderForTesting("claude-code", null);
   _setProviderForTesting("codex", null);
 });
@@ -212,6 +217,19 @@ describe("restart with a new permission", { timeout: 120_000 }, () => {
       assert.equal(res.status, 400, `${JSON.stringify(body)} → ${res.status}`);
     }
     assert.equal(getAgent(id)?.status, "exited", "nothing restarted");
+  });
+
+  it("spawns pre-trust the cwd in the ISOLATED .claude.json, never the real one", () => {
+    const keys = [cwd, realpathSync(cwd)];
+    assert.ok(
+      keys.some((k) => isolated.fakeTrustKeys().has(k)),
+      "precondition: a spawn above pre-trusted the cwd",
+    );
+    for (const k of keys)
+      assert.ok(
+        !isolated.realTrustKeys().has(k),
+        `leaked into the real file: ${k}`,
+      );
   });
 
   it("no body: a plain restart respawns exactly as recorded", async () => {
