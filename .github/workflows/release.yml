@@ -63,6 +63,58 @@ jobs:
             exit 1
           fi
 
+  # Main's CI must be GREEN at the tagged commit (ADR-149). PRs no longer have
+  # to be up to date with main, so a squash can land a combination no PR run
+  # tested; main's own push runs test it, and a release must not ship until
+  # they pass. The tag is created right after the version PR merges, while that
+  # commit's runs are still going, so this waits (bounded) for them.
+  main-ci:
+    name: Main CI is green at the tag
+    if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for main's push runs on this commit, and require success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="$GITHUB_SHA"
+          deadline=$((SECONDS + 3600))      # a run must FINISH within an hour
+          appear_by=$((SECONDS + 900))      # and START within 15 minutes
+          for wf in test.yml e2e.yml test-install.yml; do
+            while :; do
+              runs=$(gh run list -R "$GITHUB_REPOSITORY" --workflow "$wf" --event push \
+                --branch main --commit "$SHA" --json databaseId,status,conclusion,url --limit 5)
+              if [ "$(jq length <<<"$runs")" = 0 ]; then
+                if [ "$SECONDS" -gt "$appear_by" ]; then
+                  echo "::error::No $wf run on main for $SHA. Releases need main's CI to have run (and passed) on the tagged commit; refusing to publish."
+                  exit 1
+                fi
+              else
+                status=$(jq -r '.[0].status' <<<"$runs")
+                conclusion=$(jq -r '.[0].conclusion' <<<"$runs")
+                url=$(jq -r '.[0].url' <<<"$runs")
+                if [ "$status" = completed ]; then
+                  if [ "$conclusion" = success ]; then
+                    echo "✓ $wf passed on main at $SHA ($url)"
+                    break
+                  fi
+                  echo "::error::$wf concluded '$conclusion' on main at $SHA ($url). Fix main (or re-run a flaky job), then re-run this release; refusing to publish."
+                  exit 1
+                fi
+              fi
+              if [ "$SECONDS" -gt "$deadline" ]; then
+                echo "::error::Timed out waiting for $wf on main at $SHA; refusing to publish. Re-run this job once main's CI finishes."
+                exit 1
+              fi
+              sleep 30
+            done
+          done
+
   # ── Publish ──────────────────────────────────────────────────────────────
   # Skipped entirely on a dry-run dispatch — the server-tarball build above
   # still runs, so a dry-run proves the build pipeline without creating a
@@ -70,7 +122,7 @@ jobs:
   # dispatch).
   release:
     name: Publish release
-    needs: [build, on-main]
+    needs: [build, on-main, main-ci]
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:

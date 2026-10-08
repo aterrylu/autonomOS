@@ -3,6 +3,11 @@ name: Check
 on:
   pull_request:
     branches: [main]
+  # Main's own merge commits run too (ADR-149): with "up to date" no longer
+  # required, a squash can land a combination no PR run tested, and the
+  # release gate (release.yml main-ci) requires these to be green at the tag.
+  push:
+    branches: [main]
 
 jobs:
   check:
