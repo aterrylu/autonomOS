@@ -232,6 +232,33 @@ describe("UsageStatusBarItem — windows (adjacent regression)", () => {
     expect(container.textContent).toContain("Fable 7d");
     expect(container.textContent).toContain("88%");
   });
+
+  // Regression guard (codexbar #4126/#4159): a plan whose ONLY window is a
+  // model-scoped weekly (e.g. Fable-only) must show it even at 0% — a fresh
+  // week rendered a bare icon: no number, and no "n/a" either, because
+  // windows exist so no diagnosis fires.
+  it("a scoped-only plan shows its window on the bar, even at 0%", async () => {
+    for (const utilization of [0, 6]) {
+      stub({
+        ...base,
+        credentialSource: "oauth",
+        extraWindows: [
+          {
+            id: "claude-weekly-scoped-fable",
+            label: "Fable 7d",
+            span: "7d",
+            utilization,
+            resetsAt: "2026-10-12T22:00:00Z",
+          },
+        ],
+      });
+      const { container, unmount } = await renderSettled();
+      const text = container.textContent ?? "";
+      expect(text, `at ${utilization}%`).toContain("Fable 7d");
+      expect(text, `at ${utilization}%`).toContain(`${utilization}%`);
+      unmount();
+    }
+  });
 });
 
 describe("UsageStatusBarItem — Enterprise spend item (text | % | bar)", () => {
