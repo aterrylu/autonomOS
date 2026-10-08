@@ -56,7 +56,7 @@ interface Persisted {
   known: string[];
   /** The last counted failure: where from and when. Shown to the operator
    *  (behind auth) so they can tell a scanner from their own new phone. */
-  lastFailure?: { address: string; at: number };
+  lastFailure?: { address: string; at: number; login?: string };
   /** The Tailscale login seen with a known address (tailscale serve only):
    *  operator context, never used to decide anything. */
   knownLogins?: Record<string, string>;
@@ -71,6 +71,8 @@ export type LockState = {
   /** The last counted failure's address and time, or null. */
   lastFailureFrom: string | null;
   lastFailureAt: number | null;
+  /** Its Tailscale login, when it came through tailscale serve (ADR-140). */
+  lastFailureLogin: string | null;
 };
 
 /** Where the lock persists, inside the config dir (0600). */
@@ -152,7 +154,11 @@ export class NewDeviceLock {
     if (!this.opts.enabled || this.isKnown(address)) return;
     if (this.state.lockedAt !== null) return; // already locked: refused anyway
     this.state.failures += 1;
-    this.state.lastFailure = { address, at: (this.opts.now ?? Date.now)() };
+    this.state.lastFailure = {
+      address,
+      at: (this.opts.now ?? Date.now)(),
+      ...(login ? { login } : {}),
+    };
     if (this.state.failures >= this.limit) {
       this.state.lockedAt = (this.opts.now ?? Date.now)();
       (this.opts.log ?? console.warn)(
@@ -178,6 +184,7 @@ export class NewDeviceLock {
       lockedAt: this.state.lockedAt,
       lastFailureFrom: this.state.lastFailure?.address ?? null,
       lastFailureAt: this.state.lastFailure?.at ?? null,
+      lastFailureLogin: this.state.lastFailure?.login ?? null,
     };
   }
 
@@ -233,7 +240,13 @@ export function loadStateDetailed(path: string): {
           raw.lastFailure &&
           typeof raw.lastFailure.address === "string" &&
           typeof raw.lastFailure.at === "number"
-            ? { address: raw.lastFailure.address, at: raw.lastFailure.at }
+            ? {
+                address: raw.lastFailure.address,
+                at: raw.lastFailure.at,
+                ...(typeof raw.lastFailure.login === "string"
+                  ? { login: raw.lastFailure.login }
+                  : {}),
+              }
             : undefined,
         knownLogins:
           raw.knownLogins && typeof raw.knownLogins === "object"
