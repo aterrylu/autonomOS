@@ -1,4 +1,4 @@
-.PHONY: dev dev-lan prod stop restart logs down check _check load-test fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import verifier
+.PHONY: dev dev-lan prod stop restart logs down check _check load-test bundle-budget fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import verifier
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -239,6 +239,12 @@ load-test:
 # `make check` fails when either is stale — commit both files together.
 verifier:
 	$(TSX) scripts/build-verifier.ts
+
+# Dashboard bundle-size ratchet (also a CI step): build, then compare the
+# gzipped JS/CSS against packages/dashboard/perf-budget.json.
+bundle-budget:
+	@bun --filter @autonomos/dashboard build >/dev/null
+	$(TSX) scripts/check-bundle-budget.ts
 
 # ── adr: architectural decision records, one file each (docs/decisions/) ───────
 # `make adr NEW="Title"` allocates the next free number across origin/main AND open
