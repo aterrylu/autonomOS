@@ -69,6 +69,7 @@ export function expectedVersionAfterSwap(
  */
 export function syncSupervisorUnit(opts: { restartFollows: boolean }): {
   reloadUnit: boolean;
+  notice?: string;
 } {
   const svc = findInstalledService();
   if (!svc) return { reloadUnit: false };
@@ -82,7 +83,12 @@ export function reportUnitSync(
   platform: InstalledService["platform"],
   opts: { restartFollows: boolean },
   out: Pick<Console, "log" | "warn"> = console,
-): { reloadUnit: boolean } {
+): {
+  reloadUnit: boolean;
+  /** One line for the dashboard's update record: a dashboard-triggered
+   *  update runs as a job whose console only reaches a log file. */
+  notice?: string;
+} {
   switch (outcome.kind) {
     case "in-sync":
       return { reloadUnit: false };
@@ -92,11 +98,14 @@ export function reportUnitSync(
           "(install-time program path, port/host, HOME/PATH and the " +
           "AUTONOMOS_TOKEN/HOST/CONFIG_DIR settings preserved).",
       );
+      const notice = outcome.droppedEnvKeys?.length
+        ? `The service unit's ${outcome.droppedEnvKeys.join(", ")} setting(s) weren't carried over (autonomOS doesn't manage them); the previous unit is saved at ${outcome.backupFile}.`
+        : undefined;
       if (outcome.droppedEnvKeys?.length) {
         // ADR-089: never drop an operator's override silently. Names only —
         // values may be secrets.
         out.warn(
-          `  ⚠️  The service unit set environment variables autonomOS doesn't manage: ${outcome.droppedEnvKeys.join(", ")}.\n` +
+          `  ⚠️  The service unit had environment settings autonomOS doesn't manage: ${outcome.droppedEnvKeys.join(", ")}.\n` +
             "  They are NOT in the updated unit. The previous unit is saved at\n" +
             `  ${outcome.backupFile} — copy a line back from there if you still ` +
             "need it (the next template change will drop it and warn again).",
@@ -115,7 +124,7 @@ export function reportUnitSync(
             "a restart for a unit-file change alone.",
         );
       }
-      return { reloadUnit: true };
+      return { reloadUnit: true, ...(notice && { notice }) };
     }
     case "skipped":
       out.warn(
@@ -124,7 +133,10 @@ export function reportUnitSync(
           "manually with: autonomos install-service --force (keep any " +
           "--port/--host baked into the current file).",
       );
-      return { reloadUnit: false };
+      return {
+        reloadUnit: false,
+        notice: `The service unit wasn't updated to the current template (${outcome.reason}); the update continued under the existing unit.`,
+      };
   }
 }
 

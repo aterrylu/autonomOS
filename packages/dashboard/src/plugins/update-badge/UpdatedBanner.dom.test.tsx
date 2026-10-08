@@ -155,6 +155,28 @@ describe("UpdatedBanner", () => {
     expect(ok.textContent).not.toContain("signed build record");
   });
 
+  // A dashboard-started update's console goes to a log file: settings the
+  // service-unit re-render dropped must reach the operator HERE (ADR-089).
+  it("settings the unit re-render dropped make it amber, named, from the flag and the record", async () => {
+    const notice =
+      "The service unit's HTTP_PROXY setting(s) weren't carried over (autonomOS doesn't manage them); the previous unit is saved at /u/autonomos.service.before-sync-x.";
+    status = doneRecord({
+      verification: { checkedAt: "x", checked: 1, problems: [] },
+      unitNotice: notice,
+    });
+    const banner = await renderWith({
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+      unitNotice: notice,
+    });
+    expect(banner.getAttribute("data-tone")).toBe("attention");
+    expect(banner.textContent).toContain(notice);
+    await vi.waitFor(() =>
+      expect(banner.textContent).toContain("Your agent reopened."),
+    );
+    expect(banner.getAttribute("data-tone")).toBe("attention");
+  });
+
   it("an agent check that never reports back is amber, not an all-clear", async () => {
     verifyTiming.maxWaitMs = 40;
     status = doneRecord(); // snapshot taken, verification never written

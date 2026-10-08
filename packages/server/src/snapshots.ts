@@ -216,16 +216,8 @@ export function snapshotForVersion(
   );
 }
 
-function isSymlink(path: string): boolean {
-  try {
-    return lstatSync(path).isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
 /**
- * The first node under `path` that is not a plain file or directory — a
+ * The first node at or under `join(root, rel)` that is not a plain file or directory — a
  * symlink, device, FIFO or socket — as a path relative to `root`, or null.
  * lstat, never stat: a symlink is judged as itself, not as what it points at.
  */
@@ -283,11 +275,12 @@ export function restoreSnapshot(
     entries: (raw.entries ?? []).filter((e) => allowed.has(e)),
   };
   for (const e of manifest.entries) {
-    if (!existsSync(join(src, e)) && !isSymlink(join(src, e))) continue;
+    // lstat, not existsSync: a dangling symlink must still be judged.
+    if (!lstatSync(join(src, e), { throwIfNoEntry: false })) continue;
     const bad = firstNonPlainNode(src, e);
     if (bad) {
       throw new Error(
-        `snapshot ${id} contains ${bad}, which is not a regular file or directory (a symlink or device) — refusing to restore it; live state was left as it was`,
+        `snapshot ${id} contains ${bad}, which is not a regular file or directory (a symlink, device, FIFO or socket) — refusing to restore it; live state was left as it was`,
       );
     }
   }
@@ -304,6 +297,10 @@ export function restoreSnapshot(
         recursive: true,
         preserveTimestamps: true,
       });
+      // Judge the COPY too: a link planted between the check above and this
+      // copy (cpSync copies links as links) never reaches the live dir.
+      const bad = firstNonPlainNode(stage, e);
+      if (bad) throw new Error(`${bad} is not a regular file or directory`);
     }
   } catch (err) {
     rmSync(stage, { recursive: true, force: true });

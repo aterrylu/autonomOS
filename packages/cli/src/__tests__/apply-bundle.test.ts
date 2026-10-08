@@ -144,7 +144,10 @@ describe("reportUnitSync: a dropped env override is never silent (ADR-089)", () 
       { restartFollows: true },
       out,
     );
-    assert.deepEqual(r, { reloadUnit: true });
+    assert.equal(r.reloadUnit, true);
+    // The dashboard's copy (a dashboard-started update's console is a log).
+    assert.match(r.notice ?? "", /HTTP_PROXY, NODE_OPTIONS/);
+    assert.match(r.notice ?? "", /before-sync/);
     const warned = lines.warn.join("\n");
     assert.match(warned, /HTTP_PROXY, NODE_OPTIONS/);
     assert.match(warned, /NOT in the updated unit/);
@@ -153,8 +156,26 @@ describe("reportUnitSync: a dropped env override is never silent (ADR-089)", () 
 
   it("a clean re-render claims only what it preserved, and warns nothing", () => {
     const { lines, out } = capture();
-    reportUnitSync({ kind: "updated" }, "linux", { restartFollows: true }, out);
+    const r = reportUnitSync(
+      { kind: "updated" },
+      "linux",
+      { restartFollows: true },
+      out,
+    );
     assert.equal(lines.warn.length, 0);
+    assert.equal(r.notice, undefined);
     assert.match(lines.log.join("\n"), /AUTONOMOS_TOKEN\/HOST\/CONFIG_DIR/);
+  });
+
+  it("a skipped sync is also said to the dashboard", () => {
+    const { out } = capture();
+    const r = reportUnitSync(
+      { kind: "skipped", reason: "could not recover install-time parameters" },
+      "darwin",
+      { restartFollows: true },
+      out,
+    );
+    assert.equal(r.reloadUnit, false);
+    assert.match(r.notice ?? "", /wasn't updated.*could not recover/);
   });
 });

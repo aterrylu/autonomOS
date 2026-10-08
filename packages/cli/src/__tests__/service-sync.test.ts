@@ -16,14 +16,15 @@
 
 import assert from "node:assert/strict";
 import {
-  existsSync,
+  chmodSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { InstalledService } from "../lib/service-control.js";
 import {
@@ -379,15 +380,12 @@ describe("hand-edited env: identity keys carried, others dropped loudly", () => 
 
       assert.ok(outcome.kind === "updated", outcome.kind);
       assert.deepEqual(outcome.droppedEnvKeys, ["HTTP_PROXY", "NODE_OPTIONS"]);
-      assert.equal(outcome.backupFile, `${svc.serviceFile}.before-sync`);
-      assert.equal(
-        readFileSync(`${svc.serviceFile}.before-sync`, "utf-8"),
-        content,
+      assert.ok(
+        outcome.backupFile?.startsWith(`${svc.serviceFile}.before-sync-`),
       );
-      assert.equal(
-        statSync(`${svc.serviceFile}.before-sync`).mode & 0o777,
-        0o600,
-      );
+      const backup = outcome.backupFile ?? "";
+      assert.equal(readFileSync(backup, "utf-8"), content);
+      assert.equal(statSync(backup).mode & 0o777, 0o600);
       // Names, never values: the outcome is printed.
       assert.ok(!JSON.stringify(outcome).includes(SECRET));
       // The healed unit is in sync — no re-render (or warning) on every run.
@@ -405,7 +403,11 @@ describe("hand-edited env: identity keys carried, others dropped loudly", () => 
     assert.ok(outcome.kind === "updated");
     assert.equal(outcome.droppedEnvKeys, undefined);
     assert.equal(outcome.backupFile, undefined);
-    assert.ok(!existsSync(`${svc.serviceFile}.before-sync`));
+    assert.ok(
+      !readdirSync(dirname(svc.serviceFile)).some((f) =>
+        f.includes(".before-sync"),
+      ),
+    );
   });
 
   it("the carried set is exactly the one install-source.sh migrates (ADR-089)", () => {
@@ -474,5 +476,195 @@ describe("systemd parsing follows systemd's own rules", () => {
       '$1\nEnvironment="AUTONOMOS_TOKEN=unterminated',
     );
     assert.equal(planUnitSync("linux", unit).kind, "unparseable");
+  });
+});
+
+// Review findings (polish pass): every form whose value we can't recover
+// EXACTLY as the supervisor ran it is skipped loudly ("unparseable"), never
+// guessed at — a guessed identity value silently relocates state or logins.
+describe("forms we can't read exactly are refused, not guessed", () => {
+  const unitWith = (lines: string) =>
+    renderSystemdUserUnit(params).replace(
+      /^(StandardError=.*)$/m,
+      `$1\n${lines}`,
+    );
+
+  for (const [name, lines] of [
+    [
+      "a %h specifier systemd expanded (Environment)",
+      "Environment=AUTONOMOS_CONFIG_DIR=%h/.aos",
+    ],
+    [
+      "a C escape systemd decoded (\\x41)",
+      'Environment="AUTONOMOS_TOKEN=a\\x41b"',
+    ],
+    ["a backslash outside quotes", "Environment=AUTONOMOS_TOKEN=a\\ b"],
+    [
+      "a bare Environment= reset",
+      "Environment=AUTONOMOS_TOKEN=old\nEnvironment=",
+    ],
+    ["a line continuation", "Environment=FOO=1 \\\n  AUTONOMOS_HOST=127.0.0.1"],
+    ["an indented directive", "  Environment=AUTONOMOS_HOST=0.0.0.0"],
+    ["`Environment = …`", "Environment = AUTONOMOS_HOST=0.0.0.0"],
+    ["PassEnvironment=", "PassEnvironment=AUTONOMOS_TOKEN"],
+    ["UnsetEnvironment=", "UnsetEnvironment=AUTONOMOS_HOST"],
+  ] as const) {
+    it(`systemd: ${name}`, () => {
+      assert.equal(planUnitSync("linux", unitWith(lines)).kind, "unparseable");
+    });
+  }
+
+  it("systemd: a %h in ExecStart is refused (it ran expanded)", () => {
+    const unit = renderSystemdUserUnit(params).replace(
+      /^ExecStart=.*$/m,
+      "ExecStart=%h/.autonomos-bin/autonomos start",
+    );
+    assert.equal(planUnitSync("linux", unit).kind, "unparseable");
+  });
+
+  const plistWith = (entries: string) =>
+    renderLaunchAgentPlist(params).replace(
+      /(<key>PATH<\/key>\s*<string>[\s\S]*?<\/string>)/,
+      `$1\n${entries}`,
+    );
+
+  it("plist: a non-string value never swallows the next key (or leaks a value)", () => {
+    const plan = planUnitSync(
+      "darwin",
+      plistWith(
+        [
+          "<key>DEBUG_LEVEL</key><integer>3</integer>",
+          "<key>BLOB</key><data>c2VjcmV0</data>",
+          "<key>FLAG</key><true/>",
+          "<key>AUTONOMOS_TOKEN</key><string>s3cret</string>",
+        ].join("\n"),
+      ),
+    );
+    assert.ok(plan.kind === "drift", plan.kind);
+    assert.deepEqual(plan.params.extraEnv, { AUTONOMOS_TOKEN: "s3cret" });
+    assert.deepEqual(plan.params.droppedEnvKeys, [
+      "BLOB",
+      "DEBUG_LEVEL",
+      "FLAG",
+    ]);
+    assert.ok(!JSON.stringify(plan.params.droppedEnvKeys).includes("c2VjcmV0"));
+  });
+
+  it("plist: an empty <string/> is a value, and the next key survives", () => {
+    const plan = planUnitSync(
+      "darwin",
+      plistWith(
+        "<key>EMPTY</key><string/>\n<key>AUTONOMOS_HOST</key><string>0.0.0.0</string>",
+      ),
+    );
+    assert.ok(plan.kind === "drift", plan.kind);
+    assert.deepEqual(plan.params.extraEnv, { AUTONOMOS_HOST: "0.0.0.0" });
+    assert.deepEqual(plan.params.droppedEnvKeys, ["EMPTY"]);
+  });
+
+  it("plist: an identity key with a non-string value is refused", () => {
+    assert.equal(
+      planUnitSync(
+        "darwin",
+        plistWith("<key>AUTONOMOS_HOST</key><integer>0</integer>"),
+      ).kind,
+      "unparseable",
+    );
+  });
+
+  it("plist: a numeric character reference is refused (not decoded)", () => {
+    assert.equal(
+      planUnitSync(
+        "darwin",
+        plistWith("<key>AUTONOMOS_TOKEN</key><string>a&#39;b</string>"),
+      ).kind,
+      "unparseable",
+    );
+  });
+});
+
+describe("sync side effects the review asked to pin", () => {
+  const handEdited = renderSystemdUserUnit(params).replace(
+    /^(StandardError=.*)$/m,
+    "$1\nEnvironment=AUTONOMOS_TOKEN=tok\nEnvironment=HTTP_PROXY=http://p:3128",
+  );
+
+  it("an EnvironmentFile= is named as dropped, with a backup", () => {
+    const unit = handEdited.replace(
+      /^(StandardError=.*)$/m,
+      "$1\nEnvironmentFile=/etc/autonomos.env",
+    );
+    const outcome = syncServiceUnitFor(
+      tempService("linux", unit),
+      recordingRun().runCmd,
+    );
+    assert.ok(outcome.kind === "updated");
+    assert.deepEqual(outcome.droppedEnvKeys, [
+      "EnvironmentFile=",
+      "HTTP_PROXY",
+    ]);
+    assert.ok(outcome.backupFile);
+  });
+
+  it("the rewrite keeps the unit's own mode (a carried token stays 0600)", () => {
+    const svc = tempService("linux", handEdited);
+    chmodSync(svc.serviceFile, 0o600);
+    syncServiceUnitFor(svc, recordingRun().runCmd);
+    assert.equal(statSync(svc.serviceFile).mode & 0o777, 0o600);
+    assert.match(readFileSync(svc.serviceFile, "utf-8"), /AUTONOMOS_TOKEN=tok/);
+  });
+
+  it("a failed daemon-reload still reports the dropped keys", () => {
+    const { runCmd } = recordingRun({
+      ok: false,
+      stdout: "",
+      stderr: "no bus",
+      exitCode: 1,
+    });
+    const outcome = syncServiceUnitFor(
+      tempService("linux", handEdited),
+      runCmd,
+    );
+    assert.ok(outcome.kind === "updated");
+    assert.equal(outcome.reloadWarning, "no bus");
+    assert.deepEqual(outcome.droppedEnvKeys, ["HTTP_PROXY"]);
+    assert.ok(outcome.backupFile);
+  });
+
+  it("a backup that can't be written skips the sync and leaves the unit alone", () => {
+    const svc = tempService("linux", handEdited);
+    const dir = dirname(svc.serviceFile);
+    chmodSync(dir, 0o500);
+    try {
+      let writable = true;
+      try {
+        writeFileSync(join(dir, "probe"), "x");
+      } catch {
+        writable = false;
+      }
+      assert.equal(
+        writable,
+        false,
+        "precondition: the unit's dir is read-only",
+      );
+      const outcome = syncServiceUnitFor(svc, recordingRun().runCmd);
+      assert.ok(outcome.kind === "skipped", outcome.kind);
+      assert.match(outcome.reason, /could not save .*HTTP_PROXY/);
+      assert.equal(readFileSync(svc.serviceFile, "utf-8"), handEdited);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+  });
+
+  it("a second drop never overwrites the first backup", () => {
+    const svc = tempService("linux", handEdited);
+    const first = syncServiceUnitFor(svc, recordingRun().runCmd);
+    const again = handEdited.replace("HTTP_PROXY", "HTTPS_PROXY");
+    writeFileSync(svc.serviceFile, again);
+    const second = syncServiceUnitFor(svc, recordingRun().runCmd);
+    assert.ok(first.kind === "updated" && second.kind === "updated");
+    assert.notEqual(first.backupFile, second.backupFile);
+    assert.equal(readFileSync(first.backupFile ?? "", "utf-8"), handEdited);
+    assert.equal(readFileSync(second.backupFile ?? "", "utf-8"), again);
   });
 });

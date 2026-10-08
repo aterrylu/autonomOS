@@ -37,7 +37,15 @@
 //     drift the caller must restart via restartServiceReloading() instead of
 //     restartService() — see apply-bundle.ts.
 
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { ensureUserBusEnv, type InstalledService } from "./service-control.js";
 import {
   BOOT_ERROR_LOG,
@@ -79,6 +87,8 @@ const IDENTITY = new Set<string>(IDENTITY_ENV_KEYS);
 /** Split a unit's env into what the template needs, carries, and drops. */
 function classifyEnv(
   kv: Map<string, string>,
+  /** Other unmanaged settings to name as dropped (no value recovered). */
+  alsoDropped: readonly string[] = [],
 ): Pick<
   RecoveredUnitParams,
   "home" | "path" | "extraEnv" | "droppedEnvKeys"
@@ -87,7 +97,7 @@ function classifyEnv(
   const path = kv.get("PATH");
   if (home === undefined || path === undefined) return null;
   const extraEnv: Record<string, string> = {};
-  const dropped: string[] = [];
+  const dropped: string[] = [...alsoDropped];
   for (const [k, v] of kv) {
     if (TEMPLATE_ENV_KEYS.has(k)) continue;
     if (IDENTITY.has(k)) extraEnv[k] = v;
@@ -101,9 +111,14 @@ function classifyEnv(
   };
 }
 
-/** Undo service-templates' systemdEscapePct: `%%` is a literal `%`. */
-function unescapePct(s: string): string {
-  return s.replace(/%%/g, "%");
+/**
+ * Undo service-templates' systemdEscapePct: `%%` is a literal `%`. Any other
+ * `%` is a specifier systemd EXPANDED (a hand-written `%h/.aos` ran as
+ * `/home/u/.aos`), so the value we'd recover is not the value that ran:
+ * null, and the sync is skipped loudly rather than freezing it as a literal.
+ */
+function unescapePct(s: string): string | null {
+  return s.replace(/%%/g, "").includes("%") ? null : s.replace(/%%/g, "%");
 }
 
 /**
@@ -112,7 +127,10 @@ function unescapePct(s: string): string {
  * literally. Accepts both the current quoted render and legacy raw lines
  * (where `X=a b` really is "X=a" plus an ignored word — measured on
  * systemd 255 — so preserving that is preserving what actually runs).
- * Words without `=` are ignored, as systemd ignores them. null = malformed.
+ * Words without `=` are ignored, as systemd ignores them. null = anything we
+ * can't be sure systemd read the same way: a `\` outside double quotes or any
+ * escape but `\\` / `\"` (systemd C-unescapes those), a `%` specifier, or an
+ * unbalanced quote.
  */
 function systemdEnvAssignments(line: string): [string, string][] | null {
   const words: string[] = [];
@@ -127,12 +145,16 @@ function systemdEnvAssignments(line: string): [string, string][] | null {
     } else if (quote === '"') {
       if (c === '"') quote = null;
       else if (c === "\\") {
-        if (i + 1 >= line.length) return null;
-        cur += line[++i];
+        const next = line[i + 1];
+        if (next !== "\\" && next !== '"') return null;
+        cur += next;
+        i++;
       } else cur += c;
     } else if (c === '"' || c === "'") {
       quote = c;
       started = true;
+    } else if (c === "\\") {
+      return null;
     } else if (c === " " || c === "\t") {
       if (started) words.push(cur);
       cur = "";
@@ -147,7 +169,10 @@ function systemdEnvAssignments(line: string): [string, string][] | null {
   const out: [string, string][] = [];
   for (const w of words) {
     const eq = w.indexOf("=");
-    if (eq > 0) out.push([w.slice(0, eq), unescapePct(w.slice(eq + 1))]);
+    if (eq <= 0) continue;
+    const value = unescapePct(w.slice(eq + 1));
+    if (value === null) return null;
+    out.push([w.slice(0, eq), value]);
   }
   return out;
 }
@@ -198,14 +223,31 @@ export function parseLaunchAgentPlist(
     /<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/,
   );
   if (!envDict) return null;
-  const kv = new Map(
-    [
-      ...envDict[1].matchAll(
-        /<key>([\s\S]*?)<\/key>\s*<string>([\s\S]*?)<\/string>/g,
-      ),
-    ].map((m) => [xmlUnescape(m[1]), xmlUnescape(m[2])]),
-  );
-  const env = classifyEnv(kv);
+  // Each <key> pairs with exactly ONE value element. A lazy key→<string>
+  // match would run a key with a non-string value (<integer>, <true/>,
+  // <data>) on into the NEXT key, losing that key and printing a value.
+  const kv = new Map<string, string>();
+  const nonString: string[] = [];
+  const pair =
+    /<key>([^<]*)<\/key>\s*(?:<string>([^<]*)<\/string>|<string\/>|<(\w+)\s*\/>|<(\w+)>[\s\S]*?<\/\4>)/g;
+  const body = envDict[1];
+  // A numeric character reference (&#39;) isn't decoded by xmlUnescape, so
+  // the value we'd carry isn't the one launchd set.
+  if (body.includes("&#")) return null;
+  let consumed = 0;
+  for (const m of body.matchAll(pair)) {
+    if (body.slice(consumed, m.index).trim() !== "") return null;
+    consumed = (m.index ?? 0) + m[0].length;
+    const key = xmlUnescape(m[1]);
+    if (m[3] !== undefined || m[4] !== undefined) nonString.push(key);
+    else kv.set(key, xmlUnescape(m[2] ?? ""));
+  }
+  if (body.slice(consumed).trim() !== "") return null;
+  // An identity key we can't read as a string can't be carried: skip loudly.
+  if (nonString.some((k) => IDENTITY.has(k) || TEMPLATE_ENV_KEYS.has(k))) {
+    return null;
+  }
+  const env = classifyEnv(kv, nonString);
   if (!env) return null;
 
   return { programArgs, logDir, ...env, label: xmlUnescape(label[1]) };
@@ -254,27 +296,48 @@ function shellUnquote(line: string): string[] | null {
 export function parseSystemdUserUnit(
   content: string,
 ): RecoveredUnitParams | null {
+  // Forms systemd reads that our line-by-line parse can't follow — a `\`
+  // line continuation, an indented or `Environment = …` directive — and
+  // env directives the template never writes and we can't carry
+  // (PassEnvironment / UnsetEnvironment): skip loudly, never guess.
+  if (/\\$/m.test(content)) return null;
+  if (/^[ \t]+\S|^(?:Environment|EnvironmentFile)[ \t]+=/m.test(content))
+    return null;
+  if (/^(?:PassEnvironment|UnsetEnvironment)[ \t]*=/m.test(content))
+    return null;
   const exec = content.match(/^ExecStart=(.*)$/m);
   if (!exec) return null;
   const quoted = shellUnquote(exec[1]);
   if (!quoted) return null;
-  const programArgs = quoted.map(unescapePct);
+  const programArgs: string[] = [];
+  for (const a of quoted) {
+    const arg = unescapePct(a);
+    if (arg === null) return null;
+    programArgs.push(arg);
+  }
 
   const se = content.match(/^StandardError=append:(.*)$/m);
   if (!se) return null;
   const errPath = unescapePct(se[1]);
   const suffix = `/${BOOT_ERROR_LOG}`;
-  if (!errPath.endsWith(suffix)) return null;
+  if (errPath === null || !errPath.endsWith(suffix)) return null;
   const logDir = errPath.slice(0, -suffix.length);
 
   // Every Environment= line, in order; a later assignment wins, as in systemd.
   const kv = new Map<string, string>();
   for (const m of content.matchAll(/^Environment=(.*)$/gm)) {
+    // A bare `Environment=` RESETS the list in systemd; don't guess.
+    if (m[1].trim() === "") return null;
     const pairs = systemdEnvAssignments(m[1]);
     if (!pairs) return null;
     for (const [k, v] of pairs) kv.set(k, v);
   }
-  const env = classifyEnv(kv);
+  // The template never writes EnvironmentFile=; a hand-added one (the usual
+  // home for a token) is named like any other dropped setting.
+  const envFiles = /^EnvironmentFile=/m.test(content)
+    ? ["EnvironmentFile="]
+    : [];
+  const env = classifyEnv(kv, envFiles);
   if (!env) return null;
 
   return { programArgs, logDir, ...env };
@@ -358,14 +421,20 @@ export function syncServiceUnitFor(
   // Dropping keys? Keep the unit as it was, so the operator can copy a key
   // back (ADR-089: name what's dropped, point at the one place it survives).
   const dropped = plan.params.droppedEnvKeys ?? [];
-  const backupFile = `${svc.serviceFile}.before-sync`;
+  // Timestamped, so a later sync dropping a different key can't overwrite
+  // the only copy of an earlier one. Not a unit suffix: never loaded.
+  const stamp = `${svc.serviceFile}.before-sync-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  let backupFile = stamp;
+  for (let n = 1; existsSync(backupFile); n++) backupFile = `${stamp}-${n}`;
+  const droppedReport =
+    dropped.length > 0 ? { droppedEnvKeys: dropped, backupFile } : {};
   if (dropped.length > 0) {
     try {
-      writeFileSync(backupFile, installed, { mode: 0o600 });
+      writeFileSync(backupFile, installed, { mode: 0o600, flag: "wx" });
     } catch (err) {
       return {
         kind: "skipped",
-        reason: `could not save ${backupFile} before dropping env keys (${dropped.join(", ")}): ${err instanceof Error ? err.message : err}`,
+        reason: `could not save ${backupFile} before dropping env settings (${dropped.join(", ")}): ${err instanceof Error ? err.message : err}`,
       };
     }
   }
@@ -375,6 +444,9 @@ export function syncServiceUnitFor(
   const tmp = `${svc.serviceFile}.tmp`;
   try {
     writeFileSync(tmp, plan.fresh);
+    // Keep the unit's own mode: a carried AUTONOMOS_TOKEN must not land in a
+    // file widened from the operator's 0600 to the umask default.
+    chmodSync(tmp, statSync(svc.serviceFile).mode & 0o777);
     renameSync(tmp, svc.serviceFile);
   } catch (err) {
     try {
@@ -398,12 +470,9 @@ export function syncServiceUnitFor(
       return {
         kind: "updated",
         reloadWarning: reload.stderr.trim(),
-        ...(dropped.length > 0 && { droppedEnvKeys: dropped, backupFile }),
+        ...droppedReport,
       };
     }
   }
-  return {
-    kind: "updated",
-    ...(dropped.length > 0 && { droppedEnvKeys: dropped, backupFile }),
-  };
+  return { kind: "updated", ...droppedReport };
 }

@@ -122,9 +122,22 @@ describe("runUpdateCheck", () => {
   ]) {
     it(`ignores the tag ${JSON.stringify(tag)} (anchored vX.Y.Z only)`, async () => {
       const base = await serveLatest(tag);
-      const state = await runUpdateCheck(base);
+      const warned: string[] = [];
+      const orig = console.warn;
+      console.warn = (m: string) => void warned.push(String(m));
+      let state: Awaited<ReturnType<typeof runUpdateCheck>>;
+      try {
+        state = await runUpdateCheck(base);
+      } finally {
+        console.warn = orig;
+      }
       assert.equal(state.latest, null);
       assert.equal(state.releaseUrl, null);
+      // Persistent and badge-killing: never silent.
+      assert.ok(
+        warned.some((w) => w.includes(JSON.stringify(tag))),
+        warned.join("\n"),
+      );
     });
   }
 });

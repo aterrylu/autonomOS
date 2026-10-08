@@ -173,6 +173,10 @@ export async function runUpdateCheck(
     typeof release.tag_name !== "string" ||
     !/^v\d+\.\d+\.\d+$/.test(release.tag_name)
   ) {
+    // Persistent, and it would kill the badge invisibly: say so.
+    console.warn(
+      `[update-check] ignoring the latest release: its tag ${JSON.stringify(release.tag_name)} isn't vX.Y.Z`,
+    );
     return state;
   }
   const latest = release.tag_name.slice(1);
