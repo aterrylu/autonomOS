@@ -138,7 +138,9 @@ Install [Tailscale](https://tailscale.com) on the server and on each device you 
 
 ```bash
 autonomos install-service --force --host=127.0.0.1,$(tailscale ip -4)
-# or with the MagicDNS name:  --host=127.0.0.1,<server-name>
+# or with the FULL MagicDNS name:  --host=127.0.0.1,<server-name>.<tailnet>.ts.net
+# (not the short name: /etc/hosts often maps the machine's own name to 127.0.1.1
+#  or its cloud VPC address first; autonomOS warns if a name lands off the tailnet)
 ```
 
 Open it from any of your devices at `http://<server-name>:3000` (MagicDNS) or `http://100.x.y.z:3000`. Your office or café network and the public internet can't reach it, Tailscale encrypts every connection, and autonomOS sees each device's own tailnet address, so its protections (the sign-in throttle, and the new-device lock for a short token) work per device. **Restarts are safe:** if autonomOS starts before Tailscale has connected (a reboot), it serves this machine at once and keeps retrying the tailnet address until Tailscale is up. Put `127.0.0.1` first in the list.
