@@ -48,6 +48,8 @@ type InstallFlags = {
   force: boolean;
   port: number | undefined;
   host: string | undefined;
+  /** `tailscale` when the server sits behind `tailscale serve` (ADR-140). */
+  trustProxy: string | undefined;
   open: boolean;
 };
 
@@ -58,6 +60,7 @@ function parseFlags(argv: readonly string[]): InstallFlags {
   let force = false;
   let port: number | undefined;
   let host: string | undefined;
+  let trustProxy: string | undefined;
   let open = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -72,6 +75,9 @@ function parseFlags(argv: readonly string[]): InstallFlags {
     else if (a === "--port") port = Number(argv[++i]);
     else if (a.startsWith("--host=")) host = a.slice("--host=".length);
     else if (a === "--host") host = argv[++i];
+    else if (a.startsWith("--trust-proxy="))
+      trustProxy = a.slice("--trust-proxy=".length);
+    else if (a === "--trust-proxy") trustProxy = argv[++i];
     else throw new Error(`Unknown flag: ${a}`);
   }
   if (
@@ -89,7 +95,13 @@ function parseFlags(argv: readonly string[]): InstallFlags {
         "(use --host=0.0.0.0 to bind all interfaces, or omit for loopback)",
     );
   }
-  return { prefix, noActivate, bin, force, port, host, open };
+  // Only `tailscale` exists; refuse anything else here rather than bake a
+  // value the server will refuse to start with on every boot.
+  if (trustProxy !== undefined && trustProxy !== "tailscale")
+    throw new Error(
+      `Invalid --trust-proxy value "${trustProxy}": use --trust-proxy=tailscale`,
+    );
+  return { prefix, noActivate, bin, force, port, host, trustProxy, open };
 }
 
 export async function runInstallServiceCommand(
@@ -172,8 +184,14 @@ export async function runInstallServiceCommand(
   const baseArgs = flags.bin ? [flags.bin, "start"] : detectProgramArgs();
   const withPort =
     flags.port !== undefined ? [...baseArgs, `--port=${flags.port}`] : baseArgs;
-  const programArgs =
+  const withHost =
     flags.host !== undefined ? [...withPort, `--host=${flags.host}`] : withPort;
+  // Behind `tailscale serve` (ADR-140). The server itself refuses the flag
+  // unless --host is loopback only, with a message saying why.
+  const programArgs =
+    flags.trustProxy !== undefined
+      ? [...withHost, `--trust-proxy=${flags.trustProxy}`]
+      : withHost;
 
   mkdirSync(paths.serviceDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });

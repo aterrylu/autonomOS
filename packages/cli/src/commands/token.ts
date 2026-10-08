@@ -58,7 +58,7 @@ export async function runTokenCommand(
 ): Promise<number> {
   const [sub, ...rest] = argv;
   if (sub === "rotate") return rotate(rest);
-  if (sub === "status") return status();
+  if (sub === "status") return await status();
   process.stderr.write(USAGE);
   return 64;
 }
@@ -249,7 +249,7 @@ function rotate(args: readonly string[]): number {
   return 0;
 }
 
-function status(): number {
+async function status(): Promise<number> {
   // Read-only: never generates a token file (nox, #459).
   const found = peekAuthToken();
   if (!found) {
@@ -280,6 +280,28 @@ function status(): number {
     console.log(
       "`autonomos token rotate` replaces the token with a strong one.",
     );
+  }
+  // How the running server treats a reverse proxy (ADR-140): only it knows
+  // (the mode comes from its own flags/env), so ask it over loopback.
+  const pid = readPidFile();
+  if (pid && isPidAlive(pid.pid)) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${pid.port}/api/auth/lock`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body = (await res.json()) as { trustProxy?: string };
+      if (body.trustProxy === "tailscale")
+        console.log(
+          "Trusted proxy: tailscale serve. A request it forwards counts as the visitor's tailnet device; the server listens on this machine only.",
+        );
+      else if (body.trustProxy === "off")
+        console.log(
+          "Trusted proxy: none. Every device is identified by its own network address.",
+        );
+    } catch {
+      // Not answering, or an older server: say nothing rather than guess.
+    }
   }
   return 0;
 }

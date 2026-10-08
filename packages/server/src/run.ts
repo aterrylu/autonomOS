@@ -119,6 +119,13 @@ import {
 } from "./serverState.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
+import {
+  clientIdentity,
+  getTrustProxyMode,
+  parseTrustProxy,
+  setTrustProxyMode,
+  trustProxyGuard,
+} from "./trustProxy.js";
 import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
 
@@ -225,6 +232,33 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // loud ON line lands in autonomos.log too.
   initPtyInputLog({ configDir: getConfigDir() });
 
+  // Trusted proxy (ADR-140): `tailscale serve` in front. Only safe when this
+  // server listens on loopback alone, else the LAN reaches it around serve.
+  const trustProxyRaw = cliArgs.trustProxy ?? process.env.AUTONOMOS_TRUST_PROXY;
+  let trustProxy: ReturnType<typeof parseTrustProxy>;
+  try {
+    trustProxy = parseTrustProxy(trustProxyRaw);
+  } catch (err) {
+    refuseToStart(err instanceof Error ? err.message : String(err));
+  }
+  if (
+    trustProxy === "tailscale" &&
+    isNetworkBind(
+      parseBindHosts(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST)),
+    )
+  )
+    refuseToStart(
+      [
+        "✖ Refusing to start: --trust-proxy=tailscale needs autonomOS to listen on this machine only.",
+        "  Behind tailscale serve, set --host=127.0.0.1 (AUTONOMOS_HOST=127.0.0.1). Listening on the network too would let other devices reach it around serve.",
+      ].join("\n"),
+    );
+  setTrustProxyMode(trustProxy);
+  if (trustProxy === "tailscale")
+    console.log(
+      "ℹ Trusting tailscale serve: requests it forwards are identified by the visitor's tailnet address (X-Forwarded-For). Requests from other programs on this machine are trusted as before.",
+    );
+
   // The operator token, and whether it's strong enough to start with. Decided
   // here: after logging (so a refusal lands in the log a supervised install
   // has) and before anything writes an install marker (templates just below).
@@ -234,9 +268,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     token: AUTH_TOKEN,
     source: tokenSource,
     priorInstall,
-    networkBind: isNetworkBind(
-      parseBindHosts(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST)),
-    ),
+    // Behind tailscale serve the loopback bind is reachable from the tailnet
+    // by design, so it counts as a network bind here (ADR-140).
+    networkBind:
+      trustProxy === "tailscale" ||
+      isNetworkBind(
+        parseBindHosts(
+          resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+        ),
+      ),
     allowWeak:
       cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
   });
@@ -389,6 +429,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   });
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
+  // A malformed proxied identity is refused before auth (ADR-140).
+  app.use("/api/*", trustProxyGuard());
+  app.use("/ws/*", trustProxyGuard());
 
   // Publish to serverState so spawn-time code (runtime.ts, providers/*) can read
   // the in-process token without round-tripping through env or disk.
@@ -491,20 +534,21 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     );
   }
 
-  /** `address` keys the throttle (IPv6 /64); `device` is the exact peer, for
-   *  the new-device lock's known check. */
-  function recordFailures(
-    address: string,
-    device: string,
-    presented: readonly string[],
-  ): void {
+  /** Count the wrong values a request presented: the throttle keys on the
+   *  address (IPv6 /64), the new-device lock on the exact device, and a
+   *  Tailscale login (when proxied) rides along as operator context. */
+  function recordFailures(c: Context, presented: readonly string[]): void {
+    const address = peerAddress(c);
+    const device = rawPeerAddress(c);
+    const id = clientIdentity(c);
+    const login = "error" in id ? undefined : id.login;
     for (const value of presented) {
       const { distinct, lockMs } = authLimiter.recordFailureDetailed(
         address,
         value,
       );
       if (lockMs > 0) warnLockout(address, lockMs);
-      if (distinct) newDeviceLock.noteDistinctFailure(device);
+      if (distinct) newDeviceLock.noteDistinctFailure(device, login);
     }
   }
 
@@ -515,11 +559,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const body = await c.req.json().catch(() => null);
     const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
-      if (token) recordFailures(address, rawPeerAddress(c), [token]);
+      if (token) recordFailures(c, [token]);
       return c.json({ error: "Invalid token" }, 401);
     }
     authLimiter.recordSuccess(address);
-    newDeviceLock.noteSuccess(rawPeerAddress(c));
+    newDeviceLock.noteSuccess(rawPeerAddress(c), loginFor(c));
     setSessionCookie(c, token);
     return c.json({ ok: true });
   };
@@ -621,12 +665,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         // shared cookie can no longer log it out here.
         if (match.source === "legacy-cookie") setSessionCookie(c, match.token);
         // A device a valid credential came from is never locked out.
-        if (throttle) newDeviceLock.noteSuccess(rawPeerAddress(c));
+        if (throttle) newDeviceLock.noteSuccess(rawPeerAddress(c), loginFor(c));
         return next();
       }
       // A request that presented nothing (the dashboard probing before sign-in)
       // made no guess and isn't counted.
-      if (throttle) recordFailures(address, rawPeerAddress(c), presented);
+      if (throttle) recordFailures(c, presented);
       return c.json(
         {
           error:
@@ -681,7 +725,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // The new-device lock (ADR-148): its state for the dashboard and CLI, and
   // the operator's unlock. Both behind auth, so only a device holding the
   // token (which the lock never refuses) can read or clear it.
-  app.get("/api/auth/lock", (c) => c.json(newDeviceLock.status()));
+  app.get("/api/auth/lock", (c) =>
+    c.json({ ...newDeviceLock.status(), trustProxy: getTrustProxyMode() }),
+  );
   app.post("/api/auth/unlock", (c) => {
     newDeviceLock.unlock();
     console.log("[auth] new-device lock cleared by the operator");
@@ -1214,4 +1260,17 @@ function enforceTokenStrength(o: {
       `ℹ The operator token is short (${o.token.length} characters): new devices get ${newDeviceFailureLimit(process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT)} failed sign-ins in total before they're locked out. \`autonomos token rotate\` replaces it.`,
     );
   }
+}
+
+/** Print why the server won't start (the log and the real stderr) and exit 2. */
+function refuseToStart(message: string): never {
+  console.error(message);
+  if (!process.stderr.isTTY) writeSync(2, `${message}\n`);
+  process.exit(2);
+}
+
+/** The Tailscale login of a proxied request, for operator context only. */
+function loginFor(c: Context): string | undefined {
+  const id = clientIdentity(c);
+  return "error" in id ? undefined : id.login;
 }

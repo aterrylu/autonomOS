@@ -56,7 +56,10 @@ interface Persisted {
   known: string[];
   /** The last counted failure: where from and when. Shown to the operator
    *  (behind auth) so they can tell a scanner from their own new phone. */
-  lastFailure?: { address: string; at: number };
+  lastFailure?: { address: string; at: number; login?: string };
+  /** The Tailscale login seen with a known address (tailscale serve only):
+   *  operator context, never used to decide anything. */
+  knownLogins?: Record<string, string>;
 }
 
 export type LockState = {
@@ -68,6 +71,8 @@ export type LockState = {
   /** The last counted failure's address and time, or null. */
   lastFailureFrom: string | null;
   lastFailureAt: number | null;
+  /** Its Tailscale login, when it came through tailscale serve (ADR-140). */
+  lastFailureLogin: string | null;
 };
 
 /** Where the lock persists, inside the config dir (0600). */
@@ -123,33 +128,41 @@ export class NewDeviceLock {
   }
 
   /** A credential from this address was valid: remember the address. */
-  noteSuccess(address: string): void {
+  noteSuccess(address: string, login?: string): void {
     if (isLoopbackAddress(address)) return;
+    const logins = this.state.knownLogins ?? {};
+    const newLogin = login !== undefined && logins[address] !== login;
     const at = this.state.known.indexOf(address);
-    if (at >= 0) {
-      // Keep "most recent last" true, so the cap drops the device least
-      // recently used, not the operator's oldest everyday one (nox, #475).
-      if (at >= this.state.known.length - RECENT_KNOWN_WINDOW) return;
-      this.state.known.splice(at, 1);
-      this.state.known.push(address);
-      this.save();
-      return;
+    // Keep "most recent last" true, so the cap drops the device least recently
+    // used, not the operator's oldest everyday one (nox, #475). A hit among
+    // the newest RECENT_KNOWN_WINDOW isn't moved, so everyday use never writes.
+    const stale = at >= 0 && at < this.state.known.length - RECENT_KNOWN_WINDOW;
+    if (at >= 0 && !stale && !newLogin) return;
+    if (stale) this.state.known.splice(at, 1);
+    if (at < 0 || stale) this.state.known.push(address);
+    if (login !== undefined) logins[address] = login;
+    while (this.state.known.length > MAX_KNOWN_ADDRESSES) {
+      const dropped = this.state.known.shift();
+      if (dropped !== undefined) delete logins[dropped];
     }
-    this.state.known.push(address);
-    if (this.state.known.length > MAX_KNOWN_ADDRESSES) this.state.known.shift();
+    this.state.knownLogins = logins;
     this.save();
   }
 
   /** A NEW wrong value (not a repeat) came from this address. */
-  noteDistinctFailure(address: string): void {
+  noteDistinctFailure(address: string, login?: string): void {
     if (!this.opts.enabled || this.isKnown(address)) return;
     if (this.state.lockedAt !== null) return; // already locked: refused anyway
     this.state.failures += 1;
-    this.state.lastFailure = { address, at: (this.opts.now ?? Date.now)() };
+    this.state.lastFailure = {
+      address,
+      at: (this.opts.now ?? Date.now)(),
+      ...(login ? { login } : {}),
+    };
     if (this.state.failures >= this.limit) {
       this.state.lockedAt = (this.opts.now ?? Date.now)();
       (this.opts.log ?? console.warn)(
-        `[auth] ${this.state.failures} failed sign-ins from devices that have never signed in. New devices are now locked out; devices already signed in, and this machine, keep working. Unlock with \`autonomos auth unlock\`.`,
+        `[auth] ${this.state.failures} failed sign-ins from devices that have never signed in (the last from ${address}${login ? `, Tailscale user ${login}` : ""}). New devices are now locked out; devices already signed in, and this machine, keep working. Unlock with \`autonomos auth unlock\`.`,
       );
     }
     this.save();
@@ -171,6 +184,7 @@ export class NewDeviceLock {
       lockedAt: this.state.lockedAt,
       lastFailureFrom: this.state.lastFailure?.address ?? null,
       lastFailureAt: this.state.lastFailure?.at ?? null,
+      lastFailureLogin: this.state.lastFailure?.login ?? null,
     };
   }
 
@@ -226,7 +240,21 @@ export function loadStateDetailed(path: string): {
           raw.lastFailure &&
           typeof raw.lastFailure.address === "string" &&
           typeof raw.lastFailure.at === "number"
-            ? { address: raw.lastFailure.address, at: raw.lastFailure.at }
+            ? {
+                address: raw.lastFailure.address,
+                at: raw.lastFailure.at,
+                ...(typeof raw.lastFailure.login === "string"
+                  ? { login: raw.lastFailure.login }
+                  : {}),
+              }
+            : undefined,
+        knownLogins:
+          raw.knownLogins && typeof raw.knownLogins === "object"
+            ? Object.fromEntries(
+                Object.entries(raw.knownLogins).filter(
+                  ([, v]) => typeof v === "string",
+                ),
+              )
             : undefined,
       },
       damaged: false,

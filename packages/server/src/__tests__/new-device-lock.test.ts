@@ -166,6 +166,29 @@ describe("NewDeviceLock", () => {
     );
   });
 
+  it("behind tailscale serve the last attempt carries its Tailscale login (ADR-140)", () => {
+    const path = lockFile();
+    const l = new NewDeviceLock({ enabled: true, path, limit: 1, log: quiet });
+    l.noteDistinctFailure("100.64.1.2", "mallory@example.com");
+    assert.equal(l.status().lastFailureLogin, "mallory@example.com");
+    const fresh = new NewDeviceLock({
+      enabled: true,
+      path,
+      limit: 1,
+      log: quiet,
+    });
+    assert.equal(fresh.status().lastFailureLogin, "mallory@example.com");
+    // Without serve (or from a tagged node) there is no login.
+    const plain = new NewDeviceLock({
+      enabled: true,
+      path: lockFile(),
+      limit: 1,
+      log: quiet,
+    });
+    plain.noteDistinctFailure("10.0.0.1");
+    assert.equal(plain.status().lastFailureLogin, null);
+  });
+
   it("disabled (a strong token): never refuses, never counts", () => {
     const l = new NewDeviceLock({
       enabled: false,
@@ -185,12 +208,17 @@ describe("NewDeviceLock", () => {
     l.noteDistinctFailure("10.0.0.1");
     assert.equal(statSync(path).mode & 0o777, 0o600);
     const saved = JSON.parse(readFileSync(path, "utf8"));
-    assert.deepEqual(Object.keys(saved).sort(), [
-      "failures",
-      "known",
-      "lastFailure",
-      "lockedAt",
-    ]);
+    for (const k of Object.keys(saved))
+      assert.ok(
+        [
+          "failures",
+          "known",
+          "knownLogins",
+          "lastFailure",
+          "lockedAt",
+        ].includes(k),
+        `unexpected key ${k}`,
+      );
     // The last failure is an address and a time, nothing presented.
     assert.deepEqual(Object.keys(saved.lastFailure).sort(), ["address", "at"]);
   });

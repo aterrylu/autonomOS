@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
-import type { IncomingMessage } from "node:http";
 import { isIPv6 } from "node:net";
 import type { Context } from "hono";
+import { clientAddress } from "./trustProxy.js";
 
 /**
  * Failed-auth throttle for the PUBLIC listener (V2, ADR-117 follow-up 5).
@@ -182,6 +182,12 @@ export function normalizeAddress(addr: string | undefined): string {
     return addr.slice(7);
   const bare = addr.split("%")[0];
   if (!isIPv6(bare) || bare === "::1") return addr;
+  // Tailscale gives each node ONE address in fd7a:115c:a1e0::/48 (only the
+  // low bits name the node), and a node can't pick another. Collapsing to /64
+  // would put every tailnet device in one bucket, so one guesser would
+  // throttle them all (nox, #488). Key them exactly.
+  if (bare.toLowerCase().startsWith("fd7a:115c:a1e0:"))
+    return bare.toLowerCase();
   const groups = expandIPv6(bare);
   return groups ? `${groups.slice(0, 4).join(":")}::/64` : addr;
 }
@@ -210,17 +216,13 @@ function expandIPv6(addr: string): string[] | null {
  * signed-in device "known" (SecurityAudit, #475). Only `::ffff:` is unwrapped.
  */
 export function rawPeerAddress(c: Context): string {
-  const env = c.env as { incoming?: IncomingMessage } | undefined;
-  const a = env?.incoming?.socket?.remoteAddress;
-  if (!a) return "unknown";
-  return a.toLowerCase().startsWith("::ffff:") && !a.slice(7).includes(":")
-    ? a.slice(7)
-    : a;
+  // The device: the TCP peer, or (with --trust-proxy=tailscale, ADR-140) the
+  // tailnet address tailscale serve forwarded for. One source for both.
+  return clientAddress(c);
 }
 
 export function peerAddress(c: Context): string {
-  const env = c.env as { incoming?: IncomingMessage } | undefined;
-  return normalizeAddress(env?.incoming?.socket?.remoteAddress);
+  return normalizeAddress(clientAddress(c));
 }
 
 /** One line per lockout, capped: an attack must not fill the log. Never

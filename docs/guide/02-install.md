@@ -132,9 +132,26 @@ See the next section for how to reach it from your other devices.
 
 autonomOS usually lives on a server you reach from your laptop or phone, so who can reach its port matters. Every request needs your token, but the network in front of the port is the first line of defense. These are the setups, best first. Each survives restarts of the machine and of autonomOS.
 
-### Recommended: Tailscale, served on this machine and your tailnet only
+### Recommended: Tailscale with `tailscale serve`
 
-Install [Tailscale](https://tailscale.com) on the server and on each device you use, signed in to the same tailnet. Then tell autonomOS to listen on this machine (for the `autonomos` command) **and** on the server's tailnet address, and nowhere else:
+Install [Tailscale](https://tailscale.com) on the server and on each device you use, signed in to the same tailnet. Then have autonomOS listen on this machine only, and let Tailscale publish it to your tailnet over HTTPS:
+
+```bash
+autonomos install-service --force --host=127.0.0.1 --trust-proxy=tailscale
+tailscale serve --bg 3000
+```
+
+Open it from any of your devices at `https://<server-name>.<tailnet>.ts.net`. The first time, `tailscale serve` may ask you to enable MagicDNS and HTTPS certificates for your tailnet; follow the link it prints.
+
+- **No port is open** on any network: only tailnet members get through, and every connection is HTTPS with a real certificate.
+- **`--trust-proxy=tailscale` lets autonomOS tell your devices apart.** Without it, everything `tailscale serve` forwards looks like this machine, and the per-device protections (the sign-in throttle, and the new-device lock for a short token) would treat every device as trusted. With it, each device is known by its tailnet address, and a lockout notice names the device's Tailscale user (devices tagged in your tailnet have no user, only an address). autonomOS refuses to start with `--trust-proxy` unless `--host` is this machine only, because otherwise other devices could reach it around `tailscale serve`.
+- **Restarts are safe.** The `--bg` serve configuration is kept by Tailscale across reboots until you remove it (`tailscale serve reset`), and autonomOS doesn't depend on Tailscale being up to start. `autonomos token status` and the server's startup log say whether it's trusting `tailscale serve`.
+
+`install-service --force` rewrites the service file: if you installed with a custom `--port`, pass it again (and use the same port in `tailscale serve`). Updates keep `--host` and `--trust-proxy` as they are.
+
+### Without `tailscale serve`: listen on this machine and your tailnet address
+
+If you'd rather not use `tailscale serve`, autonomOS can listen on this machine (for the `autonomos` command) **and** on the server's tailnet address, and nowhere else:
 
 ```bash
 autonomos install-service --force --host=127.0.0.1,$(tailscale ip -4)
@@ -143,9 +160,7 @@ autonomos install-service --force --host=127.0.0.1,$(tailscale ip -4)
 #  or its cloud VPC address first; autonomOS warns if a name lands off the tailnet)
 ```
 
-Open it from any of your devices at `http://<server-name>:3000` (MagicDNS) or `http://100.x.y.z:3000`. Your office or café network and the public internet can't reach it, Tailscale encrypts every connection, and autonomOS sees each device's own tailnet address, so its protections (the sign-in throttle, and the new-device lock for a short token) work per device. **Restarts are safe:** if autonomOS starts before Tailscale has connected (a reboot), it serves this machine at once and keeps retrying the tailnet address until Tailscale is up. Put `127.0.0.1` first in the list.
-
-`install-service --force` rewrites the service file: if you installed with a custom `--port`, pass it again. Updates keep the list as it is.
+Open it at `http://<server-name>:3000` (MagicDNS) or `http://100.x.y.z:3000`. Your office or café network and the public internet can't reach it, Tailscale encrypts every connection, and autonomOS sees each device's own tailnet address, so its protections work per device. **Restarts are safe:** if autonomOS starts before Tailscale has connected (a reboot), it serves this machine at once and keeps retrying the tailnet address until Tailscale is up. Put `127.0.0.1` first in the list. Don't add `--trust-proxy` here.
 
 ### The default: all network interfaces
 
@@ -156,11 +171,7 @@ sudo ufw allow in on tailscale0 to any port 3000 proto tcp
 sudo ufw deny 3000/tcp
 ```
 
-Firewall rules persist across reboots. On macOS, use the recommended setup above instead.
-
-### `tailscale serve`: not yet
-
-`tailscale serve` would give you an HTTPS address (`https://<server-name>.<tailnet>.ts.net`) without opening any port. Today, every visitor arriving through it reaches autonomOS from this machine itself, so autonomOS can't tell your devices apart, and its per-device protections treat everyone as this machine. Support that reads Tailscale's identity for each visitor is in progress; until it ships, use the recommended setup.
+Firewall rules persist across reboots. On macOS, use one of the Tailscale setups above instead.
 
 ### Google Cloud IAP (a VM without a public address)
 
@@ -181,8 +192,8 @@ Who can open the tunnel is decided by IAM (the `IAP-secured Tunnel User` role). 
 
 ### Security notes
 
-- **Don't open the port to the internet** (no router port-forwarding, no public firewall rule, no `tailscale funnel`). The token is the only lock on it.
-- **On a plain local network, `http://` sends your token unencrypted** at sign-in and in the session cookie. Tailscale and IAP's tunnel encrypt it.
+- **Don't open the port to the internet** (no router port-forwarding, no public firewall rule, no `tailscale funnel`, which is not `tailscale serve`: funnel publishes to everyone). The token is the only lock on it.
+- **On a plain local network, `http://` sends your token unencrypted** at sign-in and in the session cookie. Tailscale (with or without `serve`) and IAP's tunnel encrypt it.
 - **Repeated wrong tokens are throttled.** If your token is short, devices that have never signed in are locked out after 20 wrong tries in total, while devices you already use keep working. Unlock new devices with `autonomos auth unlock`. `autonomos token status` shows where things stand, and `autonomos token rotate` swaps in a long random token.
 
 ## Installing from source

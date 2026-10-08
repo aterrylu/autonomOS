@@ -16,6 +16,8 @@ export type LockState = {
   lockedAt: number | null;
   lastFailureFrom: string | null;
   lastFailureAt: number | null;
+  /** Behind tailscale serve: the Tailscale user of the last attempt. */
+  lastFailureLogin?: string | null;
 };
 
 export function isLockState(v: unknown): v is LockState {

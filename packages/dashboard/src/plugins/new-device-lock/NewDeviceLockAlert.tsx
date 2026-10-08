@@ -156,6 +156,9 @@ export function NewDeviceLockAlert() {
             <span>
               <span style={{ color: page.statusFg }}>Last attempt from</span>{" "}
               <span className="font-mono text-xs">{lock.lastFailureFrom}</span>
+              {lock.lastFailureLogin && (
+                <span> · {lock.lastFailureLogin} (Tailscale)</span>
+              )}
             </span>
           )}
           <span style={{ color: page.statusFg }}>

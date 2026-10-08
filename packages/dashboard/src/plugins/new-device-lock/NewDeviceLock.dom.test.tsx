@@ -143,6 +143,16 @@ describe("owner alert when new devices are locked out", () => {
     );
   });
 
+  it("behind tailscale serve, Details names the attempt's Tailscale user", async () => {
+    lockResponse = () =>
+      json(locked({ lastFailureLogin: "mallory@example.com" }));
+    startOwner();
+    fireEvent.click(await screen.findByTestId("new-device-lock-details"));
+    expect(
+      screen.getByTestId("new-device-lock-details-row").textContent,
+    ).toContain("100.64.1.2 · mallory@example.com (Tailscale)");
+  });
+
   it("Hide swaps the bar for the pill; the pill brings the bar back", async () => {
     startOwner();
     fireEvent.click(await screen.findByTestId("new-device-lock-hide"));
