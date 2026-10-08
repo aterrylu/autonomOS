@@ -51,6 +51,9 @@ interface Persisted {
   lockedAt: number | null;
   /** Addresses a valid credential has come from, most recent last. */
   known: string[];
+  /** The last counted failure: where from and when. Shown to the operator
+   *  (behind auth) so they can tell a scanner from their own new phone. */
+  lastFailure?: { address: string; at: number };
 }
 
 export type LockState = {
@@ -59,6 +62,9 @@ export type LockState = {
   failures: number;
   limit: number;
   lockedAt: number | null;
+  /** The last counted failure's address and time, or null. */
+  lastFailureFrom: string | null;
+  lastFailureAt: number | null;
 };
 
 /** Where the lock persists, inside the config dir (0600). */
@@ -127,6 +133,7 @@ export class NewDeviceLock {
     if (!this.opts.enabled || this.isKnown(address)) return;
     if (this.state.lockedAt !== null) return; // already locked: refused anyway
     this.state.failures += 1;
+    this.state.lastFailure = { address, at: (this.opts.now ?? Date.now)() };
     if (this.state.failures >= this.limit) {
       this.state.lockedAt = (this.opts.now ?? Date.now)();
       (this.opts.log ?? console.warn)(
@@ -139,6 +146,7 @@ export class NewDeviceLock {
   unlock(): void {
     this.state.failures = 0;
     this.state.lockedAt = null;
+    this.state.lastFailure = undefined;
     this.save();
   }
 
@@ -149,6 +157,8 @@ export class NewDeviceLock {
       failures: this.state.failures,
       limit: this.limit,
       lockedAt: this.state.lockedAt,
+      lastFailureFrom: this.state.lastFailure?.address ?? null,
+      lastFailureAt: this.state.lastFailure?.at ?? null,
     };
   }
 
@@ -190,6 +200,12 @@ export function loadStateDetailed(path: string): {
         known: Array.isArray(raw.known)
           ? raw.known.filter((a): a is string => typeof a === "string")
           : [],
+        lastFailure:
+          raw.lastFailure &&
+          typeof raw.lastFailure.address === "string" &&
+          typeof raw.lastFailure.at === "number"
+            ? { address: raw.lastFailure.address, at: raw.lastFailure.at }
+            : undefined,
       },
       damaged: false,
     };
@@ -217,5 +233,10 @@ export function saveState(path: string, state: Persisted): void {
 /** Clear the lock in the persisted file (the CLI, when the server is down). */
 export function unlockOnDisk(path: string): void {
   const s = loadState(path);
-  saveState(path, { ...s, failures: 0, lockedAt: null });
+  saveState(path, {
+    ...s,
+    failures: 0,
+    lockedAt: null,
+    lastFailure: undefined,
+  });
 }

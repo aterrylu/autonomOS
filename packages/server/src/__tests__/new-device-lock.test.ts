@@ -128,6 +128,43 @@ describe("NewDeviceLock", () => {
     assert.equal(fresh.status().locked, false);
   });
 
+  it("tells the operator where the last counted failure came from, and when (survives a restart; unlock clears it)", () => {
+    const path = lockFile();
+    let t = 1_000;
+    const l = new NewDeviceLock({
+      enabled: true,
+      path,
+      limit: 2,
+      now: () => t,
+      log: quiet,
+    });
+    l.noteDistinctFailure("10.0.0.1");
+    t = 2_000;
+    l.noteDistinctFailure("100.64.1.2");
+    // Refused attempts after the lock don't move it: it's the one that locked.
+    t = 3_000;
+    l.noteDistinctFailure("10.0.0.9");
+    assert.deepEqual(
+      { from: l.status().lastFailureFrom, at: l.status().lastFailureAt },
+      { from: "100.64.1.2", at: 2_000 },
+    );
+    const fresh = new NewDeviceLock({
+      enabled: true,
+      path,
+      limit: 2,
+      log: quiet,
+    });
+    assert.equal(fresh.status().lastFailureFrom, "100.64.1.2");
+    fresh.unlock();
+    assert.deepEqual(
+      {
+        from: fresh.status().lastFailureFrom,
+        at: fresh.status().lastFailureAt,
+      },
+      { from: null, at: null },
+    );
+  });
+
   it("disabled (a strong token): never refuses, never counts", () => {
     const l = new NewDeviceLock({
       enabled: false,
@@ -150,8 +187,11 @@ describe("NewDeviceLock", () => {
     assert.deepEqual(Object.keys(saved).sort(), [
       "failures",
       "known",
+      "lastFailure",
       "lockedAt",
     ]);
+    // The last failure is an address and a time, nothing presented.
+    assert.deepEqual(Object.keys(saved.lastFailure).sort(), ["address", "at"]);
   });
 
   it("a damaged file fails CLOSED (locked, loudly), never crashes the boot", () => {
