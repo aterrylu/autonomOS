@@ -88,6 +88,17 @@ export const HOOK_CMD =
   // is best-effort telemetry; it must never steer the agent.
   " >/dev/null 2>&1 || true";
 
+/**
+ * Quote `s` as ONE word for a POSIX shell: wrap it in single quotes, inside
+ * which the shell expands nothing, and write each embedded `'` as `'\''`.
+ * Use it for any value spliced into a command string a shell will run
+ * (security audit H1). A command that can be an argv array (no shell) is
+ * better still.
+ */
+export function shQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 // ── Binary discovery helpers ─────────────────────────────────
 
 const HOME = process.env.HOME || "/tmp";

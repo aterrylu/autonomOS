@@ -34,6 +34,7 @@ import {
   HOOK_CMD,
   RESERVED_ENV_KEYS,
   resolveBinaryFromCandidates,
+  shQuote,
 } from "./shared.js";
 
 // ── Statusline renderer (runtime .mjs script, no build step) ──
@@ -318,11 +319,10 @@ export const claudeCodeProvider: AgentProvider = {
       hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [hookEntry(e)]])),
     };
     if (settings.statusLine?.enabled !== false) {
-      // JSON.stringify produces a properly-escaped, double-quoted path —
-      // safe against install paths containing spaces, quotes, $, backticks.
+      // Shell-quoted, not JSON-quoted: see statusLineCommand.
       settingsPayload.statusLine = {
         type: "command",
-        command: `node ${JSON.stringify(STATUSLINE_SCRIPT)}`,
+        command: statusLineCommand(STATUSLINE_SCRIPT),
         refreshInterval: STATUSLINE_REFRESH_SECONDS,
       };
     }
@@ -1031,4 +1031,14 @@ export function attachStartupWatcherCore(
 /** For testing — reset the cached binary path */
 export function _resetBinaryCacheForTesting(): void {
   binaryCache.path = null;
+}
+
+/**
+ * The statusline command Claude Code runs through a shell. The script path is
+ * POSIX single-quoted (security audit H1): JSON.stringify gave a double-quoted
+ * string, in which the shell still expands `$(...)`, `${...}` and backticks,
+ * so an install path containing them ran code on every statusline refresh.
+ */
+export function statusLineCommand(scriptPath: string): string {
+  return `node ${shQuote(scriptPath)}`;
 }
