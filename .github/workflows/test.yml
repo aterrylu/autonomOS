@@ -3,6 +3,11 @@ name: Check
 on:
   pull_request:
     branches: [main]
+  # Main's own merge commits run too (ADR-149): with "up to date" no longer
+  # required, a squash can land a combination no PR run tested, and the
+  # release gate (release.yml main-ci) requires these to be green at the tag.
+  push:
+    branches: [main]
 
 jobs:
   check:
@@ -61,3 +66,11 @@ jobs:
         env:
           AUTONOMOS_INTEGRATION: "1"
         run: make check
+
+      # Bundle-size ratchet: the dashboard's gzipped JS/CSS must stay within
+      # packages/dashboard/perf-budget.json (scripts/check-bundle-budget.ts).
+      # `make check` doesn't build the dashboard, so build it here.
+      - name: Dashboard bundle budget
+        run: |
+          bun --filter @autonomos/dashboard build
+          packages/server/node_modules/.bin/tsx scripts/check-bundle-budget.ts

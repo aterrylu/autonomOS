@@ -14,6 +14,7 @@
     "./provenance.js": "./src/provenance.ts",
     "./configDir.js": "./src/configDir.ts",
     "./installInfo.js": "./src/installInfo.ts",
+    "./newDeviceLock.js": "./src/newDeviceLock.ts",
     "./sourceUpgrade.js": "./src/sourceUpgrade.ts",
     "./upgrade.js": "./src/upgrade.ts",
     "./upgradeStatus.js": "./src/upgradeStatus.ts",

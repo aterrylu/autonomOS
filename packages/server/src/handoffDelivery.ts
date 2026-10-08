@@ -37,6 +37,7 @@ import {
   listHandoffQueue,
   removeHandoffItem,
 } from "./handoffQueue.js";
+import { sanitizeForPaste } from "./pasteSafety.js";
 import { withPtyInputSource } from "./ptyInputLog.js";
 
 // The submitting Enter is sent slightly after the paste so the TUI has finished
@@ -104,12 +105,7 @@ function deliveryHint(fromUri: string): string {
 }
 
 function formatForInjection(item: HandoffQueueItem): string {
-  // Strip the bracketed-paste terminator + bare CR from the agent-controlled
-  // fields so a crafted message can't close paste-mode early and inject raw
-  // keystrokes (control sequences, auto-submitting newlines) into the pane the
-  // human is watching. This content arrives over the gateway from a DIFFERENT
-  // agent — a wider door than promptDelivery's own argv (nox review).
-  const clean = (s: string) => s.replace(/\x1b\[201~/g, "").replace(/\r/g, "");
+  const clean = sanitizeForPaste;
   const from = clean(item.from);
   const body = clean(item.message);
   // A pre-envelope queue item (the forward-compat case) may carry NO fromUri —

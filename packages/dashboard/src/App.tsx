@@ -7,12 +7,16 @@ import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
+import { LockedOutPage } from "./LockedOutPage";
 import {
   type AuthState,
+  isNewDevicesLocked,
   LoginPage,
   settleLinkLogin,
   takeLinkLogin,
 } from "./LoginPage";
+import { startLockPoll } from "./plugins/new-device-lock/lockState";
+import { NewDeviceLockAlert } from "./plugins/new-device-lock/NewDeviceLockAlert";
 import { UpdatedBanner } from "./plugins/update-badge/UpdatedBanner";
 import { startPushBridge } from "./pushBridge";
 import { QuickSwitcher } from "./shortcuts/QuickSwitcher";
@@ -35,6 +39,9 @@ async function probeAuth(label: "probe" | "retry probe"): Promise<AuthState> {
     return "authenticated";
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) return "unauthenticated";
+    // A new device while new devices are locked out (ADR-148): the lock
+    // screen, not a token form the server would refuse unread.
+    if (isNewDevicesLocked(err)) return "locked-out";
     if (err instanceof ApiError && !err.unreachable) {
       console.error(`[auth] ${label} returned HTTP ${err.status}`);
       return "error";
@@ -100,6 +107,12 @@ export function App() {
     return startPushBridge();
   }, [authState]);
 
+  // The new-device lock, for the owner's alert bar, pill and bell (ADR-148).
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    return startLockPoll();
+  }, [authState]);
+
   // Global keyboard shortcuts (see src/shortcuts/registry.ts). Gated on auth
   // so no chord fires over the login page's password field.
   useShortcuts(authState === "authenticated");
@@ -129,7 +142,25 @@ export function App() {
   }
 
   if (authState === "unauthenticated") {
-    return <LoginPage initialError={loginError} />;
+    return (
+      <LoginPage
+        initialError={loginError}
+        onLockedOut={() => setAuthState("locked-out")}
+      />
+    );
+  }
+
+  if (authState === "locked-out") {
+    return (
+      <LockedOutPage
+        checkAgain={async () => {
+          const next = await probeAuth("retry probe");
+          // Still locked: stay on this page and say so (the page handles it).
+          if (next !== "locked-out") setAuthState(next);
+          return next;
+        }}
+      />
+    );
   }
 
   if (authState === "error") {
@@ -172,6 +203,7 @@ export function App() {
         onClick={requestNotificationPermission}
       >
         <Header />
+        <NewDeviceLockAlert />
         <UpdatedBanner />
         <div className="relative flex flex-1 overflow-hidden">
           {sidebarOpen && (

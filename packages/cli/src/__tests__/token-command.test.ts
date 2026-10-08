@@ -25,6 +25,7 @@ delete process.env.AUTONOMOS_TOKEN;
 const { getConfigDir } = await import("@autonomos/server/configDir.js");
 const { runTokenCommand, removeEnvToken, inspectServiceDefinition } =
   await import("../commands/token.js");
+const { runAuthCommand } = await import("../commands/auth.js");
 const { findInstalledService } = await import("../lib/service-control.js");
 const { getServicePaths } = await import("../lib/service-paths.js");
 
@@ -229,5 +230,44 @@ describe("autonomos token status", () => {
     writeFileSync(join(TEST_DIR, "token"), "0123456789abcdef".repeat(4));
     await runTokenCommand(["status"]);
     assert.match(out.join("\n"), /strong, 64 characters/);
+  });
+});
+
+describe("the new-device lock from the CLI (ADR-148)", () => {
+  const lockPath = () => join(TEST_DIR, "auth-lock.json");
+  const lockedState = () =>
+    writeFileSync(
+      lockPath(),
+      JSON.stringify({ failures: 20, lockedAt: 1_790_000_000_000, known: [] }),
+    );
+
+  it("token status reports a lock (counts only) for a short token", async () => {
+    writeFileSync(join(TEST_DIR, "token"), "QZXJ");
+    lockedState();
+    assert.equal(await runTokenCommand(["status"]), 0);
+    const text = out.join("\n");
+    assert.match(text, /New devices: LOCKED OUT after 20 failed sign-ins/);
+    assert.match(text, /autonomos auth unlock/);
+    assert.ok(!text.includes("QZXJ"));
+  });
+
+  it("token status says open, with the count, before the cap", async () => {
+    writeFileSync(join(TEST_DIR, "token"), "QZXJ");
+    assert.equal(await runTokenCommand(["status"]), 0);
+    assert.match(out.join("\n"), /New devices: open \(0 of 20 failed sign-ins/);
+  });
+
+  it("auth unlock with the server stopped clears the saved lock", async () => {
+    lockedState();
+    assert.equal(await runAuthCommand(["unlock"]), 0);
+    assert.match(out.join("\n"), /New devices can sign in again/);
+    const saved = JSON.parse(readFileSync(lockPath(), "utf8"));
+    assert.equal(saved.lockedAt, null);
+    assert.equal(saved.failures, 0);
+  });
+
+  it("auth refuses anything but `unlock`", async () => {
+    assert.equal(await runAuthCommand([]), 64);
+    assert.equal(await runAuthCommand(["lock"]), 64);
   });
 });
