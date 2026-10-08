@@ -58,6 +58,9 @@ const READY_TIMEOUT_MS = 15_000;
 
 export interface BootedServer {
   port: number;
+  /** Where to reach THIS server: `http://127.0.0.1:<port>` by default,
+   *  `http://[::1]:<port>` for a `bindAll` boot. Build request URLs from it. */
+  baseUrl: string;
   token: string;
   configDir: string;
   /** Throwaway HOME the server and every agent it spawns run under. */
@@ -197,6 +200,12 @@ export async function bootServer(opts?: {
   anthropicAuthToken?: string;
   /** Extra server CLI flags (e.g. `--print-url`). */
   extraArgs?: string[];
+  /** Listen on every interface (the product default) instead of 127.0.0.1.
+   *  Only for tests of network-bind behavior. Such a server is addressed at
+   *  [::1] (see `baseUrl`), because on macOS a socket bound to 127.0.0.1 can
+   *  share the port of a server on `::`, and requests to 127.0.0.1 then reach
+   *  the OTHER socket (the usage-queue "401 !== 201" flake). */
+  bindAll?: boolean;
   /** Boot AGAIN on a previous boot's config dir (and its throwaway HOME) —
    *  a real server restart, which resumes that boot's persisted agents. The
    *  previous server must have EXITED (await its kill()) first. */
@@ -257,6 +266,11 @@ export async function bootServer(opts?: {
         ...process.env,
         AUTONOMOS_CONFIG_DIR: configDir,
         AUTONOMOS_TOKEN: token,
+        // Loopback by default: two sockets on the SAME address can never share
+        // a port, so no other test's 127.0.0.1 listener can answer for this
+        // server (see `bindAll`). A test's own --host flag still wins (the
+        // server ranks the flag above the env var), and so does opts.env.
+        AUTONOMOS_HOST: opts?.bindAll ? undefined : "127.0.0.1",
         // Inherited by every spawned agent (providers/shared.ts buildBaseEnv).
         HOME: fakeHome,
         CLAUDE_CONFIG_DIR: fakeClaudeDir,
@@ -361,6 +375,9 @@ export async function bootServer(opts?: {
 
   return {
     port,
+    baseUrl: opts?.bindAll
+      ? `http://[::1]:${port}`
+      : `http://127.0.0.1:${port}`,
     token,
     configDir,
     fakeHome,
@@ -416,7 +433,7 @@ export async function authedJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<{ status: number; body: T }> {
-  const res = await fetch(`http://127.0.0.1:${server.port}${path}`, {
+  const res = await fetch(`${server.baseUrl}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${server.token}`,
