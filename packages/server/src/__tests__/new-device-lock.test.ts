@@ -19,7 +19,7 @@ import {
 } from "../newDeviceLock.js";
 
 /**
- * L1: the new-device lock (ADR-135). A short token's total exposure is capped:
+ * L1: the new-device lock (ADR-148). A short token's total exposure is capped:
  * after LIMIT distinct failures from never-signed-in devices, new devices are
  * refused until the operator unlocks; known devices and loopback never are.
  */

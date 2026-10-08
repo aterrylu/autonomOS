@@ -1,4 +1,4 @@
-## ADR-135: A short token is protected by a new-device lock, not nagging; the bind stays all-interfaces
+## ADR-148: A short token is protected by a new-device lock, not nagging; the bind stays all-interfaces
 
 - **Date:** 2026-10-01
 - **Decided by:** Terry (human), relayed by TeamLead@autonomOS. Terry made the three product calls: no warning or banner, keep the all-interfaces bind and document tailnet/IAP use, and keep refusing weak tokens on new network installs. TeamLead@autonomOS set the hard-lockout design and the K=20 cap. SecurityFix-Auth@autonomOS computed the exposure, designed the details and implemented them.

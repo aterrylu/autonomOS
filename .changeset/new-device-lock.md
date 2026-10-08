@@ -9,4 +9,4 @@ feat(security): if your operator token is short, autonomOS now protects it inste
 - Unlock with `autonomos auth unlock` or the "New devices locked · Unlock" button in the dashboard. `autonomos token status` shows the state.
 - The startup warning is now a single info line.
 
-See ADR-135.
+See ADR-148.

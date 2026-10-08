@@ -233,7 +233,7 @@ describe("autonomos token status", () => {
   });
 });
 
-describe("the new-device lock from the CLI (ADR-135)", () => {
+describe("the new-device lock from the CLI (ADR-148)", () => {
   const lockPath = () => join(TEST_DIR, "auth-lock.json");
   const lockedState = () =>
     writeFileSync(

@@ -204,7 +204,7 @@ function expandIPv6(addr: string): string[] | null {
 
 /** The TCP peer of this request (never a forwarding header). */
 /**
- * The TCP peer exactly, for the new-device lock's KNOWN set (ADR-135). Unlike
+ * The TCP peer exactly, for the new-device lock's KNOWN set (ADR-148). Unlike
  * peerAddress it does NOT collapse IPv6 to its /64: a /64 is a whole Wi-Fi
  * network under SLAAC, and remembering it would make every neighbor of a
  * signed-in device "known" (SecurityAudit, #475). Only `::ffff:` is unwrapped.

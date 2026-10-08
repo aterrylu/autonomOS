@@ -12,7 +12,7 @@ import { useStore } from "../../store";
 import { NewDeviceLockStatusBarItem } from "./NewDeviceLockStatusBarItem";
 
 /**
- * The new-device lock pill (ADR-135): hidden unless the server reports new
+ * The new-device lock pill (ADR-148): hidden unless the server reports new
  * devices locked; its Unlock button clears the lock and says so in the
  * action toast. The server is faked at the fetch boundary with real Responses.
  */

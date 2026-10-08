@@ -1,4 +1,4 @@
-// `autonomos auth unlock` — reopen sign-in for new devices (ADR-135).
+// `autonomos auth unlock` — reopen sign-in for new devices (ADR-148).
 //
 // With a short operator token, the server locks out NEW devices after a fixed
 // number of failed sign-ins, so an attacker's total chance is capped instead

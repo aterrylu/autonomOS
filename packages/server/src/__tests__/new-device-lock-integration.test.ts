@@ -14,7 +14,7 @@ import {
 } from "./helpers/test-server.js";
 
 /**
- * L3 integration (AUTONOMOS_INTEGRATION=1): the new-device lock (ADR-135) on a
+ * L3 integration (AUTONOMOS_INTEGRATION=1): the new-device lock (ADR-148) on a
  * real server with a short token. Loopback is exempt by design, so the
  * "attacker" reaches the server through this machine's LAN address, a real
  * non-loopback peer. Skipped when the machine has none.

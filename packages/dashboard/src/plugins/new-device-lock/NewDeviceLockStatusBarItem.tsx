@@ -1,4 +1,4 @@
-// New-device lock pill (ADR-135).
+// New-device lock pill (ADR-148).
 //
 // With a short operator token, the server locks out devices that have never
 // signed in after a fixed number of failed sign-ins. This dashboard is on a
