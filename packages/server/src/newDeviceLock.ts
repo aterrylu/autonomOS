@@ -41,8 +41,11 @@ export function newDeviceFailureLimit(raw: string | undefined): number {
     : NEW_DEVICE_FAILURE_LIMIT;
 }
 
-/** Bound on remembered addresses (oldest dropped). */
+/** Bound on remembered addresses (least recently used dropped). */
 export const MAX_KNOWN_ADDRESSES = 256;
+/** A known address within this many of the newest isn't moved on a hit, so
+ *  everyday use (a few devices taking turns) never rewrites the file. */
+export const RECENT_KNOWN_WINDOW = 32;
 
 interface Persisted {
   /** Distinct failures from unknown addresses since the last unlock. */
@@ -121,8 +124,17 @@ export class NewDeviceLock {
 
   /** A credential from this address was valid: remember the address. */
   noteSuccess(address: string): void {
-    if (isLoopbackAddress(address) || this.state.known.includes(address))
+    if (isLoopbackAddress(address)) return;
+    const at = this.state.known.indexOf(address);
+    if (at >= 0) {
+      // Keep "most recent last" true, so the cap drops the device least
+      // recently used, not the operator's oldest everyday one (nox, #475).
+      if (at >= this.state.known.length - RECENT_KNOWN_WINDOW) return;
+      this.state.known.splice(at, 1);
+      this.state.known.push(address);
+      this.save();
       return;
+    }
     this.state.known.push(address);
     if (this.state.known.length > MAX_KNOWN_ADDRESSES) this.state.known.shift();
     this.save();

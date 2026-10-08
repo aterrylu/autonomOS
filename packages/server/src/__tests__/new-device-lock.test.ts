@@ -12,6 +12,7 @@ import { after, describe, it } from "node:test";
 import { normalizeAddress, rawPeerAddress } from "../authRateLimit.js";
 import {
   isLoopbackAddress,
+  MAX_KNOWN_ADDRESSES,
   NEW_DEVICE_FAILURE_LIMIT,
   NewDeviceLock,
   newDeviceFailureLimit,
@@ -246,6 +247,21 @@ describe("NewDeviceLock", () => {
       lines[0],
       /New devices are now locked out.*autonomos auth unlock/,
     );
+  });
+
+  it("forgets the device LEAST recently used, not the oldest everyday one (#475)", () => {
+    const path = lockFile();
+    const l = new NewDeviceLock({ enabled: true, path, log: quiet });
+    l.noteSuccess("100.64.0.1"); // the operator's home device, first ever
+    for (let i = 0; i < MAX_KNOWN_ADDRESSES - 1; i++)
+      l.noteSuccess(`10.1.${i >> 8}.${i & 255}`);
+    l.noteSuccess("100.64.0.1"); // still in daily use
+    l.noteSuccess("10.9.9.9"); // the cap is now exceeded by one
+    assert.equal(l.isKnown("100.64.0.1"), true, "the everyday device stays");
+    assert.equal(l.isKnown("10.1.0.0"), false, "the least recently used goes");
+    // And it persisted that order.
+    const fresh = new NewDeviceLock({ enabled: true, path, log: quiet });
+    assert.equal(fresh.isKnown("100.64.0.1"), true);
   });
 
   it("remembers at most a bounded number of known devices", () => {
