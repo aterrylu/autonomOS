@@ -204,7 +204,10 @@ export async function bootServer(opts?: {
    *  Only for tests of network-bind behavior. Such a server is addressed at
    *  [::1] (see `baseUrl`), because on macOS a socket bound to 127.0.0.1 can
    *  share the port of a server on `::`, and requests to 127.0.0.1 then reach
-   *  the OTHER socket (the usage-queue "401 !== 201" flake). */
+   *  the OTHER socket (the usage-queue "401 !== 201" flake). Keep a bindAll
+   *  server short-lived and AGENT-LESS: agents reach their server at
+   *  `localhost`, which may try ::1 first, and a bindAll server on `::` could
+   *  answer those for a loopback server that shares its port number. */
   bindAll?: boolean;
   /** Boot AGAIN on a previous boot's config dir (and its throwaway HOME) —
    *  a real server restart, which resumes that boot's persisted agents. The
@@ -267,8 +270,8 @@ export async function bootServer(opts?: {
         AUTONOMOS_CONFIG_DIR: configDir,
         AUTONOMOS_TOKEN: token,
         // Loopback by default: two sockets on the SAME address can never share
-        // a port, so no other test's 127.0.0.1 listener can answer for this
-        // server (see `bindAll`). A test's own --host flag still wins (the
+        // a port, so no other test's 127.0.0.1 listener can answer for the
+        // harness's requests (see `bindAll` for the one remaining gap). A test's own --host flag still wins (the
         // server ranks the flag above the env var), and so does opts.env.
         AUTONOMOS_HOST: opts?.bindAll ? undefined : "127.0.0.1",
         // Inherited by every spawned agent (providers/shared.ts buildBaseEnv).
