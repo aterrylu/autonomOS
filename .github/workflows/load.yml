@@ -25,7 +25,7 @@ on:
       - packages/server/perf/statusline-load/**
       - .github/workflows/load.yml
 
-# Least privilege (ADR-150): this workflow only reads the repo.
+# Least privilege (ADR-151): this workflow only reads the repo.
 permissions:
   contents: read
 

@@ -1,4 +1,4 @@
-# Keeps the SHA-pinned GitHub Actions current (ADR-150). Actions are pinned to
+# Keeps the SHA-pinned GitHub Actions current (ADR-151). Actions are pinned to
 # full commit SHAs with a "# vX.Y.Z" comment; Dependabot reads that comment,
 # opens a PR moving the SHA and the comment together, and nox + CI review it
 # like any other change. Only the github-actions ecosystem here: npm updates

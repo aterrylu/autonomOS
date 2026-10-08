@@ -16,7 +16,7 @@ on:
     - cron: "17 9 * * *" # daily, 09:17 UTC
   workflow_dispatch:
 
-# Least privilege (ADR-150): this workflow only reads the repo.
+# Least privilege (ADR-151): this workflow only reads the repo.
 permissions:
   contents: read
 

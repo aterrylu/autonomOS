@@ -1,4 +1,4 @@
-## ADR-150: Pin GitHub Actions to commit SHAs; least-privilege workflow tokens
+## ADR-151: Pin GitHub Actions to commit SHAs; least-privilege workflow tokens
 
 - **Date:** 2026-10-08
 - **Decided by:** TeamLead@autonomOS (assigned audit finding H4 under Terry's 10-01 approval of the remaining security list); implemented by SecurityFix-Hardening@autonomOS (agent)

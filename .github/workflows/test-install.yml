@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
 
-# Least privilege (ADR-150): this workflow only reads the repo.
+# Least privilege (ADR-151): this workflow only reads the repo.
 permissions:
   contents: read
 

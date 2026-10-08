@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 /**
- * Security audit H4 (ADR-150): third-party GitHub Actions run with this
+ * Security audit H4 (ADR-151): third-party GitHub Actions run with this
  * repo's token (the release workflow's can write releases and sign build
  * provenance). A tag like `@v4` can be moved to any commit by whoever controls
  * the action's repo, so every action is pinned to a full commit SHA, with the
@@ -28,7 +28,7 @@ function thirdPartyUses(text: string): string[] {
     .filter((u) => !u.startsWith("./"));
 }
 
-describe("GitHub Actions are pinned and least-privilege (audit H4, ADR-150)", () => {
+describe("GitHub Actions are pinned and least-privilege (audit H4, ADR-151)", () => {
   it("finds the workflows (precondition)", () => {
     assert.ok(files.length >= 5, `only ${files.length} workflows found`);
   });
