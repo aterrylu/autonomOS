@@ -165,10 +165,13 @@ const CHANNELS_NEEDLES = [
 // 3 left processes writing past teardown vs 0 without, and the median prompt
 // receipt went 691 → 1150ms). But with no flag, Claude Code 2.1.284+ starts in
 // AUTO (and a user's settings.json `defaultMode` applies; `--resume` restores
-// the session's last mode). So `manual` is pinned through the inline
-// --settings instead (`manualSettingsPin`): measured, that gives `default`
-// on a fresh spawn AND on a resume of a session last in auto, and it beats
-// the user's own defaultMode, with no flag on argv.
+// the session's last mode). So `manual` is pinned (ADR-152):
+//  - fresh spawn: the inline --settings carries `defaultMode: "default"`
+//    (`manualSettingsPin`), with no flag on argv. Measured: runs `default`,
+//    beating the user's own defaultMode.
+//  - resume/fork: the pin alone LOSES to an interactive --resume's restore
+//    (measured), so `claudePermissionArgs` also passes `--permission-mode
+//    manual` there.
 const PASS_MANUAL_FLAG = false;
 /** The --settings keys that make a flagless `manual` really manual. */
 function manualSettingsPin(
