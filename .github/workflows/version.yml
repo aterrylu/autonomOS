@@ -67,7 +67,7 @@ jobs:
     env:
       LEFTHOOK: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           # Persist these credentials for the later `git push` of the tag. Using
@@ -75,7 +75,7 @@ jobs:
           # triggers release.yml; falls back to GITHUB_TOKEN (no auto-trigger).
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -84,7 +84,7 @@ jobs:
 
       - name: Maintain Version Packages PR
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
           version: bun run version
           # No `publish` — releases are produced by release.yml on the v-tag,
