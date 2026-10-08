@@ -84,6 +84,9 @@ describe("trust-proxy=tailscale on a real server", {
       const s = await bootServer({
         token: WEAK,
         extraArgs,
+        // No --host means the product default (every interface), which the
+        // refusal tests depend on; the harness alone would bind loopback.
+        bindAll: !extraArgs.some((a) => a.startsWith("--host")),
         prepareConfigDir: (dir) => mkdirSync(join(dir, "templates")),
       });
       booted.push(s);
