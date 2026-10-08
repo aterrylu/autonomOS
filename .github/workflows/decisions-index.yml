@@ -83,13 +83,13 @@ jobs:
     # A no-op run takes ~15s and a regenerating or renumbering one ~30s; 5 minutes bounds a hang.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           # Full history: the collision fix ranks files by the commit that added them.
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
