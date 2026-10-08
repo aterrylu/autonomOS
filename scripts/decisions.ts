@@ -11,6 +11,8 @@
 //   index [--check]           regenerate docs/decisions/README.md (make adr-index)
 //   new "<title>"             allocate the next free number, write a template (make adr NEW=…)
 //   renumber <file>           move a colliding ADR to the next free number (make adr-renumber FILE=…)
+//   fix-collisions [--body f] renumber the later of two ADRs sharing a number (run on main by the
+//                             decisions-index workflow; writes the PR body to f)
 //   import [<ref>]            move ADRs a branch appended to the old docs/DECISIONS.md into
 //                             their own files (make adr-import REF=…)
 //   migrate [<ref>] --force   split <ref>:docs/DECISIONS.md (already run; re-run on the latest
@@ -335,7 +337,7 @@ export function checkDecisions(root: string): string[] {
     ...checkLegacyLogIsStub(root),
     ...checkDirectoryContents(dir),
     ...checkNewEntries(dir, manifest),
-    ...checkNumbersUnique(dir, manifest),
+    ...checkNumbersUnique(root, dir, manifest),
   ];
 }
 
@@ -447,27 +449,213 @@ function checkNewEntry(dir: string, file: string): string[] {
 }
 
 /** No number is used twice, except the grandfathered legacy repeats. */
-function checkNumbersUnique(dir: string, manifest: Manifest): string[] {
+function checkNumbersUnique(
+  root: string,
+  dir: string,
+  manifest: Manifest,
+): string[] {
   const entries = loadEntries(dir, manifest);
   const next = pad(Math.max(...entries.map((e) => e.num)) + 1);
+  const errors: string[] = [];
+  for (const group of collidingGroups(entries)) {
+    const newcomers = group.filter((e) => !e.legacy);
+    // Name the commit that added each file (on main: the merge that brought it), so whoever
+    // merged later can see it was them. Skipped in a shallow clone, where git would claim the
+    // one grafted commit added every file.
+    const where = (e: Entry) => {
+      const c = addedIn(root, e.file);
+      return c ? ` (added in ${c.sha.slice(0, 7)} "${c.subject}")` : "";
+    };
+    errors.push(
+      `ADR-${pad(group[0]!.num)} is used by ${group.length} files: ${group.map((e) => relPath(e.file) + where(e)).join(", ")}.\n` +
+        "  Parallel PRs picked the same number; whoever merges LATER renumbers (one file, nothing else changes).\n" +
+        `  Fix: ${newcomers.map((e) => `make adr-renumber FILE=${relPath(e.file)}`).join("  or  ")}` +
+        `  (next free on this branch: ADR-${next}; the script also checks open PRs).` +
+        " On main, the decisions-index workflow opens this renumber PR itself.",
+    );
+  }
+  return errors;
+}
+
+/** Groups of entries sharing a number, except groups made only of grandfathered legacy files. */
+function collidingGroups(entries: Entry[]): Entry[][] {
   const byNum = new Map<number, Entry[]>();
   for (const e of entries) {
     const group = byNum.get(e.num);
     if (group) group.push(e);
     else byNum.set(e.num, [e]);
   }
-  const errors: string[] = [];
-  for (const [num, group] of byNum) {
-    if (group.length < 2 || group.every((e) => e.legacy)) continue;
-    const newcomers = group.filter((e) => !e.legacy);
-    errors.push(
-      `ADR-${pad(num)} is used by ${group.length} files: ${group.map((e) => relPath(e.file)).join(", ")}.\n` +
-        "  Parallel PRs picked the same number; whoever merges LATER renumbers (one file, nothing else changes).\n" +
-        `  Fix: ${newcomers.map((e) => `make adr-renumber FILE=${relPath(e.file)}`).join("  or  ")}` +
-        `  (next free on this branch: ADR-${next}; the script also checks open PRs).`,
+  return [...byNum.values()].filter(
+    (g) => g.length > 1 && !g.every((e) => e.legacy),
+  );
+}
+
+// ── collisions on main ──────────────────────────────────────────────────────
+//
+// Since 2026-10-08 main no longer requires branches to be up to date, so two PRs that each
+// picked ADR-NNN can both pass CI and both merge. The decisions-index workflow then runs
+// `fix-collisions` on main: it renumbers the file added LATER (the "later merger renumbers"
+// rule, made mechanical) and opens a PR whose body lists every ADR-NNN mention that later
+// merge added, for its owner to fix. It never edits code.
+
+export interface AddCommit {
+  sha: string;
+  subject: string;
+  /** Position in history: commits reachable from it. Larger = later. Not a timestamp. */
+  order: number;
+}
+
+function isShallow(root: string): boolean {
+  try {
+    return (
+      git(root, ["rev-parse", "--is-shallow-repository"]).trim() === "true"
     );
+  } catch {
+    return true;
   }
-  return errors;
+}
+
+/** The commit that added `docs/decisions/<file>` at that path (a renumber's move counts). */
+export function addedIn(root: string, file: string): AddCommit | undefined {
+  if (isShallow(root)) return undefined;
+  try {
+    const line = git(root, [
+      "log",
+      "--no-renames",
+      "--diff-filter=A",
+      "--format=%H%x09%s",
+      "-1",
+      "--",
+      relPath(file),
+    ]).trim();
+    if (!line) return undefined;
+    const [sha, ...subject] = line.split("\t");
+    const order = Number(git(root, ["rev-list", "--count", sha!]).trim());
+    return { sha: sha!, subject: subject.join("\t"), order };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Lines `commit` added outside docs/decisions/ that mention ADR-NNN, as `path:line: text`. */
+export function mentionsAddedIn(
+  root: string,
+  commit: string,
+  num: number,
+): string[] {
+  const id = new RegExp(`\\bADR-${pad(num)}(?!\\d)`);
+  const out: string[] = [];
+  let path = "";
+  let line = 0;
+  const diff = git(root, [
+    "show",
+    "--format=",
+    "--unified=0",
+    "--no-renames",
+    "--no-color",
+    commit,
+  ]);
+  for (const l of diff.split("\n")) {
+    if (l.startsWith("+++ ")) {
+      path = l.startsWith("+++ b/") ? l.slice(6) : "";
+      continue;
+    }
+    const hunk = /^@@ -\S+ \+(\d+)/.exec(l);
+    if (hunk) {
+      line = Number(hunk[1]);
+      continue;
+    }
+    if (l.startsWith("+")) {
+      if (path && !path.startsWith(`${DECISIONS_DIR}/`) && id.test(l)) {
+        out.push(`${path}:${line}: ${l.slice(1).trim().slice(0, 160)}`);
+      }
+      line++;
+    }
+  }
+  return out;
+}
+
+export interface CollisionFix {
+  num: number;
+  /** The file that keeps the number: legacy, else the earliest added. */
+  keep: string;
+  keepAddedIn?: AddCommit;
+  /** The file added later, to renumber. */
+  renumber: string;
+  addedIn?: AddCommit;
+  mentions: string[];
+  /** Set by fixCollisions: the renumbered path. */
+  to?: string;
+}
+
+/**
+ * What to renumber for each collision: in each group the legacy file (else the earliest-added)
+ * keeps the number and every other file moves. A file with no add-commit (untracked) counts as
+ * the latest; ties fall back to filename order, so the plan is deterministic.
+ */
+export function collisionPlan(root: string): CollisionFix[] {
+  const dir = join(root, DECISIONS_DIR);
+  const fixes: CollisionFix[] = [];
+  for (const group of collidingGroups(loadEntries(dir, loadManifest(dir)))) {
+    const ranked = group
+      .map((e) => ({ e, c: e.legacy ? undefined : addedIn(root, e.file) }))
+      .sort((a, b) => {
+        if (a.e.legacy !== b.e.legacy) return a.e.legacy ? -1 : 1;
+        const ao = a.c?.order ?? Number.POSITIVE_INFINITY;
+        const bo = b.c?.order ?? Number.POSITIVE_INFINITY;
+        return ao - bo || a.e.file.localeCompare(b.e.file);
+      });
+    const [first, ...later] = ranked;
+    for (const { e, c } of later) {
+      if (e.legacy) continue; // two legacy repeats are grandfathered
+      fixes.push({
+        num: e.num,
+        keep: first!.e.file,
+        keepAddedIn: first!.c,
+        renumber: e.file,
+        addedIn: c,
+        mentions: c ? mentionsAddedIn(root, c.sha, e.num) : [],
+      });
+    }
+  }
+  return fixes;
+}
+
+/** Apply the plan with `renumber` (git mv + header, staged); later fixes see earlier moves. */
+export function fixCollisions(root: string): CollisionFix[] {
+  return collisionPlan(root).map((f) => ({
+    ...f,
+    to: renumber(root, relPath(f.renumber)),
+  }));
+}
+
+const commitRef = (c?: AddCommit) =>
+  c ? `${c.sha.slice(0, 7)} "${c.subject}"` : "an uncommitted change";
+
+/** The renumber PR's body: what moved, why, and the mentions the owner must update by hand. */
+export function renderCollisionBody(fixes: CollisionFix[]): string {
+  const rows = fixes.map((f) => {
+    const n = /ADR-(\d+)/.exec(f.to ?? "")?.[1] ?? "?";
+    return `| ADR-${pad(f.num)} | \`${f.keep}\` (${commitRef(f.keepAddedIn)}) | \`${f.renumber}\` (${commitRef(f.addedIn)}) | **ADR-${n}** |`;
+  });
+  const mentions = fixes.map((f) => {
+    const head = `**ADR-${pad(f.num)} mentions added by ${commitRef(f.addedIn)}:**`;
+    if (f.mentions.length === 0)
+      return `${head} none outside \`${DECISIONS_DIR}/\`.`;
+    return `${head} its owner should update these to the new number in a follow-up (this PR never edits code):\n${f.mentions.map((m) => `- \`${m}\``).join("\n")}`;
+  });
+  return `**Automated: ADR number collision on main.**
+
+Two PRs merged the same ADR number. Since 2026-10-08 main doesn't require branches to be up to date, so CI can't catch this before merge. Under the "later merger renumbers" rule, this PR moves the ADR that was added LATER to the next free number and rewrites its header. It changes no other file.
+
+| Number | Keeps it | Renumbered (added later) | New number |
+|---|---|---|---|
+${rows.join("\n")}
+
+${mentions.join("\n\n")}
+
+Produced by \`scripts/decisions.ts fix-collisions\` in the decisions-index workflow. Check locally: \`make adr-check\`.
+`;
 }
 
 // ── index ───────────────────────────────────────────────────────────────────
@@ -1037,6 +1225,25 @@ function main(argv: string[]): number {
       for (const f of result.written) console.log(`wrote ${f}`);
       return 0;
     }
+    case "fix-collisions": {
+      const bodyAt = args[args.indexOf("--body") + 1];
+      let fixes: CollisionFix[];
+      try {
+        fixes = fixCollisions(root);
+      } catch (err) {
+        console.error(`✗ ${why(err)}`);
+        return 1;
+      }
+      if (fixes.length === 0) {
+        console.log("no duplicate ADR numbers to fix");
+        return 0;
+      }
+      for (const f of fixes)
+        console.log(`renumbered ${relPath(f.renumber)} → ${f.to}`);
+      if (args.includes("--body") && bodyAt)
+        writeFileSync(bodyAt, renderCollisionBody(fixes));
+      return 0;
+    }
     case "migrate": {
       // Re-run on the latest main before merging the split, so entries appended meanwhile
       // are migrated as legacy too: migrate origin/main --force
@@ -1074,7 +1281,7 @@ function main(argv: string[]): number {
     }
     default:
       console.error(
-        "usage: decisions.ts check | index [--check] | new <title> | renumber <file> | import [<ref>] | migrate [<ref>] [--force]",
+        "usage: decisions.ts check | index [--check] | new <title> | renumber <file> | import [<ref>] | fix-collisions [--body <file>] | migrate [<ref>] [--force]",
       );
       return 2;
   }

@@ -35,8 +35,26 @@ name: Decisions index
 #
 # Concurrency is on the JOB, not the workflow: a skipped job (the bot's own merge)
 # never joins the group, so it can't cancel a real regeneration queued behind it.
+#
+# ADR number collisions (ADR-150). Since 2026-10-08 main doesn't require branches
+# to be up to date, so two PRs that each picked ADR-NNN can both pass CI and both
+# merge. So this job ALSO runs on every push that touches an ADR file. A push run
+# only validates: it regenerates nothing (the index stays hourly, ADR-147). When
+# validation finds a duplicate number, `fix-collisions` renumbers the ADR added
+# LATER (by history order, not date: the "later merger renumbers" rule, made
+# mechanical). It opens ONE rolling "docs(decisions): renumber colliding ADR" PR,
+# authored by aterrylu via RELEASE_PAT so nox approves it, with auto-merge on. Its
+# body lists every ADR-NNN mention that the later merge added for that PR's owner
+# to fix; the bot never edits code. A validation failure stays RED in its own final
+# step, and the index still regenerates on schedule, so one bad merge can't freeze
+# the index. Merging the renumber PR pushes an ADR rename, which re-runs this job
+# and finds main valid: no loop.
 
 on:
+  push:
+    branches: [main]
+    # Validate-only runs (see "ADR number collisions" above); they open a PR only on a collision.
+    paths: ["docs/decisions/ADR-*.md"]
   schedule:
     # :17 past each hour (off the top-of-hour rush); GitHub may delay a few minutes.
     - cron: "17 * * * *"
@@ -49,6 +67,8 @@ permissions:
 env:
   BRANCH: bot/decisions-index
   TITLE: "docs(decisions): regenerate index"
+  RENUMBER_BRANCH: bot/decisions-renumber
+  RENUMBER_TITLE: "docs(decisions): renumber colliding ADR"
 
 jobs:
   index:
@@ -56,13 +76,17 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: decisions-index
-      cancel-in-progress: true
-    # A no-op run takes ~15s and a regenerating one ~30s; 5 minutes bounds a hang.
+      # Queue, don't cancel: a push (collision) run and an hourly (index) run must not
+      # kill each other mid-push. Both are short; GitHub keeps at most one pending.
+      cancel-in-progress: false
+    # A no-op run takes ~15s and a regenerating or renumbering one ~30s; 5 minutes bounds a hang.
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          # Full history: the collision fix ranks files by the commit that added them.
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -70,13 +94,19 @@ jobs:
 
       # scripts/decisions.ts uses only node: builtins, so no `bun install` (which
       # would also run lefthook's prepare script).
+      # Records the outcome without stopping the job: the index still regenerates and a
+      # collision still gets its fix PR; "Fail if main's ADRs are invalid" turns the run red.
       - name: Validate ADRs
+        id: validate
+        continue-on-error: true
         run: bun scripts/decisions.ts check
 
       - name: Regenerate the index
+        if: github.event_name != 'push'
         run: bun scripts/decisions.ts index
 
       - name: Open or update the index PR
+        if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
@@ -112,3 +142,44 @@ jobs:
           fi
           # Without auto-merge an approval would merge nothing, so a failure here must be red.
           gh pr merge "$BRANCH" --auto --squash
+
+      - name: Open, update or close the collision renumber PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          VALID: ${{ steps.validate.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          open_pr="$(gh pr list --head "$RENUMBER_BRANCH" --state open --json number -q '.[0].number')"
+          if [ "$VALID" = "true" ]; then
+            # Main is valid (e.g. someone renumbered by hand): an open fix PR is redundant.
+            if [ -n "$open_pr" ]; then
+              gh pr close "$open_pr" --delete-branch --comment "Main's ADRs are valid now; no renumber needed."
+            fi
+            exit 0
+          fi
+          # Start from main itself; the index step may have left another branch checked out.
+          git reset -q --hard "$GITHUB_SHA"
+          git switch -q -C "$RENUMBER_BRANCH" "$GITHUB_SHA"
+          body="$RUNNER_TEMP/renumber-body.md"
+          bun scripts/decisions.ts fix-collisions --body "$body"
+          if [ -z "$(git status --porcelain -- docs/decisions)" ]; then
+            echo "Validation failed for a reason other than a number collision; nothing to renumber (see the Validate step)."
+            exit 0
+          fi
+          bun scripts/decisions.ts check   # the fix must leave main valid, or no PR
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "$RENUMBER_TITLE"
+          git push --force origin "$RENUMBER_BRANCH"
+          if [ -z "$open_pr" ]; then
+            gh pr create --base main --head "$RENUMBER_BRANCH" --title "$RENUMBER_TITLE" --body-file "$body"
+          else
+            gh pr edit "$open_pr" --body-file "$body"
+          fi
+          gh pr merge "$RENUMBER_BRANCH" --auto --squash
+
+      - name: Fail if main's ADRs are invalid
+        if: steps.validate.outcome == 'failure'
+        run: |
+          echo "::error::docs/decisions on main is invalid (see the Validate ADRs step). A number collision gets a '$RENUMBER_TITLE' PR from the step above; anything else needs a human fix."
+          exit 1
