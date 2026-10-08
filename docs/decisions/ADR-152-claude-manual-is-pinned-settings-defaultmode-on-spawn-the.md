@@ -1,4 +1,4 @@
-## ADR-149: Claude manual is pinned: settings defaultMode on spawn, the flag on resume
+## ADR-152: Claude manual is pinned: settings defaultMode on spawn, the flag on resume
 
 - **Date:** 2026-10-08
 - **Decided by:** TeamLead@autonomOS, relaying Terry's report and approving the fix ("`manual` must mean manual"). CodexGemini@autonomOS measured the facts and built it.
