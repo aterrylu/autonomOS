@@ -181,7 +181,8 @@ describe("scripts/run-bounded.sh", () => {
 
   it("processes the command leaves running are swept when it exits", async () => {
     // A test that leaked a live process (a server, a timer) used to keep it
-    // alive after the run, holding the lock's fd and the caller's output.
+    // alive after the run, holding the lock's fd and the caller's output. The
+    // parent-death watcher ends it within a second of the runner exiting.
     const marker = `leaked-${process.pid}-${Date.now()}`;
     const r = await run("bash", [
       BOUNDED,
