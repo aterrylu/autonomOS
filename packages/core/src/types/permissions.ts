@@ -146,13 +146,12 @@ export const PERMISSION_MODE_INFO: Record<
     label: "Ask",
     summary: "Agent asks for approval before each privileged action.",
     perProvider: {
-      // HONEST about ADR-061: "ask" passes NO flag to Claude Code — it IS CC's
-      // own built-in behavior, which its ~/.claude/settings.json `defaultMode`
-      // can override. So this is not a guarantee of prompting; it defers to the
-      // user's Claude Code default. (Gemini/Codex DO get an explicit flag, so
-      // for them "ask" is enforced.)
+      // "ask" passes NO flag to Claude Code (ADR-061/119) but pins
+      // `defaultMode: "default"` in the inline --settings, so neither
+      // Claude Code's own no-flag default (auto since 2.1.284) nor a
+      // ~/.claude/settings.json defaultMode can widen it.
       "claude-code":
-        "Defers to Claude Code's own default (no flag passed) — your ~/.claude/settings.json defaultMode may change it (e.g. acceptEdits)",
+        "Asks before each privileged action (permission-mode default)",
       "gemini-cli": "Prompts on each tool use",
       codex: "Asks on request (approval_policy: on-request)",
     },

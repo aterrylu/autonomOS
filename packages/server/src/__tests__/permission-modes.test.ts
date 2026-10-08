@@ -122,17 +122,23 @@ describe("core permission helpers", () => {
     assert.deepEqual(PERMISSION_MODE_INFO.plan.unsupportedBy, ["codex"]);
   });
 
-  it("the ask/Claude explainer is HONEST about the no-flag → CC-default behavior (F4)", () => {
-    // ADR-061: "ask" passes NO flag to Claude Code, so CC's own
-    // ~/.claude/settings.json defaultMode governs — the explainer must not
-    // promise prompting it can't guarantee. Pin the honesty so it can't silently
-    // regress to "Prompts on each tool use".
+  it("the ask/Claude explainer is HONEST: it asks, and nothing can widen it (F4)", () => {
+    // ADR-061/119: "ask" still passes NO flag to Claude Code, but it pins
+    // `defaultMode: "default"` in the inline --settings, so neither Claude
+    // Code's no-flag default (auto since 2.1.284) nor a settings.json
+    // defaultMode can widen it. The explainer must say it asks, and must
+    // no longer send the user to their settings as an override source.
     const claudeAsk = PERMISSION_MODE_INFO.ask.perProvider["claude-code"];
-    assert.match(claudeAsk, /default/i, "must name CC's own default");
+    assert.match(claudeAsk, /asks/i, "must say it asks");
     assert.match(
       claudeAsk,
-      /settings\.json|~\/\.claude/,
-      "must point at the user's Claude Code settings as the override source",
+      /permission-mode default/,
+      "must name CC's own value",
+    );
+    assert.doesNotMatch(
+      claudeAsk,
+      /settings\.json|~\/\.claude|may change/,
+      "no longer overridable by the user's settings",
     );
     // Gemini/Codex DO get an explicit flag, so their ask copy stays enforcing.
     assert.doesNotMatch(

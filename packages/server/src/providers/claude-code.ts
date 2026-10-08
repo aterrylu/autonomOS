@@ -163,13 +163,31 @@ const CHANNELS_NEEDLES = [
 // ADR-115 pick 3 said to pass it once a clean startup was measured, and the
 // measurement said no (interleaved A/B, 18 real spawns per arm: with the flag,
 // 3 left processes writing past teardown vs 0 without, and the median prompt
-// receipt went 691 → 1150ms). The cost: a user's settings.json `defaultMode`
-// can widen `manual` — the table's caveat says so wherever it's offered.
+// receipt went 691 → 1150ms). But with no flag, Claude Code 2.1.284+ starts in
+// AUTO (and a user's settings.json `defaultMode` applies; `--resume` restores
+// the session's last mode). So `manual` is pinned through the inline
+// --settings instead (`manualSettingsPin`): measured, that gives `default`
+// on a fresh spawn AND on a resume of a session last in auto, and it beats
+// the user's own defaultMode, with no flag on argv.
 const PASS_MANUAL_FLAG = false;
-function claudePermissionArgs(permission: RuntimePermission): string[] {
+/** The --settings keys that make a flagless `manual` really manual. */
+function manualSettingsPin(
+  permission: RuntimePermission,
+): Record<string, unknown> {
+  if (permission.values["permission-mode"] !== "manual" || PASS_MANUAL_FLAG)
+    return {};
+  return { permissions: { defaultMode: "default" } };
+}
+
+function claudePermissionArgs(
+  permission: RuntimePermission,
+  resuming: boolean,
+): string[] {
   const value = permission.values["permission-mode"];
   if (value === "bypassPermissions") return ["--dangerously-skip-permissions"];
-  if (value === "manual" && !PASS_MANUAL_FLAG) return [];
+  // An interactive --resume restores the session's LAST mode over the
+  // --settings pin (measured), so a resume needs the flag.
+  if (value === "manual" && !PASS_MANUAL_FLAG && !resuming) return [];
   return ["--permission-mode", value];
 }
 
@@ -219,9 +237,13 @@ export const claudeCodeProvider: AgentProvider = {
 
   buildArgs(options: ResolvedSpawnOptions): string[] {
     const args: string[] = [];
+    const permission = effectivePermission("claude-code", options);
 
     args.push(
-      ...claudePermissionArgs(effectivePermission("claude-code", options)),
+      ...claudePermissionArgs(
+        permission,
+        Boolean(options.resumeSessionId || options.forkFrom),
+      ),
     );
 
     // Session identity: fork, resume, or new
@@ -314,8 +336,10 @@ export const claudeCodeProvider: AgentProvider = {
     //   - statusLine (optional, default on): autonomOS-aware bar at the bottom
     //     of the CC terminal. Replaces the user's personal statusLine for
     //     spawned sessions only. CC merges these as parallel keys at the root.
+    //   - permissions.defaultMode (manual only): see manualSettingsPin.
     const settingsPayload: Record<string, unknown> = {
       hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [hookEntry(e)]])),
+      ...manualSettingsPin(permission),
     };
     if (settings.statusLine?.enabled !== false) {
       // JSON.stringify produces a properly-escaped, double-quoted path —
