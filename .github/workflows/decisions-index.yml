@@ -171,7 +171,22 @@ jobs:
             close_open_pr "No number collision on main any more; main is invalid for another reason (see the decisions-index run)."
             exit 0
           fi
-          bun scripts/decisions.ts check   # the fix must leave main valid, or no PR
+          # The fix must leave main valid, or no PR: if main is ALSO invalid for another reason,
+          # that error can change the right fix, so a human goes first. Say which errors.
+          recheck="$RUNNER_TEMP/post-fix-check.txt"
+          if ! bun scripts/decisions.ts check > "$recheck" 2>&1; then
+            cat "$recheck"
+            # The first 5 "- " error lines, capped at 300 chars and escaped for a workflow command
+            # (% then CR), joined by %0A, plus how many more. One awk, no pipe: under pipefail a
+            # grep with no match, or a SIGPIPE from head, would end the step before the annotation.
+            others="$(awk '
+              /^- / { n++; if (n <= 5) { s = substr($0, 1, 300); gsub(/%/, "%25", s); gsub(/\r/, "%0D", s); printf "%s%%0A", s } }
+              END { if (n == 0) printf "(check printed no error list; it may have crashed: see the step log)"
+                    else if (n > 5) printf "...and %d more (see the step log)", n - 5 }
+            ' "$recheck" || true)"
+            echo "::error title=No renumber PR%3A main has other ADR errors::The number collision was fixed in this run, but main is also invalid for another reason, so no renumber PR was opened or updated. Fix these first; the next ADR push or hourly run then opens the PR.%0A${others}"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -q -m "$RENUMBER_TITLE"
