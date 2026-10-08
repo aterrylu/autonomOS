@@ -44,6 +44,12 @@ export interface AgentActivityState {
   updatedAt: number;
   /** See routes/hooks.ts compaction handling (ADR-053). */
   preCompactStatus?: AgentActivityStatus;
+  /** The permission mode the CLI ITSELF last reported, in the runtime's own
+   *  values (Claude Code: hook `permission_mode`, `default` → `manual`).
+   *  It can differ from the record: a live Shift+Tab, or a settings default.
+   *  Absent until the agent's first prompt or tool event after a (re)start
+   *  (Claude Code's SessionStart doesn't carry it). */
+  livePermission?: string;
 }
 
 /** `GET /api/hooks` — bulk statuses + unread counts, keyed by agent id. */

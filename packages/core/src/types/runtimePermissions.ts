@@ -402,6 +402,17 @@ export function legacyModeFor(
  * `key=value` pairs, omitting axes still at Codex's own default where that
  * default is unambiguous (reviewer `user`, collaboration mode `default`).
  */
+/**
+ * Claude Code's hook `permission_mode` → its permission-mode value in our
+ * table. The hooks spell manual as `default` (Claude Code's internal name);
+ * every other value is the same word. An unknown value passes through as-is
+ * (honest over tidy: a newer Claude Code mode still shows).
+ */
+export function claudeLiveMode(hookValue: unknown): string | undefined {
+  if (typeof hookValue !== "string" || hookValue === "") return undefined;
+  return hookValue === "default" ? "manual" : hookValue;
+}
+
 export function formatPermission(p: RuntimePermission): string {
   const axes = RUNTIME_PERMISSIONS[p.runtime]?.axes ?? [];
   if (axes.length === 1) return p.values[axes[0].key] ?? "";

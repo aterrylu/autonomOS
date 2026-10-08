@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { agentsApi } from "../../api/agents";
 import { agentsSocket } from "../../api/agentsSocket";
+import { useStore } from "../../store";
 import type { AgentMenuTarget } from "../AgentContextMenu";
 import { formatAge, recencyTimestampStyle } from "../recency";
 import { statusLabelStyle } from "../statusLabelStyle";
@@ -371,6 +372,45 @@ function ActivityStrip({
   );
 }
 
+/**
+ * The mode Claude Code is ACTUALLY in, next to the one it was set to. Equal:
+ * a quiet "running" confirms it. Different: "running: <mode>" in amber, with
+ * a tooltip saying why it can differ.
+ */
+function LivePermissionNote({
+  set,
+  live,
+  tokens,
+}: {
+  set: string;
+  live: string;
+  tokens: OrgChartTokens;
+}) {
+  if (live === set) {
+    return (
+      <span
+        data-live-permission="match"
+        className="text-[10px]"
+        style={{ color: tokens.muted }}
+        title="Claude Code reports this mode as of its last action."
+      >
+        running
+      </span>
+    );
+  }
+  const amber = tokens.status.needsInput;
+  return (
+    <span
+      data-live-permission="differs"
+      className="whitespace-nowrap rounded px-1.5 py-px text-[10px]"
+      style={{ color: amber, background: `${amber}26` }}
+      title={`Set to ${set}, but Claude Code reports ${live} as of its last action (changed in the session with Shift+Tab, or by its own settings).`}
+    >
+      running: <span className="font-mono">{live}</span>
+    </span>
+  );
+}
+
 export function OrgInspector({
   node,
   managerId,
@@ -416,6 +456,11 @@ export function OrgInspector({
   const permission = node.permission ?? s?.permission;
   const cwd = s?.workingDirectory;
   const exitReason = s?.exitReason?.replace("_", " ");
+  // What the CLI itself last reported (Claude Code hooks), which can differ
+  // from the record: a live Shift+Tab, or a settings default.
+  const livePermission = useStore(
+    (st) => st.agentStatuses[node.id]?.livePermission,
+  );
 
   const now = useNow(15_000);
   const a = useAgentAnalytics(
@@ -501,6 +546,10 @@ export function OrgInspector({
   if (permission) {
     const never = neverAsks(permission);
     const amber = tokens.status.needsInput;
+    const showLive =
+      !exited && permission.runtime === "claude-code" && !!livePermission;
+    const liveDiffers =
+      showLive && livePermission !== permission.values["permission-mode"];
     detailRows.push([
       "Permissions",
       <span
@@ -508,6 +557,11 @@ export function OrgInspector({
         data-org-inspector-permission
         className="flex min-w-0 flex-wrap items-center gap-1.5"
       >
+        {liveDiffers && (
+          <span className="text-[10px]" style={{ color: tokens.muted }}>
+            set:
+          </span>
+        )}
         <span
           className="break-all rounded px-1.5 py-px font-mono text-[11px]"
           style={{
@@ -518,6 +572,13 @@ export function OrgInspector({
         >
           {formatPermission(permission)}
         </span>
+        {showLive && livePermission && (
+          <LivePermissionNote
+            set={permission.values["permission-mode"]}
+            live={livePermission}
+            tokens={tokens}
+          />
+        )}
         {never && (
           <span
             data-never-asks
