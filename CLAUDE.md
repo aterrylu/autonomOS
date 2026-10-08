@@ -185,7 +185,7 @@ Every architectural decision is its own file in [`docs/decisions/`](docs/decisio
 
 The labels are exact (`**Alternatives considered:**`, not `**Alternatives:**`). `make check`, and therefore CI and the pre-push gate, rejects a new ADR that is missing a field, still holds a template TODO, or reuses a number.
 
-Never delete or modify past entries; the migrated ones are hash-locked in `docs/decisions/legacy-manifest.json`. If a decision is reversed, add a new entry referencing the old one (an optional `**Supersedes:** ADR-NNN` field feeds the index). If two parallel PRs pick the same number, whoever merges later runs `make adr-renumber FILE=docs/decisions/ADR-NNN-….md`: one file changes, nothing else. A branch that still appended to the old `docs/DECISIONS.md` moves its entry with `make adr-import REF=HEAD` (steps in `docs/decisions/README.md`).
+Never delete or modify past entries; the migrated ones are hash-locked in `docs/decisions/legacy-manifest.json`. If a decision is reversed, add a new entry referencing the old one (an optional `**Supersedes:** ADR-NNN` field feeds the index). If two parallel PRs pick the same number, whoever merges later runs `make adr-renumber FILE=docs/decisions/ADR-NNN-….md`: one file changes, nothing else. Main doesn't require up-to-date branches, so both can merge. Then the decisions-index workflow opens a "renumber colliding ADR" PR for the later one and lists its code mentions for the owner (ADR-150). A branch that still appended to the old `docs/DECISIONS.md` moves its entry with `make adr-import REF=HEAD` (steps in `docs/decisions/README.md`).
 
 ### Research & Learnings
 All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When investigating competitors, frameworks, or approaches:
