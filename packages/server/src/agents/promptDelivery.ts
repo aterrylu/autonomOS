@@ -43,6 +43,7 @@
  */
 
 import type { ProviderCapabilities } from "@autonomos/core";
+import { sanitizeForPaste } from "../pasteSafety.js";
 
 /**
  * Can this provider's prompt delivery be tracked at all?
@@ -456,7 +457,9 @@ function redeliver(sessionId: string): void {
 
   // Bracketed paste keeps multi-line prompts intact (a bare newline inside
   // the paste must not submit early); the Enter outside the markers submits.
-  const pasted = t.io.write(`\x1b[200~${t.prompt}\x1b[201~`);
+  // The prompt can come from another agent (create_agent): never let it end
+  // the paste early (security audit V7, see pasteSafety.ts).
+  const pasted = t.io.write(`\x1b[200~${sanitizeForPaste(t.prompt)}\x1b[201~`);
   if (!pasted) {
     console.warn(
       `[prompt-delivery] ${t.label} re-delivery aborted — PTY is gone`,

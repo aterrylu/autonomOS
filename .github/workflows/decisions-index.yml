@@ -35,8 +35,27 @@ name: Decisions index
 #
 # Concurrency is on the JOB, not the workflow: a skipped job (the bot's own merge)
 # never joins the group, so it can't cancel a real regeneration queued behind it.
+#
+# ADR number collisions (ADR-150). Since 2026-10-08 main doesn't require branches
+# to be up to date, so two PRs that each picked ADR-NNN can both pass CI and both
+# merge. So this job ALSO runs on every push that touches an ADR file. A push run
+# only validates: it regenerates nothing (the index stays hourly, ADR-147). When
+# validation finds a duplicate number, `fix-collisions` renumbers the ADR added
+# LATER (by history order, not date: the "later merger renumbers" rule, made
+# mechanical). It opens ONE rolling "docs(decisions): renumber colliding ADR" PR,
+# authored by aterrylu via RELEASE_PAT so nox reviews it (if nox holds back, a human
+# approves it), with auto-merge on. Its
+# body lists every ADR-NNN mention that the later merge added for that PR's owner
+# to fix; the bot never edits code. A validation failure stays RED in its own final
+# step, and the index still regenerates on schedule, so one bad merge can't freeze
+# the index. Merging the renumber PR pushes an ADR rename, which re-runs this job
+# and finds main valid: no loop.
 
 on:
+  push:
+    branches: [main]
+    # Validate-only runs (see "ADR number collisions" above); they open a PR only on a collision.
+    paths: ["docs/decisions/ADR-*.md"]
   schedule:
     # :17 past each hour (off the top-of-hour rush); GitHub may delay a few minutes.
     - cron: "17 * * * *"
@@ -49,6 +68,8 @@ permissions:
 env:
   BRANCH: bot/decisions-index
   TITLE: "docs(decisions): regenerate index"
+  RENUMBER_BRANCH: bot/decisions-renumber
+  RENUMBER_TITLE: "docs(decisions): renumber colliding ADR"
 
 jobs:
   index:
@@ -56,27 +77,37 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: decisions-index
-      cancel-in-progress: true
-    # A no-op run takes ~15s and a regenerating one ~30s; 5 minutes bounds a hang.
+      # Queue, don't cancel: a push (collision) run and an hourly (index) run must not
+      # kill each other mid-push. Both are short; GitHub keeps at most one pending.
+      cancel-in-progress: false
+    # A no-op run takes ~15s and a regenerating or renumbering one ~30s; 5 minutes bounds a hang.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          # Full history: the collision fix ranks files by the commit that added them.
+          fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
       # scripts/decisions.ts uses only node: builtins, so no `bun install` (which
       # would also run lefthook's prepare script).
+      # Records the outcome without stopping the job: the index still regenerates and a
+      # collision still gets its fix PR; "Fail if main's ADRs are invalid" turns the run red.
       - name: Validate ADRs
+        id: validate
+        continue-on-error: true
         run: bun scripts/decisions.ts check
 
       - name: Regenerate the index
+        if: github.event_name != 'push'
         run: bun scripts/decisions.ts index
 
       - name: Open or update the index PR
+        if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
@@ -112,3 +143,72 @@ jobs:
           fi
           # Without auto-merge an approval would merge nothing, so a failure here must be red.
           gh pr merge "$BRANCH" --auto --squash
+
+      - name: Open, update or close the collision renumber PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
+          VALID: ${{ steps.validate.outcome == 'success' }}
+        # fix-collisions reads RENUMBER_BRANCH (skip the bot's own PR when counting claimed
+        # numbers, so a rerun never bumps it again) and RENUMBER_TITLE from the job env.
+        run: |
+          set -euo pipefail
+          open_pr="$(gh pr list --head "$RENUMBER_BRANCH" --state open --json number -q '.[0].number')"
+          close_open_pr() {
+            if [ -n "$open_pr" ]; then gh pr close "$open_pr" --delete-branch --comment "$1"; fi
+          }
+          if [ "$VALID" = "true" ]; then
+            close_open_pr "Main's ADRs are valid now; no renumber needed."
+            exit 0
+          fi
+          # Start from main itself; the index step may have left another branch checked out.
+          git reset -q --hard "$GITHUB_SHA"
+          git switch -q -C "$RENUMBER_BRANCH" "$GITHUB_SHA"
+          body="$RUNNER_TEMP/renumber-body.md"
+          bun scripts/decisions.ts fix-collisions --body "$body"
+          if [ -z "$(git status --porcelain -- docs/decisions)" ]; then
+            echo "Validation failed for a reason other than a number collision; nothing to renumber (see the Validate step)."
+            close_open_pr "No number collision on main any more; main is invalid for another reason (see the decisions-index run)."
+            exit 0
+          fi
+          # The fix must leave main valid, or no PR: if main is ALSO invalid for another reason,
+          # that error can change the right fix, so a human goes first. Say which errors.
+          recheck="$RUNNER_TEMP/post-fix-check.txt"
+          if ! bun scripts/decisions.ts check > "$recheck" 2>&1; then
+            cat "$recheck"
+            # The first 5 "- " error lines, capped at 300 chars and escaped for a workflow command
+            # (% then CR), joined by %0A, plus how many more. One awk, no pipe: under pipefail a
+            # grep with no match, or a SIGPIPE from head, would end the step before the annotation.
+            others="$(awk '
+              /^- / { n++; if (n <= 5) { s = substr($0, 1, 300); gsub(/%/, "%25", s); gsub(/\r/, "%0D", s); printf "%s%%0A", s } }
+              END { if (n == 0) printf "(check printed no error list; it may have crashed: see the step log)"
+                    else if (n > 5) printf "...and %d more (see the step log)", n - 5 }
+            ' "$recheck" || true)"
+            echo "::error title=No renumber PR%3A main has other ADR errors::The number collision was fixed in this run, but main is also invalid for another reason, so no renumber PR was opened or updated. Fix these first; the next ADR push or hourly run then opens the PR.%0A${others}"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "$RENUMBER_TITLE"
+          # Same fix as the open PR already carries? Don't force-push: that would restart its CI and review.
+          if [ -n "$open_pr" ] && git diff --quiet "origin/$RENUMBER_BRANCH" HEAD -- docs/decisions; then
+            echo "PR #$open_pr already carries this fix."
+          else
+            git push --force origin "$RENUMBER_BRANCH"
+            if [ -z "$open_pr" ]; then
+              gh pr create --base main --head "$RENUMBER_BRANCH" --title "$RENUMBER_TITLE" --body-file "$body"
+            else
+              gh pr edit "$open_pr" --body-file "$body"
+            fi
+          fi
+          gh pr merge "$RENUMBER_BRANCH" --auto --squash
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::error::RELEASE_PAT is not set: the renumber PR was opened by GITHUB_TOKEN, so its required checks won't start and nox won't review it. Close + reopen it and approve it by hand, or it will never merge."
+            exit 1
+          fi
+
+      - name: Fail if main's ADRs are invalid
+        if: steps.validate.outcome == 'failure'
+        run: |
+          echo "::error::docs/decisions on main is invalid (see the Validate ADRs step). If it was a number collision, the step above opened or updated a '$RENUMBER_TITLE' PR; anything else needs a human fix."
+          exit 1

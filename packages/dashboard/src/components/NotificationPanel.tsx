@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { statusApi } from "../api/status";
 import { focusTerminal } from "../hooks/useTerminal";
+import {
+  NewDeviceLockNotice,
+  useLockNoticeShown,
+} from "../plugins/new-device-lock/NewDeviceLockNotice";
 import { pushEscapeCloser } from "../shortcuts/escapeStack";
 import { THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
@@ -57,6 +61,7 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [markingRead, setMarkingRead] = useState(false);
   const [visible, setVisible] = useState(PAGE_SIZE);
+  const lockNoticeShown = useLockNoticeShown();
 
   useEffect(() => {
     statusApi
@@ -206,6 +211,7 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
 
       {/* List */}
       <div className="flex-1 overflow-y-auto">
+        <NewDeviceLockNotice onClose={onClose} />
         {error && (
           <div
             className="px-3 py-8 text-center text-xs"
@@ -224,15 +230,18 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        {!error && !loading && notifications.length === 0 && (
-          <div
-            className="px-3 py-8 text-center text-xs"
-            style={{ color: page.statusFg }}
-          >
-            No notifications yet. Messages agents send you, and anything
-            autonomOS needs to flag about a run, appear here.
-          </div>
-        )}
+        {!error &&
+          !loading &&
+          notifications.length === 0 &&
+          !lockNoticeShown && (
+            <div
+              className="px-3 py-8 text-center text-xs"
+              style={{ color: page.statusFg }}
+            >
+              No notifications yet. Messages agents send you, and anything
+              autonomOS needs to flag about a run, appear here.
+            </div>
+          )}
 
         {shown.map((n, i) => (
           <NotificationRow

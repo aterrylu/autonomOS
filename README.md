@@ -71,6 +71,17 @@ autonomos uninstall-service  # remove the service; your data in ~/.autonomos sta
 > still exists as a dev tool, but it rsyncs a working tree with no git history — no
 > provenance, no `autonomos upgrade`, no rollback.)
 
+### Using it from other devices
+
+Recommended for a remote server: **Tailscale** with `tailscale serve`. autonomOS listens on the machine itself only, and Tailscale publishes it to your tailnet over HTTPS:
+
+```bash
+autonomos install-service --force --host=127.0.0.1 --trust-proxy=tailscale
+tailscale serve --bg 3000
+```
+
+Then open `https://<server-name>.<tailnet>.ts.net` from any device on your tailnet. No port is open on any network, the traffic is HTTPS, and `--trust-proxy=tailscale` lets autonomOS tell your devices apart behind serve (a device that keeps guessing the token is locked out, and the notice names its Tailscale user). Both settings survive restarts. No `tailscale serve`? Listen on the tailnet address directly with `--host=127.0.0.1,$(tailscale ip -4)` and open `http://<server-name>:3000`. Without `--host` it listens on **every** network the machine is on, so only use that behind a firewall that allows the Tailscale interface alone. Google Cloud IAP and SSH tunnels work too. Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
+
 ## Coding-CLI support
 
 autonomOS is CLI-agnostic by design: every runtime plugs into the same message bus and the same MCP toolbelt, so coordination is written once and works across all of them. **Claude Code and Codex are fully supported.** **Gemini CLI runs as a full agent;** messages sent to it arrive in the **Incoming messages** panel, where you deliver them into the session with a click. Everything else — spawning, status, sending, permissions — works the same.

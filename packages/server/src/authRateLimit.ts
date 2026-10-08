@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
-import type { IncomingMessage } from "node:http";
 import { isIPv6 } from "node:net";
 import type { Context } from "hono";
+import { clientAddress } from "./trustProxy.js";
 
 /**
  * Failed-auth throttle for the PUBLIC listener (V2, ADR-117 follow-up 5).
@@ -86,13 +86,22 @@ export class AuthFailureLimiter {
   /** A credential from this address failed. `credential` is the raw value,
    *  hashed here and never stored. Returns the lockout it triggered, if any. */
   recordFailure(address: string, credential: string): number {
+    return this.recordFailureDetailed(address, credential).lockMs;
+  }
+
+  /** recordFailure, plus whether this was a NEW wrong value for the address
+   *  (a repeat is not a guess; the new-device lock counts only new ones). */
+  recordFailureDetailed(
+    address: string,
+    credential: string,
+  ): { distinct: boolean; lockMs: number } {
     const t = this.now();
     const rec = this.get(address, t) ?? this.create(address, t);
     const h = createHmac("sha256", this.hashKey)
       .update(credential)
       .digest("base64url")
       .slice(0, 16);
-    if (rec.seen.includes(h)) return 0; // a repeat, e.g. a stale tab: not a guess
+    if (rec.seen.includes(h)) return { distinct: false, lockMs: 0 }; // a repeat, e.g. a stale tab: not a guess
     rec.seen.push(h);
     if (rec.seen.length > MAX_SEEN) rec.seen.shift();
     rec.failures += 1;
@@ -101,13 +110,13 @@ export class AuthFailureLimiter {
     this.records.delete(address);
     this.records.set(address, rec);
     this.globalFailures.push(t);
-    if (rec.failures <= FREE_FAILURES) return 0;
+    if (rec.failures <= FREE_FAILURES) return { distinct: true, lockMs: 0 };
     const lock = Math.min(
       MAX_LOCK_MS,
       BASE_LOCK_MS * 2 ** Math.min(30, rec.failures - FREE_FAILURES - 1),
     );
     rec.lockedUntil = t + lock;
-    return lock;
+    return { distinct: true, lockMs: lock };
   }
 
   /** A credential from this address was valid. */
@@ -173,6 +182,12 @@ export function normalizeAddress(addr: string | undefined): string {
     return addr.slice(7);
   const bare = addr.split("%")[0];
   if (!isIPv6(bare) || bare === "::1") return addr;
+  // Tailscale gives each node ONE address in fd7a:115c:a1e0::/48 (only the
+  // low bits name the node), and a node can't pick another. Collapsing to /64
+  // would put every tailnet device in one bucket, so one guesser would
+  // throttle them all (nox, #488). Key them exactly.
+  if (bare.toLowerCase().startsWith("fd7a:115c:a1e0:"))
+    return bare.toLowerCase();
   const groups = expandIPv6(bare);
   return groups ? `${groups.slice(0, 4).join(":")}::/64` : addr;
 }
@@ -194,9 +209,20 @@ function expandIPv6(addr: string): string[] | null {
 }
 
 /** The TCP peer of this request (never a forwarding header). */
+/**
+ * The TCP peer exactly, for the new-device lock's KNOWN set (ADR-148). Unlike
+ * peerAddress it does NOT collapse IPv6 to its /64: a /64 is a whole Wi-Fi
+ * network under SLAAC, and remembering it would make every neighbor of a
+ * signed-in device "known" (SecurityAudit, #475). Only `::ffff:` is unwrapped.
+ */
+export function rawPeerAddress(c: Context): string {
+  // The device: the TCP peer, or (with --trust-proxy=tailscale, ADR-140) the
+  // tailnet address tailscale serve forwarded for. One source for both.
+  return clientAddress(c);
+}
+
 export function peerAddress(c: Context): string {
-  const env = c.env as { incoming?: IncomingMessage } | undefined;
-  return normalizeAddress(env?.incoming?.socket?.remoteAddress);
+  return normalizeAddress(clientAddress(c));
 }
 
 /** One line per lockout, capped: an attack must not fill the log. Never

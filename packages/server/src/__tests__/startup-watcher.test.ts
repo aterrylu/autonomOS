@@ -147,19 +147,22 @@ async function waitFor(
 }
 
 describe("startup watcher — test harness", () => {
-  it("every test runs on VIRTUAL time (the precondition the whole file relies on)", async () => {
+  it("every test runs on VIRTUAL time (the precondition the whole file relies on)", () => {
+    // Structural, not timed: asserting on wall-clock duration made this very
+    // check load-sensitive (it failed at load ~38 on the gate). A REAL timer
+    // can never fire inside a synchronous call, however fast the box is, so a
+    // 10s timer firing during one synchronous tick() proves the clock is
+    // virtual, and Date moving by exactly 10_000 proves Date is mocked with it.
     assert.equal(Date.now(), 0, "Date is mocked and starts at 0");
     let fired = false;
     setTimeout(() => {
       fired = true;
     }, 10_000);
-    const wall = performance.now();
-    await sleep(10_000);
-    assert.ok(fired, "a 10s timer fired by advancing the virtual clock");
-    assert.ok(
-      performance.now() - wall < 5_000,
-      "…without waiting 10s of wall-clock time",
-    );
+    mock.timers.tick(9_999);
+    assert.equal(fired, false, "not before its virtual time");
+    mock.timers.tick(1);
+    assert.equal(fired, true, "fired by the virtual clock, synchronously");
+    assert.equal(Date.now(), 10_000, "Date advanced with the virtual clock");
   });
 });
 

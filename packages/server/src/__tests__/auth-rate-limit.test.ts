@@ -165,6 +165,15 @@ describe("helpers", () => {
   it("normalizes IPv4-mapped IPv6", () => {
     assert.equal(normalizeAddress("::ffff:10.1.2.3"), "10.1.2.3");
     assert.equal(normalizeAddress("::1"), "::1");
+    // Tailscale IPv6: one exact address per node, so each is its own bucket.
+    assert.notEqual(
+      normalizeAddress("fd7a:115c:a1e0:ab12:4843:cd96:6245:1001"),
+      normalizeAddress("fd7a:115c:a1e0:ab12:4843:cd96:6245:1002"),
+    );
+    assert.equal(
+      normalizeAddress("FD7A:115C:A1E0:AB12:4843:CD96:6245:1001"),
+      "fd7a:115c:a1e0:ab12:4843:cd96:6245:1001",
+    );
     assert.equal(normalizeAddress(undefined), "unknown");
   });
 

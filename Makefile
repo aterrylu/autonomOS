@@ -1,4 +1,4 @@
-.PHONY: dev dev-lan prod stop restart logs down check _check load-test fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import verifier
+.PHONY: dev dev-lan prod stop restart logs down check _check load-test bundle-budget fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import verifier
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -226,7 +226,7 @@ _check:
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) scripts/check-dashboard-dist.ts
 	$(TSX) scripts/build-verifier.ts --check
-	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) $(NODE_TEST_FORCE_EXIT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --import ./scripts/test-home-sentinel.ts --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) $(NODE_TEST_FORCE_EXIT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && $(GIT_CLEAN_ENV) node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
 # N-agent statusline load guard (CI: the `Load` workflow). Locally it takes the
@@ -239,6 +239,12 @@ load-test:
 # `make check` fails when either is stale — commit both files together.
 verifier:
 	$(TSX) scripts/build-verifier.ts
+
+# Dashboard bundle-size ratchet (also a CI step): build, then compare the
+# gzipped JS/CSS against packages/dashboard/perf-budget.json.
+bundle-budget:
+	@bun --filter @autonomos/dashboard build >/dev/null
+	$(TSX) scripts/check-bundle-budget.ts
 
 # ── adr: architectural decision records, one file each (docs/decisions/) ───────
 # `make adr NEW="Title"` allocates the next free number across origin/main AND open

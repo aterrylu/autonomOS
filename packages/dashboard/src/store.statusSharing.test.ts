@@ -32,6 +32,23 @@ beforeEach(() => {
 });
 
 describe("applyStatusSnapshot structural sharing", () => {
+  it("a change in livePermission ALONE is not swallowed by the reuse check (else the inspector shows a stale mode)", () => {
+    const withLive = (live?: string) =>
+      ({
+        a: { status: { status: "idle", livePermission: live }, unread: 0 },
+      }) as unknown as AgentStatusMap;
+    applyStatusSnapshot(withLive("manual"));
+    const first = useStore.getState().agentStatuses.a;
+    expect(first?.livePermission).toBe("manual");
+    applyStatusSnapshot(withLive("auto"));
+    const second = useStore.getState().agentStatuses.a;
+    expect(second).not.toBe(first);
+    expect(second?.livePermission).toBe("auto");
+    // ...and an identical value still keeps the entry.
+    applyStatusSnapshot(withLive("auto"));
+    expect(useStore.getState().agentStatuses.a).toBe(second);
+  });
+
   it("an unchanged agent keeps its previous entry object; the changed one is new", () => {
     applyStatusSnapshot(snap({ a: { status: "idle" }, b: { status: "idle" } }));
     const first = useStore.getState().agentStatuses;
@@ -97,6 +114,6 @@ describe("applyStatusSnapshot structural sharing", () => {
     } as unknown as AgentStatusMap);
     expect(
       Object.keys(useStore.getState().agentStatuses.a ?? {}).sort(),
-    ).toEqual(["currentTool", "status", "toolDetail"]);
+    ).toEqual(["currentTool", "livePermission", "status", "toolDetail"]);
   });
 });

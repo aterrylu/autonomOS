@@ -50,7 +50,15 @@ import {
   AuthFailureLimiter,
   cappedLockoutWarn,
   peerAddress,
+  rawPeerAddress,
 } from "./authRateLimit.js";
+import {
+  isLoopbackHost,
+  isNetworkBind,
+  keepListening,
+  lsofOwner,
+  parseBindHosts,
+} from "./bindHosts.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { getConfigDir, tightenConfigDirModes } from "./configDir.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
@@ -65,6 +73,11 @@ import {
 } from "./internalSocket.js";
 import { initFileLogging, writeUnlogged } from "./logger.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
+import {
+  NewDeviceLock,
+  newDeviceFailureLimit,
+  newDeviceLockPath,
+} from "./newDeviceLock.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { codexUsageRouter } from "./plugins/codex-usage/route.js";
@@ -103,10 +116,16 @@ import {
   setAuthToken,
   setInternalSocketPath,
   setServerPort,
-  setTokenWarning,
 } from "./serverState.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
+import {
+  clientIdentity,
+  getTrustProxyMode,
+  parseTrustProxy,
+  setTrustProxyMode,
+  trustProxyGuard,
+} from "./trustProxy.js";
 import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
 
@@ -213,6 +232,33 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // loud ON line lands in autonomos.log too.
   initPtyInputLog({ configDir: getConfigDir() });
 
+  // Trusted proxy (ADR-140): `tailscale serve` in front. Only safe when this
+  // server listens on loopback alone, else the LAN reaches it around serve.
+  const trustProxyRaw = cliArgs.trustProxy ?? process.env.AUTONOMOS_TRUST_PROXY;
+  let trustProxy: ReturnType<typeof parseTrustProxy>;
+  try {
+    trustProxy = parseTrustProxy(trustProxyRaw);
+  } catch (err) {
+    refuseToStart(err instanceof Error ? err.message : String(err));
+  }
+  if (
+    trustProxy === "tailscale" &&
+    isNetworkBind(
+      parseBindHosts(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST)),
+    )
+  )
+    refuseToStart(
+      [
+        "✖ Refusing to start: --trust-proxy=tailscale needs autonomOS to listen on this machine only.",
+        "  Behind tailscale serve, set --host=127.0.0.1 (AUTONOMOS_HOST=127.0.0.1). Listening on the network too would let other devices reach it around serve.",
+      ].join("\n"),
+    );
+  setTrustProxyMode(trustProxy);
+  if (trustProxy === "tailscale")
+    console.log(
+      "ℹ Trusting tailscale serve: requests it forwards are identified by the visitor's tailnet address (X-Forwarded-For). Requests from other programs on this machine are trusted as before.",
+    );
+
   // The operator token, and whether it's strong enough to start with. Decided
   // here: after logging (so a refusal lands in the log a supervised install
   // has) and before anything writes an install marker (templates just below).
@@ -222,9 +268,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     token: AUTH_TOKEN,
     source: tokenSource,
     priorInstall,
-    networkBind: !isLoopbackBind(
-      resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
-    ),
+    // Behind tailscale serve the loopback bind is reachable from the tailnet
+    // by design, so it counts as a network bind here (ADR-140).
+    networkBind:
+      trustProxy === "tailscale" ||
+      isNetworkBind(
+        parseBindHosts(
+          resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+        ),
+      ),
     allowWeak:
       cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
   });
@@ -377,6 +429,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   });
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
+  // A malformed proxied identity is refused before auth (ADR-140).
+  app.use("/api/*", trustProxyGuard());
+  app.use("/ws/*", trustProxyGuard());
 
   // Publish to serverState so spawn-time code (runtime.ts, providers/*) can read
   // the in-process token without round-tripping through env or disk.
@@ -440,9 +495,31 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // internal socket is same-user only and is never throttled.
   const authLimiter = new AuthFailureLimiter();
   const warnLockout = cappedLockoutWarn();
+  // A weak token also gets a CAP on failures from never-seen devices
+  // (newDeviceLock.ts, ADR-148): its total exposure is then limit/keyspace.
+  const newDeviceLock = new NewDeviceLock({
+    enabled: isWeakToken(AUTH_TOKEN),
+    path: newDeviceLockPath(getConfigDir()),
+    limit: newDeviceFailureLimit(
+      process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT,
+    ),
+  });
+  if (newDeviceLock.status().locked)
+    console.warn(
+      "[auth] New devices are locked out after repeated failed sign-ins (devices already signed in, and this machine, still work). Unlock with `autonomos auth unlock`.",
+    );
 
-  /** 429 before any credential is evaluated, or null to go on. */
+  /** 423/429 before any credential is evaluated, or null to go on. */
   function throttled(c: Context, address: string): Response | null {
+    if (newDeviceLock.refuses(rawPeerAddress(c)))
+      return c.json(
+        {
+          error:
+            "New devices are locked after repeated failed sign-ins. Sign in from a device that's already signed in, or run `autonomos auth unlock` on the server.",
+          code: "NEW_DEVICES_LOCKED",
+        },
+        423,
+      );
     const v = authLimiter.check(address);
     if (v.ok) return null;
     const secs = Math.ceil(v.retryAfterMs / 1000);
@@ -457,10 +534,21 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     );
   }
 
-  function recordFailures(address: string, presented: readonly string[]): void {
+  /** Count the wrong values a request presented: the throttle keys on the
+   *  address (IPv6 /64), the new-device lock on the exact device, and a
+   *  Tailscale login (when proxied) rides along as operator context. */
+  function recordFailures(c: Context, presented: readonly string[]): void {
+    const address = peerAddress(c);
+    const device = rawPeerAddress(c);
+    const id = clientIdentity(c);
+    const login = "error" in id ? undefined : id.login;
     for (const value of presented) {
-      const lockMs = authLimiter.recordFailure(address, value);
+      const { distinct, lockMs } = authLimiter.recordFailureDetailed(
+        address,
+        value,
+      );
       if (lockMs > 0) warnLockout(address, lockMs);
+      if (distinct) newDeviceLock.noteDistinctFailure(device, login);
     }
   }
 
@@ -471,10 +559,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const body = await c.req.json().catch(() => null);
     const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
-      if (token) recordFailures(address, [token]);
+      if (token) recordFailures(c, [token]);
       return c.json({ error: "Invalid token" }, 401);
     }
     authLimiter.recordSuccess(address);
+    newDeviceLock.noteSuccess(rawPeerAddress(c), loginFor(c));
     setSessionCookie(c, token);
     return c.json({ ok: true });
   };
@@ -575,11 +664,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         // per-port one, so an older instance on the same host rewriting the
         // shared cookie can no longer log it out here.
         if (match.source === "legacy-cookie") setSessionCookie(c, match.token);
+        // A device a valid credential came from is never locked out.
+        if (throttle) newDeviceLock.noteSuccess(rawPeerAddress(c), loginFor(c));
         return next();
       }
       // A request that presented nothing (the dashboard probing before sign-in)
       // made no guess and isn't counted.
-      if (throttle) recordFailures(address, presented);
+      if (throttle) recordFailures(c, presented);
       return c.json(
         {
           error:
@@ -602,7 +693,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // token check either way — the bypass below is publicAuth, never requireAuth.
   const perfMode =
     process.env.AUTONOMOS_PERF === "1" &&
-    isLoopbackBind(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST));
+    !isNetworkBind(
+      parseBindHosts(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST)),
+    );
   if (process.env.AUTONOMOS_PERF === "1" && !perfMode) {
     console.warn(
       "[perf] AUTONOMOS_PERF=1 ignored — bind host is not loopback; auth stays ON and /api/perf is not mounted",
@@ -628,6 +721,18 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // auth check stays as defense in depth: the socket answers the "who can
   // connect" question, the token still answers "prove it".
   internalApp.use("/mcp", requireAuth);
+
+  // The new-device lock (ADR-148): its state for the dashboard and CLI, and
+  // the operator's unlock. Both behind auth, so only a device holding the
+  // token (which the lock never refuses) can read or clear it.
+  app.get("/api/auth/lock", (c) =>
+    c.json({ ...newDeviceLock.status(), trustProxy: getTrustProxyMode() }),
+  );
+  app.post("/api/auth/unlock", (c) => {
+    newDeviceLock.unlock();
+    console.log("[auth] new-device lock cleared by the operator");
+    return c.json(newDeviceLock.status());
+  });
 
   app.get("/api/host", (c) =>
     c.json({
@@ -929,8 +1034,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Port precedence: --port CLI flag > PORT env > 3000 default.
   // --port=0 asks the OS to assign a free port.
   const requestedPort = cliArgs.port ?? (Number(process.env.PORT) || 3000);
-  const bindHost = resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST);
-
+  // One address or a list (ADR-139): the first binds as always; each further
+  // one gets its own listener on the same port, retried in the background.
+  const bindHosts = parseBindHosts(
+    resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+  );
+  const bindHost = bindHosts?.[0];
+  const extraListeners: Array<{ stop: () => void }> = [];
   const server = serve(
     {
       fetch: app.fetch,
@@ -959,8 +1069,26 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // route here is GET /api/host; `/mcp` and hook ingestion are not served on
       // this listener at all. Stay accurate rather than implying blanket
       // coverage. Informational, not an alarm; a loopback bind is silent.
-      if (!isLoopbackBind(bindHost)) {
-        const iface = bindHost ?? "all interfaces";
+      // Further --host addresses: their own listeners for the SAME app, so
+      // every route, guard and limit applies to them unchanged.
+      for (const extra of bindHosts?.slice(1) ?? []) {
+        const srv = createAdaptorServer({ fetch: app.fetch });
+        injectWebSocket(srv);
+        extraListeners.push(
+          keepListening({
+            server: srv,
+            host: extra,
+            port: actualPort,
+            ownerOf: lsofOwner,
+          }),
+        );
+      }
+      if (bindHosts && bindHosts.length > 1 && !isLoopbackHost(bindHosts[0]))
+        console.warn(
+          `[bind] the first --host (${bindHosts[0]}) isn't loopback: the autonomos CLI on this machine talks to localhost, so put 127.0.0.1 first.`,
+        );
+      if (isNetworkBind(bindHosts)) {
+        const iface = bindHosts ? bindHosts.join(", ") : "all interfaces";
         console.log(
           `ℹ Reachable on the network (${iface}). API/WebSocket require the ` +
             `token; only GET /api/host does not (yet). /mcp and hook ingestion ` +
@@ -1042,6 +1170,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // start recovers via the stale-socket probe, but only after logging a
       // warning that implies an unclean shutdown. Clean up when we can.
       internalServer.close();
+      for (const l of extraListeners) l.stop();
       removeControlSocket(controlSocketPath);
     } finally {
       process.exit(0);
@@ -1124,21 +1253,24 @@ function enforceTokenStrength(o: {
     process.exit(2);
   }
   if (policy === "warn") {
-    console.warn(
-      [
-        `⚠ SECURITY: the operator token from ${where} is weak (${o.token.length} characters).${o.networkBind ? " This server is reachable on the network." : ""}`,
-        "  Run `autonomos token rotate` on this machine to replace it with a strong one.",
-        ...(fromEnv
-          ? [
-              "  The environment variable wins over the token file, so rotate also takes AUTONOMOS_TOKEN out of the .env it finds. Remove it anywhere else it is set.",
-            ]
-          : []),
-      ].join("\n"),
+    // One informational line: the operator may keep a short token on purpose
+    // (Terry, 2026-10-01). The throttle (ADR-124) and the new-device lock
+    // (ADR-148) are what protect it; nothing nags.
+    console.log(
+      `ℹ The operator token is short (${o.token.length} characters): new devices get ${newDeviceFailureLimit(process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT)} failed sign-ins in total before they're locked out. \`autonomos token rotate\` replaces it.`,
     );
-    setTokenWarning({
-      length: o.token.length,
-      source: fromEnv ? "env" : "file",
-      networkBind: o.networkBind,
-    });
   }
+}
+
+/** Print why the server won't start (the log and the real stderr) and exit 2. */
+function refuseToStart(message: string): never {
+  console.error(message);
+  if (!process.stderr.isTTY) writeSync(2, `${message}\n`);
+  process.exit(2);
+}
+
+/** The Tailscale login of a proxied request, for operator context only. */
+function loginFor(c: Context): string | undefined {
+  const id = clientIdentity(c);
+  return "error" in id ? undefined : id.login;
 }

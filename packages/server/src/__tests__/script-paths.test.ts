@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,7 +10,10 @@ import {
   _resetConfigDirForTesting,
   _setConfigDirForTesting,
 } from "../configDir.js";
-import { claudeCodeProvider } from "../providers/claude-code.js";
+import {
+  claudeCodeProvider,
+  statusLineCommand,
+} from "../providers/claude-code.js";
 import * as scriptPaths from "../scriptPaths.js";
 import {
   CHANNEL_SERVER_SCRIPT,
@@ -113,12 +117,21 @@ describe("claudeCodeProvider.buildArgs — statusLine command path", () => {
     assert.ok(payload.statusLine, "statusLine should default to enabled");
     assert.equal(payload.statusLine.type, "command");
 
-    // command is `node ${JSON.stringify(path)}` — recover the path losslessly.
+    // command is `node <shell-quoted path>` (security audit H1): recover the
+    // path the way the shell will, by letting sh decode the quoted word.
     assert.ok(payload.statusLine.command.startsWith("node "));
-    const scriptPath = JSON.parse(
-      payload.statusLine.command.slice("node ".length),
-    ) as string;
+    const scriptPath = execFileSync(
+      "sh",
+      ["-c", `printf '%s' ${payload.statusLine.command.slice("node ".length)}`],
+      { encoding: "utf8" },
+    );
     assert.equal(scriptPath, STATUSLINE_SCRIPT);
+    // And it's built by the shell-quoting helper the hostile-path tests cover
+    // (statusline-shell-quote.test.ts), not by any other quoting.
+    assert.equal(
+      payload.statusLine.command,
+      statusLineCommand(STATUSLINE_SCRIPT),
+    );
     assert.ok(
       existsSync(scriptPath),
       `statusLine command points at missing file: ${scriptPath}`,

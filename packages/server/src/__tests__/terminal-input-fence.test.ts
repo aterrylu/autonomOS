@@ -48,6 +48,12 @@ type UUID = `${string}-${string}-${string}-${string}-${string}`;
 
 let port = 0;
 let server: ReturnType<typeof serve>;
+/** A second server whose onOpen runs LATE (deferred by SLOW_ON_OPEN_MS): the
+ *  state a loaded box produces, where the client's open event fires well
+ *  before the server has registered the socket's fence generation. */
+let slowPort = 0;
+let slowServer: ReturnType<typeof serve>;
+const SLOW_ON_OPEN_MS = 150;
 const CLIENT = "client-aaaa-1111";
 
 before(async () => {
@@ -58,6 +64,36 @@ before(async () => {
   injectWebSocket(server);
   await new Promise<void>((r) => server.once("listening", () => r()));
   port = (server.address() as { port: number }).port;
+
+  const slowApp = new Hono();
+  const slow = createNodeWebSocket({ app: slowApp });
+  // terminalRouter hands upgradeWebSocket a SYNCHRONOUS events factory; wrap
+  // it so onOpen runs SLOW_ON_OPEN_MS late. Typed loosely at this test-only
+  // seam: hono's UpgradeWebSocket generics don't model a wrapper.
+  type Events = { onOpen?: (e: unknown, ws: unknown) => void };
+  // upgradeWebSocket is overloaded (factory form vs (c, events) form); this
+  // wrapper only uses the factory form, so cast to exactly that shape.
+  const upgrade = slow.upgradeWebSocket as unknown as (
+    createEvents: (c: unknown) => Events,
+  ) => unknown;
+  const deferredUpgrade = ((createEvents: (c: unknown) => Events) =>
+    upgrade((c) => {
+      const events = createEvents(c);
+      const onOpen = events.onOpen;
+      return {
+        ...events,
+        onOpen: onOpen
+          ? (e: unknown, ws: unknown) => {
+              setTimeout(() => onOpen(e, ws), SLOW_ON_OPEN_MS);
+            }
+          : undefined,
+      };
+    })) as unknown as typeof slow.upgradeWebSocket;
+  slowApp.get("/ws/terminal/:sessionId", terminalRouter(deferredUpgrade));
+  slowServer = serve({ fetch: slowApp.fetch, port: 0 });
+  slow.injectWebSocket(slowServer);
+  await new Promise<void>((r) => slowServer.once("listening", () => r()));
+  slowPort = (slowServer.address() as { port: number }).port;
 });
 after(async () => {
   // close() waits for live connections; the tests below deliberately leave
@@ -65,6 +101,8 @@ after(async () => {
   // serve() is typed as a union incl. Http2Server; this one is HTTP/1.
   (server as unknown as Server).closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));
+  (slowServer as unknown as Server).closeAllConnections();
+  await new Promise<void>((r) => slowServer.close(() => r()));
 });
 const opened: WebSocket[] = [];
 beforeEach(() => _resetTerminalFenceForTesting());
@@ -114,44 +152,130 @@ async function open(
 
 const settle = () => sleep(40);
 
+/**
+ * ORDER, not wall-clock (deflake): `open()` resolves on the CLIENT's open
+ * event, which can fire before the server's onOpen has registered the socket's
+ * fence generation, and a fixed 40ms settle() is not "the server handled it"
+ * under load. Measured: "drops input on an OLDER generation…" failed once at
+ * load ~30 in a pre-push gate. So these tests wait for proof of each event:
+ * - openReady(): the end-of-replay marker is sent from inside onOpen, which
+ *   runs synchronously through the fence registration, so receiving it means
+ *   the server has registered this socket's generation;
+ * - every "never written" assertion first waits for a positive event that
+ *   proves the input WAS processed (the fenced socket's 4011 close, a sibling
+ *   write, the resize landing).
+ */
+const waitFor = async (cond: () => boolean, what: string, ms = 10_000) => {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
+    await sleep(5);
+  }
+};
+
+async function openReady(sessionId: string, query: string, onPort = port) {
+  let ready = false;
+  const ws = await openOn(
+    onPort,
+    sessionId,
+    `${query}${query ? "&" : "?"}replayMark=1`,
+    (d) => {
+      if (d.includes(REPLAY_END_MARK)) ready = true;
+    },
+  );
+  await waitFor(() => ready, `server onOpen for ${query || "(untagged)"}`);
+  return ws;
+}
+
+/** open() against a chosen server; resolves on the CLIENT's open event. */
+async function openOn(
+  onPort: number,
+  sessionId: string,
+  query: string,
+  onMessage?: (d: string) => void,
+): Promise<WebSocket> {
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${onPort}/ws/terminal/${sessionId}${query}`,
+  );
+  opened.push(ws);
+  if (onMessage) {
+    ws.addEventListener("message", (ev) =>
+      onMessage(typeof ev.data === "string" ? ev.data : ""),
+    );
+  }
+  await new Promise<void>((r, j) => {
+    ws.addEventListener("open", () => r(), { once: true });
+    ws.addEventListener("error", () => j(new Error("ws error")), {
+      once: true,
+    });
+  });
+  return ws;
+}
+
+function closeCode(ws: WebSocket) {
+  const box = { code: 0 };
+  ws.addEventListener("close", (e) => {
+    box.code = (e as CloseEvent).code;
+  });
+  return box;
+}
+
 describe("terminal input fence", () => {
   it("drops input on an OLDER generation once a newer one from the same client opened — and closes it", async () => {
     const id = "00000000-0000-4000-8000-0000000fe001";
     const { writes } = session(id);
-    const g1 = await open(id, `?client=${CLIENT}&gen=1`);
+    const g1 = await openReady(id, `?client=${CLIENT}&gen=1`);
+    const g1Closed = closeCode(g1);
     g1.send("before");
-    await settle();
+    await waitFor(() => writes.includes("before"), "gen 1's write");
     assert.deepEqual(writes, ["before"], "gen 1 is live until replaced");
 
-    const g2 = await open(id, `?client=${CLIENT}&gen=2`);
-    let g1Closed = 0;
-    g1.addEventListener("close", (e) => {
-      g1Closed = (e as CloseEvent).code;
-    });
+    // The server has REGISTERED gen 2 once openReady resolves.
+    const g2 = await openReady(id, `?client=${CLIENT}&gen=2`);
     // The stranded late burst arriving on the abandoned socket:
     g1.send("STRANDED");
     g2.send("fresh");
-    await settle();
+    // 4011 is sent while the server handles STRANDED: proof it was processed.
+    await waitFor(() => g1Closed.code === 4011, "the superseded socket's 4011");
+    await waitFor(() => writes.includes("fresh"), "gen 2's write");
     assert.deepEqual(
       writes,
       ["before", "fresh"],
       "late input never reaches the PTY",
     );
-    assert.equal(g1Closed, 4011, "the superseded socket is closed");
     g2.close();
+  });
+
+  it("still fences when the server's onOpen runs LATE (a loaded box): the test waits for the server, not the client", async () => {
+    // Deterministic form of the gate flake: on this server onOpen is deferred
+    // SLOW_ON_OPEN_MS, so the client's open event fires long before gen 2 is
+    // registered. Sending on g1 right after the CLIENT's open (the old test)
+    // gets STRANDED written; waiting for the server's marker never does.
+    const id = "00000000-0000-4000-8000-0000000fe006";
+    const { writes } = session(id);
+    const g1 = await openReady(id, `?client=${CLIENT}&gen=1`, slowPort);
+    const g1Closed = closeCode(g1);
+    const g2 = await openReady(id, `?client=${CLIENT}&gen=2`, slowPort);
+    g1.send("STRANDED");
+    g2.send("fresh");
+    await waitFor(() => g1Closed.code === 4011, "the superseded socket's 4011");
+    await waitFor(() => writes.includes("fresh"), "gen 2's write");
+    assert.deepEqual(writes, ["fresh"], "late input never reaches the PTY");
   });
 
   it("never fences a DIFFERENT client (another tab) or an untagged socket", async () => {
     const id = "00000000-0000-4000-8000-0000000fe002";
     const { writes } = session(id);
-    const a1 = await open(id, `?client=${CLIENT}&gen=1`);
-    const other = await open(id, "?client=other-tab-2222&gen=1");
-    const plain = await open(id); // an older dashboard / a script
-    await open(id, `?client=${CLIENT}&gen=5`);
+    const a1 = await openReady(id, `?client=${CLIENT}&gen=1`);
+    const a1Closed = closeCode(a1);
+    const other = await openReady(id, "?client=other-tab-2222&gen=1");
+    const plain = await openReady(id, ""); // an older dashboard / a script
+    await openReady(id, `?client=${CLIENT}&gen=5`);
     other.send("tab2");
     plain.send("plain");
     a1.send("fenced");
-    await settle();
+    await waitFor(() => writes.length >= 2, "the two unfenced writes");
+    await waitFor(() => a1Closed.code === 4011, "a1's fenced input handled");
     assert.deepEqual(writes.sort(), ["plain", "tab2"]);
   });
 
@@ -159,34 +283,44 @@ describe("terminal input fence", () => {
     // Retiring the fence when only the newest closes would un-fence the old
     // socket whose late input is still in flight.
     const id = "00000000-0000-4000-8000-0000000fe003";
-    const { writes } = session(id);
-    const g1 = await open(id, `?client=${CLIENT}&gen=1`);
-    const g2 = await open(id, `?client=${CLIENT}&gen=2`);
+    const { writes, pty } = session(id);
+    const g1 = await openReady(id, `?client=${CLIENT}&gen=1`);
+    const g1Closed = closeCode(g1);
+    const g2 = await openReady(id, `?client=${CLIENT}&gen=2`);
+    const bound = pty.listenerCount;
     g2.close();
-    await settle();
+    // SERVER-side proof that g2's cleanupBinding ran (nox): it disposes the
+    // socket's PTY listener and updates the fence in the same synchronous
+    // call. The client's own close event does not prove that.
+    await waitFor(() => pty.listenerCount === bound - 1, "g2's server cleanup");
     g1.send("STRANDED");
-    await settle();
-    assert.deepEqual(writes, []);
+    // Either outcome ends the wait: fenced (4011) or, on a regression that
+    // retires the fence with the newest socket, written.
+    await waitFor(
+      () => g1Closed.code === 4011 || writes.length > 0,
+      "g1's input handled",
+    );
+    assert.deepEqual(writes, [], "the older socket stays fenced");
+    assert.equal(g1Closed.code, 4011);
   });
 
   it("rejects malformed fence params (treated as untagged, never fenced)", async () => {
     const id = "00000000-0000-4000-8000-0000000fe004";
     const { writes } = session(id);
-    const bad = await open(id, "?client=../x&gen=1");
-    await open(id, "?client=../x&gen=9");
+    const bad = await openReady(id, "?client=../x&gen=1");
+    await openReady(id, "?client=../x&gen=9");
     bad.send("ok");
-    await settle();
+    await waitFor(() => writes.length > 0, "the untagged write");
     assert.deepEqual(writes, ["ok"]);
   });
 
   it("resize control messages still work and are not counted as input", async () => {
     const id = "00000000-0000-4000-8000-0000000fe005";
     const { writes, pty } = session(id);
-    const ws = await open(id, `?client=${CLIENT}&gen=1`);
+    const ws = await openReady(id, `?client=${CLIENT}&gen=1`);
     ws.send(JSON.stringify({ type: "resize", cols: 100, rows: 30 }));
-    await settle();
+    await waitFor(() => pty.cols === 100, "the resize");
     assert.deepEqual(writes, []);
-    assert.equal(pty.cols, 100);
   });
 });
 

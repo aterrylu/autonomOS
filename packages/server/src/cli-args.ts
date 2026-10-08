@@ -16,6 +16,7 @@ export type CliArgs = {
   host: string | undefined;
   printUrl: boolean;
   allowWeakToken: boolean;
+  trustProxy: string | undefined;
   help: boolean;
 };
 
@@ -23,17 +24,15 @@ const USAGE = `Usage: autonomos-server [options]
 
 Options:
   --port=N        Listen on port N (default: 3000, env PORT)
-  --host=H        Bind to interface H (env AUTONOMOS_HOST). Default: all
-                  interfaces, so the dashboard is reachable over the network
-                  (Tailscale / IAP / SSH). Every API/WebSocket route requires
-                  the auth token; only GET /api/host does not yet. /mcp and hook
-                  ingestion are not served here at all — they live on the
-                  internal control socket ($configDir/control.sock).
-                  Pass --host=127.0.0.1 to RESTRICT to loopback — e.g. a box you
-                  only reach through an SSH tunnel. Use a loopback address, not
-                  another specific IP: the post-install health check and the
-                  running-server guard probe localhost, so a loopback-excluding
-                  bind reports a false install failure.
+  --host=H        Bind to interface H (env AUTONOMOS_HOST), or a comma list
+                  like 127.0.0.1,100.x.y.z (put loopback first: the autonomos
+                  CLI talks to localhost). Each further address gets its own
+                  listener on the same port and is retried in the background
+                  until it exists, e.g. a tailnet address before Tailscale is
+                  up. Default: ALL interfaces, reachable on every network the
+                  machine is on. Every API/WebSocket route requires the auth
+                  token; only GET /api/host does not. /mcp and hook ingestion
+                  live on the internal control socket ($configDir/control.sock).
   --print-url     After startup, print a sign-in link
                   (http://host:port/#token=…) — open it to sign in to the
                   dashboard. Printed to the terminal only, never the log file.
@@ -43,6 +42,13 @@ Options:
                   Without it, such a first start is refused. Existing installs
                   are never refused, only warned. \`autonomos token rotate\`
                   replaces a weak token.
+  --trust-proxy=tailscale
+                  (env AUTONOMOS_TRUST_PROXY) Run behind \`tailscale serve\`:
+                  a request from this machine carrying X-Forwarded-For is
+                  treated as coming from that tailnet address, so per-device
+                  protections work per device. Only allowed with a loopback
+                  --host (127.0.0.1), or the network could reach it around
+                  serve.
   --help          Print this message and exit
 `;
 
@@ -52,6 +58,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     host: undefined,
     printUrl: false,
     allowWeakToken: false,
+    trustProxy: undefined,
     help: false,
   };
 
@@ -67,6 +74,16 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     }
     if (arg === "--allow-weak-token") {
       args.allowWeakToken = true;
+      continue;
+    }
+    if (arg.startsWith("--trust-proxy=")) {
+      args.trustProxy = arg.slice("--trust-proxy=".length);
+      continue;
+    }
+    if (arg === "--trust-proxy") {
+      const next = argv[++i];
+      if (next === undefined) throw new Error("--trust-proxy requires a value");
+      args.trustProxy = next;
       continue;
     }
     if (arg.startsWith("--port=")) {

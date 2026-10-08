@@ -25,6 +25,7 @@ delete process.env.AUTONOMOS_TOKEN;
 const { getConfigDir } = await import("@autonomos/server/configDir.js");
 const { runTokenCommand, removeEnvToken, inspectServiceDefinition } =
   await import("../commands/token.js");
+const { runAuthCommand } = await import("../commands/auth.js");
 const { findInstalledService } = await import("../lib/service-control.js");
 const { getServicePaths } = await import("../lib/service-paths.js");
 
@@ -229,5 +230,76 @@ describe("autonomos token status", () => {
     writeFileSync(join(TEST_DIR, "token"), "0123456789abcdef".repeat(4));
     await runTokenCommand(["status"]);
     assert.match(out.join("\n"), /strong, 64 characters/);
+  });
+});
+
+describe("the new-device lock from the CLI (ADR-148)", () => {
+  const lockPath = () => join(TEST_DIR, "auth-lock.json");
+  const lockedState = () =>
+    writeFileSync(
+      lockPath(),
+      JSON.stringify({ failures: 20, lockedAt: 1_790_000_000_000, known: [] }),
+    );
+
+  it("token status reports a lock (counts only) for a short token", async () => {
+    writeFileSync(join(TEST_DIR, "token"), "QZXJ");
+    lockedState();
+    assert.equal(await runTokenCommand(["status"]), 0);
+    const text = out.join("\n");
+    assert.match(text, /New devices: LOCKED OUT after 20 failed sign-ins/);
+    assert.match(text, /autonomos auth unlock/);
+    assert.ok(!text.includes("QZXJ"));
+  });
+
+  it("token status says open, with the count, before the cap", async () => {
+    writeFileSync(join(TEST_DIR, "token"), "QZXJ");
+    assert.equal(await runTokenCommand(["status"]), 0);
+    assert.match(out.join("\n"), /New devices: open \(0 of 20 failed sign-ins/);
+  });
+
+  it("auth unlock with the server stopped clears the saved lock", async () => {
+    lockedState();
+    assert.equal(await runAuthCommand(["unlock"]), 0);
+    assert.match(out.join("\n"), /New devices can sign in again/);
+    const saved = JSON.parse(readFileSync(lockPath(), "utf8"));
+    assert.equal(saved.lockedAt, null);
+    assert.equal(saved.failures, 0);
+  });
+
+  it("auth refuses anything but `unlock`", async () => {
+    assert.equal(await runAuthCommand([]), 64);
+    assert.equal(await runAuthCommand(["lock"]), 64);
+  });
+});
+
+describe("token status reports the running server's trusted-proxy mode (ADR-140)", () => {
+  it("says so when the server trusts tailscale serve", async () => {
+    const { writePidFile } = await import("@autonomos/server/pid-file.js");
+    const { createServer } = await import("node:http");
+    const srv = createServer((_q, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          enabled: false,
+          locked: false,
+          trustProxy: "tailscale",
+        }),
+      );
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      const port = (srv.address() as { port: number }).port;
+      writePidFile({
+        pid: process.pid,
+        port,
+        version: "test",
+        startedAt: new Date().toISOString(),
+      });
+      writeFileSync(join(TEST_DIR, "token"), "0123456789abcdef".repeat(4));
+      assert.equal(await runTokenCommand(["status"]), 0);
+      assert.match(out.join("\n"), /Trusted proxy: tailscale serve/);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
   });
 });

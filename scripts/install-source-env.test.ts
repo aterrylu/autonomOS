@@ -130,6 +130,19 @@ describe("UPGRADES NEVER BREAK EXISTING AUTH (the auth-continuity invariant)", (
     assert.ok(!migrated.includes("old-rotated-away"));
   });
 
+  it("a bind LIST migrates whole (ADR-139: loopback + tailnet)", () => {
+    const { oldTree, cloneDir } = fixture(
+      "AUTONOMOS_HOST=127.0.0.1,100.70.53.56\n",
+    );
+    const res = runMigrateFull(oldTree, cloneDir);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      readFileSync(join(cloneDir, ".env"), "utf-8").includes(
+        "AUTONOMOS_HOST=127.0.0.1,100.70.53.56",
+      ),
+    );
+  });
+
   it("bind address and state location migrate with the token (exposure + fleet continuity)", () => {
     // Dropping AUTONOMOS_HOST=127.0.0.1 would silently WIDEN the bind to
     // all interfaces (run.ts's default when unset); dropping

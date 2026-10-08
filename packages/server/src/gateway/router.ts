@@ -190,16 +190,24 @@ async function resolveConnectedAgent(
   // Exact id match (UUID)
   const byId = sessionClients.get(idOrName);
   if (byId) return [idOrName, byId];
+  // A record's id owns its address too, connected or not. An absent agent's id
+  // used to fall through to the title scan below, where any agent that titled
+  // itself with that id (list_agents exposes ids) took the mail (nox on #519).
+  if (getAgent(idOrName)) return null;
 
   // Direct name match via store (case-insensitive, prefer running)
   const direct = resolveAgentByName(idOrName);
   if (direct) {
+    // A record with this exact name owns it, connected or not. Falling through
+    // to session titles here let any agent that titled itself after an absent
+    // agent receive that agent's mail (security audit V10).
     const ws = sessionClients.get(direct.id);
-    if (ws) return [direct.id, ws];
+    return ws ? [direct.id, ws] : null;
   }
 
   // Title-resolved name (from JSONL — handles /rename windows where the
-  // store hasn't picked up the new name yet).
+  // store hasn't picked up the new name yet). Only reached when NO record is
+  // named this, so a title can address an agent but never take a name.
   const all = listAgents().filter((a) => a.providerSessionId);
   const lookups = all.map((a) => ({
     sessionId: a.providerSessionId,
@@ -251,23 +259,17 @@ async function resolveSenderIdentity(
   return { name, uri: `agent://${name}` };
 }
 
-/** Resolve the display name for an agent id (enriched via titleCache) */
+/**
+ * The sender's name, from its agent RECORD only (security audit V10). The
+ * record's name is set at creation or by the operator and is unique among
+ * live agents. The Claude Code session title is not: the agent itself can set
+ * it (/rename, or by writing its transcript), so stamping it as the sender let
+ * an agent send as "agent://TeamLead@autonomOS" and have replies go to the
+ * real TeamLead.
+ */
 async function resolveAgentName(agentId: string): Promise<string> {
   const agent = getAgent(agentId);
-  if (!agent) return `Agent ${agentId.slice(0, 8)}`;
-
-  if (agent.providerSessionId) {
-    const titles = await batchGetTitles([
-      { sessionId: agent.providerSessionId, cwd: agent.workingDirectory },
-    ]).catch((err) => {
-      console.warn(`[gateway] title resolution failed:`, err);
-      return new Map<string, string>();
-    });
-    const title = titles.get(agent.providerSessionId);
-    if (title) return title;
-  }
-
-  return agent.name;
+  return agent ? agent.name : `Agent ${agentId.slice(0, 8)}`;
 }
 
 /** Build a GatewayMessage for agent-to-agent communication */
@@ -532,29 +534,17 @@ function resolveManualQueueAgent(idOrName: string): Agent | null {
 // ── Agent discovery ───────────────────────────────────────────────
 
 export async function getAgentList(): Promise<AgentInfo[]> {
-  const agents = listAgents().filter((a) => a.status === "running");
-
-  const lookups = agents
-    .filter((a) => a.providerSessionId)
+  // Each agent is listed by its RECORD name, never its session title: an
+  // agent listed under a title it chose could pose as any agent (security
+  // audit V10). Titles can still ADDRESS an agent (resolveConnectedAgent).
+  return listAgents()
+    .filter((a) => a.status === "running")
     .map((a) => ({
-      sessionId: a.providerSessionId,
-      cwd: a.workingDirectory,
-    }));
-
-  const titles =
-    lookups.length > 0
-      ? await batchGetTitles(lookups).catch(() => new Map<string, string>())
-      : new Map<string, string>();
-
-  return agents.map((a) => {
-    const name = titles.get(a.providerSessionId) ?? a.name;
-    return {
       sessionId: a.id,
-      name,
-      uri: `agent://${name}`,
+      name: a.name,
+      uri: `agent://${a.name}`,
       status: "running",
       permissionMode: a.permissionMode,
       permission: a.permission ? formatPermission(a.permission) : undefined,
-    };
-  });
+    }));
 }

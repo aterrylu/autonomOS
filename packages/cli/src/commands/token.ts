@@ -36,6 +36,11 @@ import { isWeakToken, peekAuthToken } from "@autonomos/server/auth.js";
 import { signInLink } from "@autonomos/server/authCookie.js";
 import { getConfigDir } from "@autonomos/server/configDir.js";
 import { resolveInstall } from "@autonomos/server/installInfo.js";
+import {
+  loadState,
+  NEW_DEVICE_FAILURE_LIMIT,
+  newDeviceLockPath,
+} from "@autonomos/server/newDeviceLock.js";
 import { isPidAlive, readPidFile } from "@autonomos/server/pid-file.js";
 import { findInstalledService } from "../lib/service-control.js";
 
@@ -53,7 +58,7 @@ export async function runTokenCommand(
 ): Promise<number> {
   const [sub, ...rest] = argv;
   if (sub === "rotate") return rotate(rest);
-  if (sub === "status") return status();
+  if (sub === "status") return await status();
   process.stderr.write(USAGE);
   return 64;
 }
@@ -244,7 +249,7 @@ function rotate(args: readonly string[]): number {
   return 0;
 }
 
-function status(): number {
+async function status(): Promise<number> {
   // Read-only: never generates a token file (nox, #459).
   const found = peekAuthToken();
   if (!found) {
@@ -263,6 +268,40 @@ function status(): number {
   console.log(
     `Operator token: ${weak ? "WEAK" : "strong"}, ${token.length} characters, from ${where}.`,
   );
-  if (weak) console.log("Run `autonomos token rotate` to replace it.");
+  if (weak) {
+    // A short token is protected by the new-device lock (ADR-148): say where
+    // it stands. Counts only, never anything about the token itself.
+    const lock = loadState(newDeviceLockPath(getConfigDir()));
+    console.log(
+      lock.lockedAt !== null
+        ? `New devices: LOCKED OUT after ${lock.failures} failed sign-ins (since ${new Date(lock.lockedAt).toISOString()}). Devices already signed in still work. Run \`autonomos auth unlock\` to reopen.`
+        : `New devices: open (${lock.failures} of ${NEW_DEVICE_FAILURE_LIMIT} failed sign-ins before they're locked out).`,
+    );
+    console.log(
+      "`autonomos token rotate` replaces the token with a strong one.",
+    );
+  }
+  // How the running server treats a reverse proxy (ADR-140): only it knows
+  // (the mode comes from its own flags/env), so ask it over loopback.
+  const pid = readPidFile();
+  if (pid && isPidAlive(pid.pid)) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${pid.port}/api/auth/lock`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body = (await res.json()) as { trustProxy?: string };
+      if (body.trustProxy === "tailscale")
+        console.log(
+          "Trusted proxy: tailscale serve. A request it forwards counts as the visitor's tailnet device; the server listens on this machine only.",
+        );
+      else if (body.trustProxy === "off")
+        console.log(
+          "Trusted proxy: none. Every device is identified by its own network address.",
+        );
+    } catch {
+      // Not answering, or an older server: say nothing rather than guess.
+    }
+  }
   return 0;
 }

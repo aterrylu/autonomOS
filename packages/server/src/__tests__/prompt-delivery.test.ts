@@ -143,6 +143,37 @@ describe("prompt delivery receipt tracking", () => {
     assert.match(f.notifications[0], /never reported SessionStart/);
   });
 
+  it("a re-delivered prompt can't escape the paste (audit V7, same class as hand-offs)", async () => {
+    // The starting prompt can come from another agent (create_agent). Its
+    // re-delivery paste used to be written raw, so a terminator in it ended
+    // paste mode and the rest ("\x1b[Z" = Shift+Tab) became keystrokes.
+    const f = makeIO();
+    trackPromptDelivery(
+      sid,
+      "test",
+      "a\x1b[20\x1b[201~1~\x1b[Zb\nline 2",
+      f.io,
+    );
+    noteStartupSettled(sid);
+    notePromptHookEvent(sid, "SessionStart");
+    await waitFor(() => f.writes.length === 2, "re-delivery paste + Enter");
+    const paste = f.writes[0];
+    assert.equal(
+      paste.split("\x1b[201~").length - 1,
+      1,
+      "only the wrapper's terminator",
+    );
+    const body = paste.slice("\x1b[200~".length, -"\x1b[201~".length);
+    assert.ok(
+      !body.includes("\x1b"),
+      "no ESC from the prompt reaches the pane",
+    );
+    assert.ok(
+      body.includes("\nline 2"),
+      "newlines survive (multi-line prompts)",
+    );
+  });
+
   it("missing UserPromptSubmit → exactly one bracketed-paste re-delivery + Enter", async () => {
     const f = makeIO();
     trackPromptDelivery(sid, "test", "do the thing", f.io);

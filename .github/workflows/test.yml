@@ -3,6 +3,15 @@ name: Check
 on:
   pull_request:
     branches: [main]
+  # Main's own merge commits run too (ADR-149): with "up to date" no longer
+  # required, a squash can land a combination no PR run tested, and the
+  # release gate (release.yml main-ci) requires these to be green at the tag.
+  push:
+    branches: [main]
+
+# Least privilege (ADR-151): this workflow only reads the repo.
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -10,13 +19,13 @@ jobs:
     # p95 128s over the last 30 runs. Without a bound a hang burns GitHub's 6h default (it did: #388).
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
@@ -61,3 +70,11 @@ jobs:
         env:
           AUTONOMOS_INTEGRATION: "1"
         run: make check
+
+      # Bundle-size ratchet: the dashboard's gzipped JS/CSS must stay within
+      # packages/dashboard/perf-budget.json (scripts/check-bundle-budget.ts).
+      # `make check` doesn't build the dashboard, so build it here.
+      - name: Dashboard bundle budget
+        run: |
+          bun --filter @autonomos/dashboard build
+          packages/server/node_modules/.bin/tsx scripts/check-bundle-budget.ts

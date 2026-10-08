@@ -96,8 +96,12 @@ describe("V8: an old install's token stays out of its logs", {
     );
   });
 
-  it("the banner hides a short token completely", () => {
-    assert.match(server.logs(), /Auth token: \(hidden, 4 chars\)/);
+  it("the banner hides a short token completely", async () => {
+    // The banner prints just after "listening", which is when the server
+    // counts as up: wait for the line, as the link case below does.
+    const banner = /Auth token: \(hidden, 4 chars\)/;
+    await waitFor(async () => banner.test(server.logs()), { timeoutMs: 5000 });
+    assert.match(server.logs(), banner);
   });
 
   const allLogs = () =>

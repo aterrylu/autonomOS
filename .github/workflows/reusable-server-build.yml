@@ -34,13 +34,13 @@ jobs:
           - target: linux-arm64
             runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Pin Node 22 LTS so node-pty's nan-based native binding compiles cleanly
       # (it does NOT build against Node 25's V8 headers).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
@@ -51,7 +51,7 @@ jobs:
       - name: Build bundle + tarball
         run: TARBALL=1 bun packages/server/build/build-binary.ts
       - name: Upload tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tarball-${{ matrix.target }}
           path: packages/server/dist/autonomos-${{ matrix.target }}.tar.gz

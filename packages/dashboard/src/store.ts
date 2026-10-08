@@ -617,7 +617,12 @@ export function applyStatusSnapshot(data: AgentStatusMap): void {
   const counts: Record<string, number> = {};
   const statuses: Record<
     string,
-    { status: string; currentTool?: string; toolDetail?: string }
+    {
+      status: string;
+      currentTool?: string;
+      toolDetail?: string;
+      livePermission?: string;
+    }
   > = {};
   for (const [id, entry] of Object.entries(data)) {
     if (entry.unread) counts[id] = entry.unread;
@@ -625,8 +630,8 @@ export function applyStatusSnapshot(data: AgentStatusMap): void {
     // lastEvent / preCompactStatus, which the reuse check below doesn't
     // compare, so storing them would let them freeze on a reused entry.
     if (entry.status) {
-      const { status, currentTool, toolDetail } = entry.status;
-      statuses[id] = { status, currentTool, toolDetail };
+      const { status, currentTool, toolDetail, livePermission } = entry.status;
+      statuses[id] = { status, currentTool, toolDetail, livePermission };
     }
   }
   // Desktop notification when an agent needs input and tab isn't focused.
@@ -657,7 +662,8 @@ export function applyStatusSnapshot(data: AgentStatusMap): void {
       prev &&
       prev.status === next.status &&
       prev.currentTool === next.currentTool &&
-      prev.toolDetail === next.toolDetail
+      prev.toolDetail === next.toolDetail &&
+      prev.livePermission === next.livePermission
     ) {
       statuses[id] = prev;
     }
@@ -758,10 +764,16 @@ interface AppState {
    *  already focused otherwise keeps the killed session's dead terminal, because
    *  `switchPane(sameId)` is a no-op and the ended terminal never reconnects. */
   terminalReloadNonce: Record<string, number>;
-  /** Agent status per session ID (from hook events) */
+  /** Agent status per session ID (from hook events). `livePermission` is the
+   *  mode the CLI itself last reported (see AgentActivityState). */
   agentStatuses: Record<
     string,
-    { status: string; currentTool?: string; toolDetail?: string }
+    {
+      status: string;
+      currentTool?: string;
+      toolDetail?: string;
+      livePermission?: string;
+    }
   >;
   /** Whether the keyboard-shortcut cheatsheet overlay is open. Not persisted. */
   shortcutHelpOpen: boolean;

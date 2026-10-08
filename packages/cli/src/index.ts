@@ -18,6 +18,7 @@
 // bundle before any module transitively loads impit's native binding. See file.
 import "./napi-universal-binding.js";
 import { getServerVersion } from "@autonomos/server/version.js";
+import { runAuthCommand } from "./commands/auth.js";
 import { runInstallServiceCommand } from "./commands/install-service.js";
 import { runLogsCommand } from "./commands/logs.js";
 import { runMigrateFromPm2Command } from "./commands/migrate-from-pm2.js";
@@ -35,9 +36,9 @@ const USAGE = `Usage: autonomos <command> [options]
 
 Commands:
   start [options]      Run the server in the foreground (default if no command)
-                       Options: --port=N, --host=H (default: ALL interfaces,
-                       so the dashboard is reachable over the network;
-                       --host=127.0.0.1 keeps it on this machine only)
+                       Options: --port=N, --host=H (default: ALL interfaces;
+                       --host=127.0.0.1 keeps it on this machine;
+                       --host=127.0.0.1,<tailnet-ip> adds your tailnet only)
   stop                 Gracefully stop a running daemon (SIGTERM)
   restart              Restart the installed service (launchctl / systemctl)
   status               Print running daemon's state
@@ -57,7 +58,10 @@ Commands:
   token rotate         Replace the operator token with a strong random one and
                        print a new sign-in link (--env-file=PATH: also remove
                        AUTONOMOS_TOKEN from that .env)
-  token status         Say whether the operator token is strong
+  token status         Say whether the operator token is strong, and whether
+                       new devices are locked out
+  auth unlock          Let new devices sign in again after the server locked
+                       them out for repeated failed sign-ins
   migrate-from-pm2     Stop pm2's autonomos process and install the new
                        OS-native supervisor (one-shot migration for old users)
   version, --version   Print the installed version
@@ -118,6 +122,8 @@ async function main(): Promise<number> {
       return await runRollbackCommand(argv.slice(1));
     case "snapshots":
       return await runSnapshotsCommand(argv.slice(1));
+    case "auth":
+      return await runAuthCommand(argv.slice(1));
     case "token":
       return await runTokenCommand(argv.slice(1));
     case "migrate-from-pm2":
