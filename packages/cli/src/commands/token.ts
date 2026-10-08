@@ -290,12 +290,17 @@ async function status(): Promise<number> {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(3_000),
       });
-      const body = (await res.json()) as { trustProxy?: string };
-      if (body.trustProxy === "tailscale")
+      const body = (await res.json()) as {
+        trustProxy?: string;
+        serveCommand?: string | null;
+      };
+      if (body.trustProxy === "tailscale") {
         console.log(
-          "Trusted proxy: tailscale serve. A request it forwards counts as the visitor's tailnet device; the server listens on this machine only.",
+          "Trusted proxy: tailscale serve, over an owner-only socket. A request it forwards there counts as the visitor's tailnet device; the server listens on this machine only.",
         );
-      else if (body.trustProxy === "off")
+        if (body.serveCommand)
+          console.log(`  Point tailscale serve at it: ${body.serveCommand}`);
+      } else if (body.trustProxy === "off")
         console.log(
           "Trusted proxy: none. Every device is identified by its own network address.",
         );

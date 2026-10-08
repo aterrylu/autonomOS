@@ -93,4 +93,29 @@ describe("install-service --host threading", () => {
     assert.equal(await install(["--trust-proxy=nginx"]), 64);
     assert.equal(await install(["--trust-proxy="]), 64);
   });
+
+  it("bakes an explicit --serve-socket next to --trust-proxy (ADR-153)", async () => {
+    assert.equal(
+      await install([
+        "--host=127.0.0.1",
+        "--trust-proxy=tailscale",
+        "--serve-socket=/srv/aos/serve.sock",
+      ]),
+      0,
+    );
+    const written = readFileSync(serviceFile(), "utf-8");
+    assert.match(written, /--trust-proxy=tailscale/);
+    assert.match(written, /--serve-socket=\/srv\/aos\/serve\.sock/);
+  });
+
+  it("refuses a --serve-socket path with spaces (it couldn't survive the service file); the default needs no flag", async () => {
+    assert.equal(
+      await install(["--trust-proxy=tailscale", "--serve-socket=/a b/s.sock"]),
+      64,
+    );
+    assert.equal(
+      await install(["--trust-proxy=tailscale", "--serve-socket="]),
+      64,
+    );
+  });
 });

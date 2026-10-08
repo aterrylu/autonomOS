@@ -138,16 +138,24 @@ Install [Tailscale](https://tailscale.com) on the server and on each device you 
 
 ```bash
 autonomos install-service --force --host=127.0.0.1 --trust-proxy=tailscale
-tailscale serve --bg 3000
+autonomos token status        # prints the exact `tailscale serve` command for this install
+tailscale serve --bg unix:...  # run the command it printed
 ```
+
+`tailscale serve` connects to autonomOS through a private socket file, not the port. Where that file lives depends on how Tailscale is installed, so copy the command `autonomos token status` (or the server's startup log) prints. Typically:
+
+- **Linux** (and macOS with the standalone Tailscale): `tailscale serve --bg unix:$HOME/.autonomos/serve.sock`
+- **macOS, Tailscale from the App Store:** the socket sits in Tailscale's own folder, the only place its sandbox can reach: `tailscale serve --bg "unix:$HOME/Library/Group Containers/<team>.group.io.tailscale.ipn.macos/aos-3000.sock"` (note the quotes)
 
 Open it from any of your devices at `https://<server-name>.<tailnet>.ts.net`. The first time, `tailscale serve` may ask you to enable MagicDNS and HTTPS certificates for your tailnet; follow the link it prints.
 
 - **No port is open** on any network: only tailnet members get through, and every connection is HTTPS with a real certificate.
-- **`--trust-proxy=tailscale` lets autonomOS tell your devices apart.** Without it, everything `tailscale serve` forwards looks like this machine, and the per-device protections (the sign-in throttle, and the new-device lock for a short token) would treat every device as trusted. With it, each device is known by its tailnet address, and a lockout notice names the device's Tailscale user (devices tagged in your tailnet have no user, only an address). autonomOS refuses to start with `--trust-proxy` unless `--host` is this machine only, because otherwise other devices could reach it around `tailscale serve`.
-- **Restarts are safe.** The `--bg` serve configuration is kept by Tailscale across reboots until you remove it (`tailscale serve reset`), and autonomOS doesn't depend on Tailscale being up to start. `autonomos token status` and the server's startup log say whether it's trusting `tailscale serve`.
+- **`--trust-proxy=tailscale` lets autonomOS tell your devices apart.** Each device is known by its tailnet address, so the per-device protections (the sign-in throttle, and the new-device lock for a short token) work per device, and a lockout notice names the device's Tailscale user (devices tagged in your tailnet have no user, only an address). autonomOS believes who a visitor is ONLY for requests on that socket, which only you and Tailscale can open; another program or user on this machine can't pretend to be one of your devices.
+- **Point serve at the socket, not the port.** If `tailscale serve` is aimed at the port (`tailscale serve --bg 3000`), autonomOS refuses those requests with a message that shows the right command, rather than let every visitor count as this machine.
+- **autonomOS refuses to start with `--trust-proxy` unless `--host` is this machine only**, because otherwise other devices could reach it around `tailscale serve`.
+- **Restarts are safe.** The `--bg` serve configuration is kept by Tailscale across reboots until you remove it (`tailscale serve reset`), and autonomOS recreates its socket at the same path on every start.
 
-`install-service --force` rewrites the service file: if you installed with a custom `--port`, pass it again (and use the same port in `tailscale serve`). Updates keep `--host` and `--trust-proxy` as they are.
+`install-service --force` rewrites the service file: if you installed with a custom `--port`, pass it again. Updates keep `--host`, `--trust-proxy` and `--serve-socket` (a custom socket path, if you set one) as they are.
 
 ### Without `tailscale serve`: listen on this machine and your tailnet address
 

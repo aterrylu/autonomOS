@@ -17,6 +17,7 @@ export type CliArgs = {
   printUrl: boolean;
   allowWeakToken: boolean;
   trustProxy: string | undefined;
+  serveSocket: string | undefined;
   help: boolean;
 };
 
@@ -44,11 +45,17 @@ Options:
                   replaces a weak token.
   --trust-proxy=tailscale
                   (env AUTONOMOS_TRUST_PROXY) Run behind \`tailscale serve\`:
-                  a request from this machine carrying X-Forwarded-For is
-                  treated as coming from that tailnet address, so per-device
-                  protections work per device. Only allowed with a loopback
-                  --host (127.0.0.1), or the network could reach it around
-                  serve.
+                  autonomOS also listens on an owner-only unix socket, and a
+                  request tailscale serve forwards there counts as coming from
+                  the visitor's tailnet address, so per-device protections
+                  work per device. The startup log and \`autonomos token
+                  status\` print the \`tailscale serve --bg unix:<path>\`
+                  command to run. Only allowed with a loopback --host
+                  (127.0.0.1), or the network could reach it around serve.
+  --serve-socket=PATH
+                  (env AUTONOMOS_SERVE_SOCKET) Where that socket lives
+                  (default: Tailscale's app-group folder on the App Store
+                  Mac app, else <config dir>/serve.sock).
   --help          Print this message and exit
 `;
 
@@ -59,6 +66,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     printUrl: false,
     allowWeakToken: false,
     trustProxy: undefined,
+    serveSocket: undefined,
     help: false,
   };
 
@@ -84,6 +92,17 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
       const next = argv[++i];
       if (next === undefined) throw new Error("--trust-proxy requires a value");
       args.trustProxy = next;
+      continue;
+    }
+    if (arg.startsWith("--serve-socket=")) {
+      args.serveSocket = arg.slice("--serve-socket=".length);
+      if (!args.serveSocket) throw new Error("--serve-socket requires a path");
+      continue;
+    }
+    if (arg === "--serve-socket") {
+      const next = argv[++i];
+      if (next === undefined) throw new Error("--serve-socket requires a path");
+      args.serveSocket = next;
       continue;
     }
     if (arg.startsWith("--port=")) {

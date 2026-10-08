@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
@@ -12,16 +21,22 @@ import {
 
 /**
  * L3 integration (AUTONOMOS_INTEGRATION=1): `--trust-proxy=tailscale` on a
- * real server bound to loopback (ADR-140). tailscaled is simulated exactly as
- * measured on 1.102.3: it connects from 127.0.0.1 and sends X-Forwarded-For
- * (+ Tailscale-User-Login for user-owned nodes). CI has no tailscaled; the
- * live serve path was verified by hand (PR body).
+ * real server (ADR-140), with identity headers trusted ONLY on the owner-only
+ * serve socket (ADR-153). tailscaled is simulated exactly as measured on
+ * 1.102.3: it connects to the socket and sends X-Forwarded-For (+
+ * Tailscale-User-Login for user-owned nodes). CI has no tailscaled; the live
+ * `tailscale serve --bg unix:<path>` path was verified by hand (PR body).
+ *
+ * Every boot passes --serve-socket inside its own temp dir: the macOS default
+ * would be the REAL Tailscale app-group folder, which a test must never touch.
  */
 
 const WEAK = "QZXJ";
 
+type Target = { port: number } | { socketPath: string };
+
 function req(
-  port: number,
+  to: Target,
   method: string,
   path: string,
   headers: Record<string, string>,
@@ -30,8 +45,7 @@ function req(
   return new Promise((resolve, reject) => {
     const r = httpRequest(
       {
-        host: "127.0.0.1",
-        port,
+        ...("port" in to ? { host: "127.0.0.1", port: to.port } : to),
         method,
         path,
         headers: body
@@ -54,16 +68,25 @@ function req(
   });
 }
 
-describe("trust-proxy=tailscale on a real server", {
+async function waitForSocket(path: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (!existsSync(path)) {
+    if (Date.now() > deadline) throw new Error(`no serve socket at ${path}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+describe("trust-proxy=tailscale on a real server, over the serve socket", {
   skip: !RUN_INTEGRATION,
   timeout: 180_000,
 }, () => {
   const booted: BootedServer[] = [];
+  const dirs: string[] = [];
   after(() =>
     boundedTeardown("trust-proxy", async () => {
       await Promise.all(booted.map((s) => s.kill()));
-      for (const s of booted)
-        rmSync(s.configDir, {
+      for (const d of [...booted.map((s) => s.configDir), ...dirs])
+        rmSync(d, {
           recursive: true,
           force: true,
           maxRetries: 5,
@@ -71,6 +94,12 @@ describe("trust-proxy=tailscale on a real server", {
         });
     }),
   );
+  /** A short temp socket path (unix socket paths cap at ~104 bytes). */
+  const socketPathFor = () => {
+    const d = mkdtempSync(join(tmpdir(), "tps-"));
+    dirs.push(d);
+    return join(d, "serve.sock");
+  };
   const boot = async (
     env: Record<string, string>,
     extraArgs: string[] = ["--host=127.0.0.1"],
@@ -107,32 +136,38 @@ describe("trust-proxy=tailscale on a real server", {
   });
 
   let s: BootedServer;
+  let sock: string;
 
   it("a device behind tailscale serve is locked out like any other; this machine isn't", async () => {
-    s = await boot({
-      AUTONOMOS_TRUST_PROXY: "tailscale",
-      AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT: "3",
-    });
+    sock = socketPathFor();
+    s = await boot(
+      {
+        AUTONOMOS_TRUST_PROXY: "tailscale",
+        AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT: "3",
+      },
+      ["--host=127.0.0.1", `--serve-socket=${sock}`],
+    );
+    await waitForSocket(sock);
     const proxied = viaServe("100.64.1.2", "mallory@example.com");
     for (let i = 0; i < 3; i++)
       assert.equal(
         (
-          await req(s.port, "GET", "/api/agents", {
+          await req({ socketPath: sock }, "GET", "/api/agents", {
             ...proxied,
             Authorization: `Bearer wrong-${i}`,
           })
         ).status,
         401,
       );
-    const right = await req(s.port, "GET", "/api/agents", {
+    const right = await req({ socketPath: sock }, "GET", "/api/agents", {
       ...proxied,
       Authorization: `Bearer ${WEAK}`,
     });
     assert.equal(right.status, 423, "the proxied new device is locked out");
-    // This machine itself (the CLI, a local dashboard): no X-Forwarded-For.
+    // This machine itself, browsing plainly over loopback TCP: unaffected.
     assert.equal(
       (
-        await req(s.port, "GET", "/api/agents", {
+        await req({ port: s.port }, "GET", "/api/agents", {
           Authorization: `Bearer ${WEAK}`,
         })
       ).status,
@@ -147,20 +182,40 @@ describe("trust-proxy=tailscale on a real server", {
     );
   });
 
-  it("the mode shows on /api/auth/lock and in the boot log", async () => {
+  it("the socket is owner-only, and the mode + exact serve command show on /api/auth/lock and in the log", async () => {
+    assert.equal(statSync(sock).mode & 0o777, 0o600);
     const lock = JSON.parse(
       (
-        await req(s.port, "GET", "/api/auth/lock", {
+        await req({ port: s.port }, "GET", "/api/auth/lock", {
           Authorization: `Bearer ${WEAK}`,
         })
       ).body,
     );
     assert.equal(lock.trustProxy, "tailscale");
-    assert.match(s.logs(), /Trusting tailscale serve/);
+    assert.equal(lock.serveCommand, `tailscale serve --bg unix:${sock}`);
+    assert.ok(
+      s
+        .logs()
+        .includes(`Point it there once: tailscale serve --bg unix:${sock}`),
+    );
   });
 
-  it("a malformed X-Forwarded-For from this machine is refused", async () => {
-    const r = await req(s.port, "GET", "/api/agents", {
+  it("FAILS CLOSED: serve pointed at the TCP port (identity headers on loopback TCP) gets a 400 naming the socket command", async () => {
+    const r = await req({ port: s.port }, "GET", "/api/agents", {
+      ...viaServe("100.64.7.7", "terry@example.com"),
+      Authorization: `Bearer ${WEAK}`,
+    });
+    assert.equal(r.status, 400);
+    const body = JSON.parse(r.body);
+    assert.equal(body.code, "SERVE_NOT_ON_SOCKET");
+    assert.ok(
+      body.error.includes(`tailscale serve --bg unix:${sock}`),
+      body.error,
+    );
+  });
+
+  it("a malformed X-Forwarded-For on the socket is refused", async () => {
+    const r = await req({ socketPath: sock }, "GET", "/api/agents", {
       "X-Forwarded-For": "100.64.1.2, 100.64.1.3",
       Authorization: `Bearer ${WEAK}`,
     });
@@ -169,15 +224,12 @@ describe("trust-proxy=tailscale on a real server", {
   });
 
   it("a signed-in device behind serve passes the CSRF guard with its ts.net origin", async () => {
-    // (unlock first: the previous test left new devices locked)
+    // (unlock first: an earlier test left new devices locked)
     await req(
-      s.port,
+      { port: s.port },
       "POST",
       "/api/auth/unlock",
-      {
-        Authorization: `Bearer ${WEAK}`,
-        "Content-Type": "application/json",
-      },
+      { Authorization: `Bearer ${WEAK}`, "Content-Type": "application/json" },
       "{}",
     );
     const tsHost = "box.example.ts.net";
@@ -189,17 +241,15 @@ describe("trust-proxy=tailscale on a real server", {
       "Content-Type": "application/json",
     };
     const login = await req(
-      s.port,
+      { socketPath: sock },
       "POST",
       "/api/auth",
       browser,
       JSON.stringify({ token: WEAK }),
     );
     assert.equal(login.status, 200, login.body);
-    const cookie = login.body; // body is {"ok":true}; the cookie came in Set-Cookie
-    assert.ok(cookie.includes("ok"));
     const post = await req(
-      s.port,
+      { socketPath: sock },
       "POST",
       "/api/templates",
       { ...browser, Authorization: `Bearer ${WEAK}` },
@@ -213,8 +263,31 @@ describe("trust-proxy=tailscale on a real server", {
     assert.ok(post.status < 300, `${post.status} ${post.body}`);
   });
 
+  it("a --serve-socket in a SHARED folder is refused (a squatter there would get the tailnet), and TCP serve stays refused", async () => {
+    const shared = mkdtempSync(join(tmpdir(), "tps-shared-"));
+    dirs.push(shared);
+    chmodSync(shared, 0o777);
+    const path = join(shared, "serve.sock");
+    const t = await boot({ AUTONOMOS_TRUST_PROXY: "tailscale" }, [
+      "--host=127.0.0.1",
+      `--serve-socket=${path}`,
+    ]);
+    // Give the (refused) socket open its moment, then check nothing is there.
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(existsSync(path), false, "no socket in a shared folder");
+    assert.match(logOf(t) + t.logs(), /a folder only you can use/);
+    const r = await req({ port: t.port }, "GET", "/api/agents", {
+      ...viaServe("100.64.7.7"),
+      Authorization: `Bearer ${WEAK}`,
+    });
+    assert.equal(r.status, 400, "fails closed: never trusted, never local");
+  });
+
   it("refuses to start in trust-proxy mode on a network bind (the LAN could go around serve)", async () => {
-    for (const extraArgs of [[], ["--host=127.0.0.1,0.0.0.0"]]) {
+    for (const extraArgs of [
+      [`--serve-socket=${socketPathFor()}`],
+      ["--host=127.0.0.1,0.0.0.0", `--serve-socket=${socketPathFor()}`],
+    ]) {
       let refused: Error | undefined;
       try {
         const t = await boot({ AUTONOMOS_TRUST_PROXY: "tailscale" }, extraArgs);
@@ -240,7 +313,7 @@ describe("trust-proxy=tailscale on a real server", {
         // no prepareConfigDir: an empty config dir is a fresh install
         const t = await bootServer({
           token: WEAK,
-          extraArgs: ["--host=127.0.0.1"],
+          extraArgs: ["--host=127.0.0.1", `--serve-socket=${socketPathFor()}`],
         });
         booted.push(t);
       } finally {
@@ -257,22 +330,32 @@ describe("trust-proxy=tailscale on a real server", {
     assert.match(refused.message, /exited \(code=2\)/);
   });
 
-  it("mode OFF: the headers are never read (a forwarded request is this machine)", async () => {
-    const t = await boot({ AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT: "3" });
+  it("mode OFF: no serve socket, and forwarded headers on loopback are never read", async () => {
+    const off = socketPathFor();
+    const t = await boot({ AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT: "3" }, [
+      "--host=127.0.0.1",
+      `--serve-socket=${off}`,
+    ]);
     for (let i = 0; i < 3; i++)
-      await req(t.port, "GET", "/api/agents", {
+      await req({ port: t.port }, "GET", "/api/agents", {
         ...viaServe("100.64.1.2"),
         Authorization: `Bearer wrong-${i}`,
       });
     assert.equal(
       (
-        await req(t.port, "GET", "/api/agents", {
+        await req({ port: t.port }, "GET", "/api/agents", {
           ...viaServe("100.64.1.2"),
           Authorization: `Bearer ${WEAK}`,
         })
       ).status,
       200,
-      "loopback (header ignored) is never locked",
+      "loopback (headers ignored) is never locked",
+    );
+    assert.equal(existsSync(off), false, "no socket without trust-proxy");
+    // A warning: it lands in the rotating log, not stdout.
+    assert.match(
+      logOf(t) + t.logs(),
+      /--serve-socket is set but --trust-proxy=tailscale isn't/,
     );
   });
 });

@@ -438,6 +438,9 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     [[ -n "$KEPT_PORT" ]] && KEEP_FLAGS+=("$KEPT_PORT")
     [[ -n "$KEPT_HOST" ]] && KEEP_FLAGS+=("$KEPT_HOST")
     [[ -n "$KEPT_TRUST" ]] && KEEP_FLAGS+=("$KEPT_TRUST")
+    # An explicit serve socket path (ADR-153); never contains spaces.
+    KEPT_SERVE=$(grep -oE -- '--serve-socket=[^ <"]+' "$SERVICE_FILE" | head -1 || true)
+    [[ -n "$KEPT_SERVE" ]] && KEEP_FLAGS+=("$KEPT_SERVE")
     echo "[install] Existing service detected. Re-rendering service + restarting into the new bundle..."
     "$WRAPPER" install-service --force ${KEEP_FLAGS[@]+"${KEEP_FLAGS[@]}"} || RC=$?
     if [[ "$RC" == "0" ]]; then

@@ -50,6 +50,8 @@ type InstallFlags = {
   host: string | undefined;
   /** `tailscale` when the server sits behind `tailscale serve` (ADR-140). */
   trustProxy: string | undefined;
+  /** An explicit serve socket path (ADR-153); the default needs no flag. */
+  serveSocket: string | undefined;
   open: boolean;
 };
 
@@ -61,6 +63,7 @@ function parseFlags(argv: readonly string[]): InstallFlags {
   let port: number | undefined;
   let host: string | undefined;
   let trustProxy: string | undefined;
+  let serveSocket: string | undefined;
   let open = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -78,6 +81,9 @@ function parseFlags(argv: readonly string[]): InstallFlags {
     else if (a.startsWith("--trust-proxy="))
       trustProxy = a.slice("--trust-proxy=".length);
     else if (a === "--trust-proxy") trustProxy = argv[++i];
+    else if (a.startsWith("--serve-socket="))
+      serveSocket = a.slice("--serve-socket=".length);
+    else if (a === "--serve-socket") serveSocket = argv[++i];
     else throw new Error(`Unknown flag: ${a}`);
   }
   if (
@@ -101,7 +107,27 @@ function parseFlags(argv: readonly string[]): InstallFlags {
     throw new Error(
       `Invalid --trust-proxy value "${trustProxy}": use --trust-proxy=tailscale`,
     );
-  return { prefix, noActivate, bin, force, port, host, trustProxy, open };
+  // Baked into a launchd plist / systemd ExecStart and re-read by install.sh:
+  // a path with whitespace can't survive that round trip. The default (no
+  // flag) has no such limit, which is why it needs no flag at all.
+  if (
+    serveSocket !== undefined &&
+    (serveSocket === "" || /\s/.test(serveSocket))
+  )
+    throw new Error(
+      `Invalid --serve-socket value "${serveSocket}": use a path without spaces, or leave it out for the default.`,
+    );
+  return {
+    prefix,
+    noActivate,
+    bin,
+    force,
+    port,
+    host,
+    trustProxy,
+    serveSocket,
+    open,
+  };
 }
 
 export async function runInstallServiceCommand(
@@ -190,7 +216,13 @@ export async function runInstallServiceCommand(
   // unless --host is loopback only, with a message saying why.
   const programArgs =
     flags.trustProxy !== undefined
-      ? [...withHost, `--trust-proxy=${flags.trustProxy}`]
+      ? [
+          ...withHost,
+          `--trust-proxy=${flags.trustProxy}`,
+          ...(flags.serveSocket !== undefined
+            ? [`--serve-socket=${flags.serveSocket}`]
+            : []),
+        ]
       : withHost;
 
   mkdirSync(paths.serviceDir, { recursive: true });

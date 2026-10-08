@@ -272,7 +272,7 @@ describe("the new-device lock from the CLI (ADR-148)", () => {
   });
 });
 
-describe("token status reports the running server's trusted-proxy mode (ADR-140)", () => {
+describe("token status reports the running server's trusted-proxy mode and serve command (ADR-140, ADR-153)", () => {
   it("says so when the server trusts tailscale serve", async () => {
     const { writePidFile } = await import("@autonomos/server/pid-file.js");
     const { createServer } = await import("node:http");
@@ -283,6 +283,8 @@ describe("token status reports the running server's trusted-proxy mode (ADR-140)
           enabled: false,
           locked: false,
           trustProxy: "tailscale",
+          serveCommand:
+            "tailscale serve --bg unix:/home/u/.autonomos/serve.sock",
         }),
       );
     });
@@ -298,6 +300,12 @@ describe("token status reports the running server's trusted-proxy mode (ADR-140)
       writeFileSync(join(TEST_DIR, "token"), "0123456789abcdef".repeat(4));
       assert.equal(await runTokenCommand(["status"]), 0);
       assert.match(out.join("\n"), /Trusted proxy: tailscale serve/);
+      // The exact command for THIS install, verbatim from the server.
+      assert.ok(
+        out
+          .join("\n")
+          .includes("tailscale serve --bg unix:/home/u/.autonomos/serve.sock"),
+      );
     } finally {
       await new Promise<void>((r) => srv.close(() => r()));
     }

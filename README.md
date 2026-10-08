@@ -77,10 +77,10 @@ Recommended for a remote server: **Tailscale** with `tailscale serve`. autonomOS
 
 ```bash
 autonomos install-service --force --host=127.0.0.1 --trust-proxy=tailscale
-tailscale serve --bg 3000
+autonomos token status   # prints the exact `tailscale serve --bg unix:<path>` command; run it
 ```
 
-Then open `https://<server-name>.<tailnet>.ts.net` from any device on your tailnet. No port is open on any network, the traffic is HTTPS, and `--trust-proxy=tailscale` lets autonomOS tell your devices apart behind serve (a device that keeps guessing the token is locked out, and the notice names its Tailscale user). Both settings survive restarts. No `tailscale serve`? Listen on the tailnet address directly with `--host=127.0.0.1,$(tailscale ip -4)` and open `http://<server-name>:3000`. Without `--host` it listens on **every** network the machine is on, so only use that behind a firewall that allows the Tailscale interface alone. Google Cloud IAP and SSH tunnels work too. Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
+Then open `https://<server-name>.<tailnet>.ts.net` from any device on your tailnet. No port is open on any network, the traffic is HTTPS, and `--trust-proxy=tailscale` lets autonomOS tell your devices apart behind serve: serve talks to it over a private socket only you and Tailscale can open, so a device that keeps guessing the token is locked out, and the notice names its Tailscale user. Both settings survive restarts. No `tailscale serve`? Listen on the tailnet address directly with `--host=127.0.0.1,$(tailscale ip -4)` and open `http://<server-name>:3000`. Without `--host` it listens on **every** network the machine is on, so only use that behind a firewall that allows the Tailscale interface alone. Google Cloud IAP and SSH tunnels work too. Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
 
 ## Coding-CLI support
 
