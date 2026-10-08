@@ -3,7 +3,7 @@
  * packages/dashboard/perf-budget.json.
  *
  *   bun --filter @autonomos/dashboard build && tsx scripts/check-bundle-budget.ts
- *   tsx scripts/check-bundle-budget.ts --update   # set the budget to today's size
+ *   tsx scripts/check-bundle-budget.ts --update   # budget = today's size + HEADROOM
  *
  * Sizes are gzip level 9 of each built .js/.css under dist/assets (the
  * precompressed .gz/.br copies are skipped), i.e. roughly what a browser
@@ -43,6 +43,19 @@ export function measure(assetsDir: string): Measured {
   return out;
 }
 
+/** Fixed headroom over today's size: small enough that real growth needs a
+ *  deliberate bump, large enough to absorb a tiny cross-platform gzip
+ *  difference (macOS dev box vs Linux CI). */
+export const HEADROOM = { jsGzipBytes: 2048, cssGzipBytes: 512 } as const;
+
+/** The budget `--update` writes: today's size plus the fixed headroom. */
+export function budgetFor(m: Measured): Budget {
+  return {
+    jsGzipBytes: m.jsGzipBytes + HEADROOM.jsGzipBytes,
+    cssGzipBytes: m.cssGzipBytes + HEADROOM.cssGzipBytes,
+  };
+}
+
 /** Over-budget problems (empty = pass) and ratchet notes. */
 export function judge(
   m: Measured,
@@ -79,9 +92,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   }
   const m = measure(ASSETS);
   if (process.argv.includes("--update")) {
-    const b: Budget = { jsGzipBytes: m.jsGzipBytes, cssGzipBytes: m.cssGzipBytes };
+    const b = budgetFor(m);
     writeFileSync(BUDGET, `${JSON.stringify(b, null, 2)}\n`);
-    console.log(`✓ budget set to today's size: JS ${b.jsGzipBytes} B, CSS ${b.cssGzipBytes} B`);
+    console.log(
+      `✓ budget set to today's size + headroom: JS ${b.jsGzipBytes} B, CSS ${b.cssGzipBytes} B`,
+    );
     process.exit(0);
   }
   const budget = JSON.parse(readFileSync(BUDGET, "utf8")) as Budget;

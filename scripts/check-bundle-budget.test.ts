@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { judge, measure } from "./check-bundle-budget";
+import {
+  budgetFor,
+  HEADROOM,
+  judge,
+  measure,
+} from "./check-bundle-budget";
 
 /** scripts/check-bundle-budget.ts — the dashboard bundle-size ratchet. */
 
@@ -56,5 +61,15 @@ describe("bundle budget", () => {
     });
     assert.deepEqual(over, []);
     assert.match(notes[0], /well under .* lower it/);
+  });
+
+  it("--update leaves the same fixed headroom, so the next byte doesn't go red", () => {
+    const m = measure(dir);
+    const b = budgetFor(m);
+    assert.equal(b.jsGzipBytes, m.jsGzipBytes + HEADROOM.jsGzipBytes);
+    assert.equal(b.cssGzipBytes, m.cssGzipBytes + HEADROOM.cssGzipBytes);
+    // a small growth after an update still passes
+    const grown = { ...m, jsGzipBytes: m.jsGzipBytes + 100 };
+    assert.deepEqual(judge(grown, b).over, []);
   });
 });
