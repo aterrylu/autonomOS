@@ -182,6 +182,12 @@ export function normalizeAddress(addr: string | undefined): string {
     return addr.slice(7);
   const bare = addr.split("%")[0];
   if (!isIPv6(bare) || bare === "::1") return addr;
+  // Tailscale gives each node ONE address in fd7a:115c:a1e0::/48 (only the
+  // low bits name the node), and a node can't pick another. Collapsing to /64
+  // would put every tailnet device in one bucket, so one guesser would
+  // throttle them all (nox, #488). Key them exactly.
+  if (bare.toLowerCase().startsWith("fd7a:115c:a1e0:"))
+    return bare.toLowerCase();
   const groups = expandIPv6(bare);
   return groups ? `${groups.slice(0, 4).join(":")}::/64` : addr;
 }
