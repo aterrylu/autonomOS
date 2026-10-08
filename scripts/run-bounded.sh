@@ -35,8 +35,20 @@ pid=""
 watchdog=""
 trap '[ -n "$pid" ] && kill -TERM -- -"$pid" 2>/dev/null; [ -n "$watchdog" ] && kill "$watchdog" 2>/dev/null; cleanup; exit 143' TERM INT HUP
 
+owner=$$
 set -m # background jobs get their own process group (pgid = their pid)
-"$@" &
+(
+  # Parent-death watcher, INSIDE the command's group: if this runner dies
+  # without running its trap (SIGKILL: a crash, or a parent killing the
+  # gate's whole process group), the command's group would otherwise keep
+  # running in its own group, holding the lock's fd and with no watchdog. The
+  # watcher notices within a second and stops the group (itself included).
+  (
+    while kill -0 "$owner" 2>/dev/null; do sleep 1; done
+    kill -KILL 0 2>/dev/null
+  ) &
+  exec "$@"
+) &
 pid=$!
 set +m
 
@@ -69,6 +81,9 @@ watchdog=$!
 
 wait "$pid"
 rc=$?
+# Sweep what's left of the command's group: the parent-death watcher, and
+# anything the command left running (a leaked test process holding the lock).
+kill -KILL -- -"$pid" 2>/dev/null
 kill "$watchdog" 2>/dev/null
 wait "$watchdog" 2>/dev/null
 if [ -s "$fired" ]; then

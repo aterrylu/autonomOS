@@ -145,6 +145,34 @@ describe("scripts/run-bounded.sh", () => {
     );
   });
 
+  it("a runner killed with SIGKILL (no trap) still takes its command down", async () => {
+    // A crash, or a parent killing the gate's whole process group: the trap
+    // can't run, and the command lives in ITS OWN group (set -m), so without
+    // the parent-death watcher it kept running, holding the lock's fd, with
+    // no watchdog left to bound it.
+    const marker = `orphan-${process.pid}-${Date.now()}`;
+    const ready = join(dir, `${marker}.ready`);
+    const child = spawn(
+      "bash",
+      [
+        BOUNDED,
+        "600",
+        "node",
+        "-e",
+        "require('node:fs').writeFileSync(process.argv[1], ''); setInterval(() => {}, 1000)",
+        ready,
+        marker,
+      ],
+      { detached: true, stdio: "ignore" },
+    );
+    assert.ok(await until(() => existsSync(ready), 15_000), "command never started");
+    if (child.pid) process.kill(child.pid, "SIGKILL"); // the runner only, no trap
+    assert.ok(
+      await until(() => !alive(`^node .*${marker}`), 10_000),
+      "the command outlived its killed runner",
+    );
+  });
+
   it("stops the WHOLE process group at the bound, names the stuck test file, exits 124", async () => {
     const marker = `stuck-${process.pid}-${Date.now()}.test.ts`;
     const r = await run("bash", [
