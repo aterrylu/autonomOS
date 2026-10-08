@@ -14,6 +14,8 @@ export type AuthState =
   | "signing-in"
   | "authenticated"
   | "unauthenticated"
+  /** New devices are locked out and this is one (423 NEW_DEVICES_LOCKED). */
+  | "locked-out"
   | "error";
 
 /** The sign-in link's outcome, from the inline script in index.html. The app
@@ -44,6 +46,15 @@ export const LINK_LOGIN_RATE_LIMITED =
 /** The server accepted the link, but the session cookie didn't stick. */
 export const LINK_LOGIN_NO_COOKIE =
   "The sign-in link was accepted, but this browser didn't keep the session cookie. Check that cookies are allowed for this site.";
+
+/** The server's answer to a device it won't let sign in right now. */
+export function isNewDevicesLocked(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 423 &&
+    err.code === "NEW_DEVICES_LOCKED"
+  );
+}
 
 /** Take (once) the pending sign-in link exchange, if the page was opened with one. */
 export function takeLinkLogin(): Promise<LinkLoginResult> | undefined {
@@ -79,7 +90,14 @@ export async function settleLinkLogin(
   return { state, error: refused ? LINK_LOGIN_ERROR : LINK_LOGIN_UNREACHABLE };
 }
 
-export function LoginPage({ initialError = "" }: { initialError?: string }) {
+export function LoginPage({
+  initialError = "",
+  onLockedOut,
+}: {
+  initialError?: string;
+  /** The server refused this device as new while locked (423). */
+  onLockedOut?: () => void;
+}) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const [token, setToken] = useState("");
@@ -97,6 +115,10 @@ export function LoginPage({ initialError = "" }: { initialError?: string }) {
         body: { token: token.trim() },
       });
     } catch (err) {
+      if (isNewDevicesLocked(err) && onLockedOut) {
+        onLockedOut();
+        return;
+      }
       setError(
         !(err instanceof ApiError) || err.unreachable
           ? "Cannot reach server — check that it is running"

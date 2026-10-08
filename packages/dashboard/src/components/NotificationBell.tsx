@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useLockNoticeShown } from "../plugins/new-device-lock/NewDeviceLockNotice";
 import { useStore } from "../store";
 import { Codicon } from "./Codicon";
 import { NotificationPanel } from "./NotificationPanel";
@@ -6,6 +7,8 @@ import { NotificationPanel } from "./NotificationPanel";
 export function NotificationBell() {
   const notificationCounts = useStore((s) => s.notificationCounts);
   const [open, setOpen] = useState(false);
+  // A new-device lock is pinned in the panel: it lights the dot too.
+  const locked = useLockNoticeShown();
 
   const totalUnread = useMemo(
     () => Object.values(notificationCounts).reduce((sum, n) => sum + n, 0),
@@ -21,7 +24,10 @@ export function NotificationBell() {
         style={{ color: "#fff" }}
         title="Notifications"
       >
-        <Codicon name={totalUnread > 0 ? "bell-dot" : "bell"} size={14} />
+        <Codicon
+          name={totalUnread > 0 || locked ? "bell-dot" : "bell"}
+          size={14}
+        />
       </button>
       {open && <NotificationPanel onClose={() => setOpen(false)} />}
     </div>

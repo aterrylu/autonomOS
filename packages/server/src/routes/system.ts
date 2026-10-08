@@ -22,7 +22,7 @@ import { getCookie } from "hono/cookie";
 import { authCookieName, LEGACY_AUTH_COOKIE } from "../authCookie.js";
 import type { InstallMode } from "../installInfo.js";
 import { resolveInstall } from "../installInfo.js";
-import { getServerPort, getTokenWarning } from "../serverState.js";
+import { getServerPort } from "../serverState.js";
 import { listSnapshots, snapshotForVersion } from "../snapshots.js";
 import { getUpdateCheckState, runUpdateCheck } from "../updateCheck.js";
 import { readBundleVersion } from "../upgrade.js";
@@ -75,9 +75,6 @@ systemRouter.get("/version", (c) => {
     checkedAt: update.checkedAt,
     releaseUrl: update.releaseUrl,
     installMode: installMode(),
-    // ADDITIVE (V2b): set when the operator token is weak. Length and where it
-    // came from only, never the token. Drives the dashboard's warning.
-    tokenWarning: getTokenWarning(),
   });
 });
 
