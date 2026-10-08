@@ -775,10 +775,12 @@ Accepted) and **Supersedes:** ADR-NNN (feeds the Superseded-by column below).
 
 Don't edit this index in your PR; a bot PR regenerates it within the hour after yours merges.
 
-**Number collision?** Two parallel PRs can pick the same number. CI names both
-files; whoever merges later runs \`make adr-renumber FILE=docs/decisions/ADR-NNN-….md\`,
-which moves the file to the next free number and rewrites its header. Code
-comments that cite ADR numbers stay valid because numbers never change after merge.
+**Number collision?** Two parallel PRs can pick the same number. If CI flags it
+on your PR, you're the later one: run \`make adr-renumber FILE=docs/decisions/ADR-NNN-….md\`,
+which moves the file to the next free number and rewrites its header. Main doesn't
+require up-to-date branches, so both PRs can also merge. The decisions-index workflow
+then opens a "renumber colliding ADR" PR that moves the one merged later and lists
+its \`ADR-NNN\` mentions in code for that PR's owner to update (ADR-150).
 
 ## A PR that still appends to \`docs/DECISIONS.md\`
 
