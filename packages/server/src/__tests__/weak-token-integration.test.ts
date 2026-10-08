@@ -64,14 +64,14 @@ describe("weak operator token at boot", {
     assert.fail("the server started; it should have refused");
   };
   const version = async (s: BootedServer, token: string) => {
-    const res = await fetch(`http://127.0.0.1:${s.port}/api/system/version`, {
+    const res = await fetch(`${s.baseUrl}/api/system/version`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     return { status: res.status, body: await res.json() };
   };
 
   const lockState = async (s: BootedServer, token: string) => {
-    const res = await fetch(`http://127.0.0.1:${s.port}/api/auth/lock`, {
+    const res = await fetch(`${s.baseUrl}/api/auth/lock`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     return { status: res.status, body: await res.json() };
@@ -109,6 +109,7 @@ describe("weak operator token at boot", {
     let dir = "";
     const err = await expectRefused({
       token: WEAK,
+      bindAll: true,
       prepareConfigDir: (d) => (dir = d),
     });
     assert.match(err.message, /exited \(code=2\)/);
@@ -127,11 +128,16 @@ describe("weak operator token at boot", {
     let dir = "";
     const first = await expectRefused({
       token: WEAK,
+      bindAll: true,
       prepareConfigDir: (d) => (dir = d),
     });
     assert.match(first.message, /exited \(code=2\)/);
     assert.ok(dir, "captured the config dir");
-    const second = await expectRefused({ token: WEAK, reuseConfigDir: dir });
+    const second = await expectRefused({
+      token: WEAK,
+      bindAll: true,
+      reuseConfigDir: dir,
+    });
     assert.match(second.message, /exited \(code=2\)/, "still refused");
     rmSync(dir, { recursive: true, force: true });
   });
@@ -142,7 +148,7 @@ describe("weak operator token at boot", {
       prepareConfigDir: (dir) => mkdirSync(join(dir, "templates")),
     });
     booted.push(s);
-    const base = `http://127.0.0.1:${s.port}`;
+    const base = s.baseUrl;
     assert.equal((await fetch(`${base}/api/auth/lock`)).status, 401);
     const unlock = await fetch(`${base}/api/auth/unlock`, {
       method: "POST",
@@ -157,6 +163,7 @@ describe("weak operator token at boot", {
   it("…starts with --allow-weak-token", async () => {
     const s = await bootServer({
       token: WEAK,
+      bindAll: true,
       extraArgs: ["--allow-weak-token"],
     });
     booted.push(s);

@@ -59,7 +59,8 @@ describe("new-device lock on a real server", {
     const saved = process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT;
     process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT = LIMIT;
     try {
-      const s = await bootServer(opts);
+      // Reached from the LAN address too: needs every interface.
+      const s = await bootServer({ ...opts, bindAll: true });
       booted.push(s);
       return s;
     } finally {
@@ -73,7 +74,7 @@ describe("new-device lock on a real server", {
       headers: { Authorization: `Bearer ${token}` },
     });
   const fromLoopback = (s: BootedServer, token: string) =>
-    fetch(`http://127.0.0.1:${s.port}/api/agents`, {
+    fetch(`${s.baseUrl}/api/agents`, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -99,7 +100,7 @@ describe("new-device lock on a real server", {
   it("this machine (loopback) keeps working, and sees the lock", async () => {
     assert.equal((await fromLoopback(s, WEAK)).status, 200);
     const lock = await (
-      await fetch(`http://127.0.0.1:${s.port}/api/auth/lock`, {
+      await fetch(`${s.baseUrl}/api/auth/lock`, {
         headers: { Authorization: `Bearer ${WEAK}` },
       })
     ).json();
@@ -111,7 +112,7 @@ describe("new-device lock on a real server", {
     const locked = async () =>
       (
         await (
-          await fetch(`http://127.0.0.1:${s.port}/api/auth/lock`, {
+          await fetch(`${s.baseUrl}/api/auth/lock`, {
             headers: { Authorization: `Bearer ${WEAK}` },
           })
         ).json()
@@ -121,7 +122,7 @@ describe("new-device lock on a real server", {
     assert.equal((await fromLoopback(s, WEAK)).status, 200);
     assert.equal(await locked(), true, "after a loopback request");
     // The sign-in link's exchange: POST /api/auth from this machine.
-    const login = await fetch(`http://127.0.0.1:${s.port}/api/auth`, {
+    const login = await fetch(`${s.baseUrl}/api/auth`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: WEAK }),
@@ -246,6 +247,7 @@ describe("new-device lock: an IPv6 neighbor isn't 'known' (#475)", {
     try {
       s = await bootServer({
         token: WEAK,
+        bindAll: true,
         prepareConfigDir: (dir) => mkdirSync(join(dir, "templates")),
       });
     } finally {

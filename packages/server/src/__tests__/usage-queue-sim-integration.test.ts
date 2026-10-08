@@ -115,7 +115,11 @@ describe("usage-queue timed simulation — real spawn auto-fire", {
         }),
       },
     );
-    assert.equal(status, 201, "POST /api/agents must create the agent");
+    assert.equal(
+      status,
+      201,
+      `POST /api/agents must create the agent (${JSON.stringify(agent)}):\n${server.logs()}`,
+    );
 
     await waitFor(
       async () => {

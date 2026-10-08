@@ -129,7 +129,11 @@ describe("usage-queue auto-fire — real spawn", {
         }),
       },
     );
-    assert.equal(status, 201, "POST /api/agents must create the agent");
+    assert.equal(
+      status,
+      201,
+      `POST /api/agents must create the agent (${JSON.stringify(agent)}):\n${server.logs()}`,
+    );
 
     // Wait for the session to come up (hook relay alive, TUI booted +
     // auto-trusted), then let CC's stdin handler attach + input box settle.
