@@ -503,7 +503,10 @@ describe("forms we can't read exactly are refused, not guessed", () => {
       "a bare Environment= reset",
       "Environment=AUTONOMOS_TOKEN=old\nEnvironment=",
     ],
-    ["a line continuation", "Environment=FOO=1 \\\n  AUTONOMOS_HOST=127.0.0.1"],
+    [
+      "a line continuation (systemd folds the next line into Restart=)",
+      "Restart=always \\\nEnvironment=AUTONOMOS_HOST=0.0.0.0",
+    ],
     ["an indented directive", "  Environment=AUTONOMOS_HOST=0.0.0.0"],
     ["`Environment = …`", "Environment = AUTONOMOS_HOST=0.0.0.0"],
     ["PassEnvironment=", "PassEnvironment=AUTONOMOS_TOKEN"],
@@ -656,7 +659,12 @@ describe("sync side effects the review asked to pin", () => {
     }
   });
 
-  it("a second drop never overwrites the first backup", () => {
+  it("a second drop never overwrites the first backup (same timestamp)", (t) => {
+    // Both syncs in the same millisecond: the stamp alone would collide.
+    t.mock.timers.enable({
+      apis: ["Date"],
+      now: Date.parse("2026-10-08T00:00:00Z"),
+    });
     const svc = tempService("linux", handEdited);
     const first = syncServiceUnitFor(svc, recordingRun().runCmd);
     const again = handEdited.replace("HTTP_PROXY", "HTTPS_PROXY");
