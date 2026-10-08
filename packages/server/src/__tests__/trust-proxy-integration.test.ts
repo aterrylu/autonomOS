@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -260,6 +261,26 @@ describe("trust-proxy=tailscale on a real server, over the serve socket", {
       }),
     );
     assert.ok(post.status < 300, `${post.status} ${post.body}`);
+  });
+
+  it("a --serve-socket in a SHARED folder is refused (a squatter there would get the tailnet), and TCP serve stays refused", async () => {
+    const shared = mkdtempSync(join(tmpdir(), "tps-shared-"));
+    dirs.push(shared);
+    chmodSync(shared, 0o777);
+    const path = join(shared, "serve.sock");
+    const t = await boot({ AUTONOMOS_TRUST_PROXY: "tailscale" }, [
+      "--host=127.0.0.1",
+      `--serve-socket=${path}`,
+    ]);
+    // Give the (refused) socket open its moment, then check nothing is there.
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(existsSync(path), false, "no socket in a shared folder");
+    assert.match(logOf(t) + t.logs(), /a folder only you can use/);
+    const r = await req({ port: t.port }, "GET", "/api/agents", {
+      ...viaServe("100.64.7.7"),
+      Authorization: `Bearer ${WEAK}`,
+    });
+    assert.equal(r.status, 400, "fails closed: never trusted, never local");
   });
 
   it("refuses to start in trust-proxy mode on a network bind (the LAN could go around serve)", async () => {

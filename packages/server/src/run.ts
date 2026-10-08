@@ -119,6 +119,7 @@ import {
   setServerPort,
 } from "./serverState.js";
 import {
+  assertServeSocketDir,
   assertServeSocketPath,
   defaultServeSocketPath,
 } from "./serveSocket.js";
@@ -1069,6 +1070,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     setServeSocketPath(path);
     try {
       assertServeSocketPath(path);
+      assertServeSocketDir(path);
       const probe = await probeControlSocket(path);
       if (probe === "live")
         throw new Error(

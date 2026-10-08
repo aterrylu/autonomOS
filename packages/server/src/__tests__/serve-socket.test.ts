@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  assertServeSocketDir,
   assertServeSocketPath,
   defaultServeSocketPath,
   MAX_SOCKET_PATH_BYTES,
@@ -89,5 +90,39 @@ describe("assertServeSocketPath", () => {
       () => assertServeSocketPath(`/${"x".repeat(MAX_SOCKET_PATH_BYTES)}`),
       /--serve-socket=<path>/,
     );
+  });
+});
+
+describe("assertServeSocketDir (SecurityAudit, #530)", () => {
+  const ME = 501;
+  const dir =
+    (mode: number, o: { uid?: number; link?: boolean; file?: boolean } = {}) =>
+    () => ({
+      uid: o.uid ?? ME,
+      mode,
+      isSymbolicLink: () => !!o.link,
+      isDirectory: () => !o.file,
+    });
+
+  it("accepts a private folder (the 0700 config dir, Tailscale's 0700 app-group folder)", () => {
+    assert.doesNotThrow(() =>
+      assertServeSocketDir("/x/serve.sock", ME, dir(0o40700)),
+    );
+  });
+
+  it("refuses a shared folder like /tmp, another user's folder, a symlink, or a loose one", () => {
+    for (const [why, st] of [
+      ["world-writable /tmp", dir(0o41777)],
+      ["group-writable", dir(0o40770)],
+      ["readable by others", dir(0o40755)],
+      ["another user's", dir(0o40700, { uid: 0 })],
+      ["a symlink", dir(0o40700, { link: true })],
+      ["not a directory", dir(0o100600, { file: true })],
+    ] as const)
+      assert.throws(
+        () => assertServeSocketDir("/x/serve.sock", ME, st),
+        /a folder only you can use[\s\S]*--serve-socket=<path>/,
+        why,
+      );
   });
 });

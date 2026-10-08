@@ -1,6 +1,7 @@
-import { readdirSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { judgeDir, type StatLike } from "./agents/codexSocket.js";
 
 /**
  * Where `tailscale serve --bg unix:<path>` connects (ADR-153).
@@ -57,5 +58,26 @@ export function assertServeSocketPath(path: string): void {
   if (bytes > MAX_SOCKET_PATH_BYTES)
     throw new Error(
       `The tailscale serve socket path is ${bytes} bytes (${path}); the OS limit is about ${MAX_SOCKET_PATH_BYTES}. Pass a shorter one with --serve-socket=<path> (AUTONOMOS_SERVE_SOCKET).`,
+    );
+}
+
+/**
+ * The socket's folder must be PRIVATE: a real directory (not a symlink), owned
+ * by this user, with no access for anyone else. In a shared folder (/tmp)
+ * another user could pre-create a live socket at the path. autonomOS would
+ * refuse it, but `tailscale serve` would forward tailnet visitors to THEM, a
+ * token-phishing page (SecurityAudit, #530). The defaults (the 0700 config dir,
+ * Tailscale's 0700 app-group folder) pass. Refused, never chmodded: the folder
+ * may not be ours to change. `lstat`/`uid` are injectable for tests.
+ */
+export function assertServeSocketDir(
+  path: string,
+  uid = process.getuid?.(),
+  lstat: (p: string) => StatLike = lstatSync,
+): void {
+  const verdict = judgeDir(dirname(path), uid, lstat);
+  if (!verdict.ok)
+    throw new Error(
+      `The tailscale serve socket must be in a folder only you can use, and ${verdict.reason}. Use a private folder (mode 700, yours, not a symlink) with --serve-socket=<path>, or leave it out for the default.`,
     );
 }
