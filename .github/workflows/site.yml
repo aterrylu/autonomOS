@@ -46,13 +46,18 @@ concurrency:
   group: pages-deploy
   cancel-in-progress: false
 
+# Least privilege (ADR-151): the workflow default is read-only; only the
+# deploy job gets the Pages grants it needs, so a job added later doesn't
+# inherit them.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 jobs:
   deploy:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     runs-on: ubuntu-latest
     # p95 22s over the last 12 runs.
     timeout-minutes: 10
