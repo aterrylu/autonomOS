@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { isIP } from "node:net";
 /**
  * Several bind addresses for the public listener (ADR-139, extends ADR-054).
  *
@@ -90,6 +91,18 @@ export interface Listenable {
   // biome-ignore lint/suspicious/noExplicitAny: Node's EventEmitter signature
   removeListener(event: string, fn: (...args: any[]) => void): unknown;
   close(): unknown;
+  /** Where it actually bound (Node's server.address()), to check a name. */
+  address?(): unknown;
+}
+
+/** Tailscale's address ranges: 100.64.0.0/10 and fd7a:115c:a1e0::/48. */
+export function isTailscaleAddress(addr: string): boolean {
+  const a = addr.toLowerCase();
+  if (a.startsWith("fd7a:115c:a1e0:")) return true;
+  const m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(a);
+  return (
+    !!m && Number(m[1]) === 100 && Number(m[2]) >= 64 && Number(m[2]) <= 127
+  );
 }
 
 export function keepListening(o: {
@@ -103,6 +116,8 @@ export function keepListening(o: {
   now?: () => number;
   /** Best-effort pid of whoever holds host:port (lsof), for that warning. */
   ownerOf?: (host: string, port: number) => number | undefined;
+  /** This process's pid (to tell a self-collision from a squatter). */
+  selfPid?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
 }): { stop: () => void } {
@@ -135,11 +150,20 @@ export function keepListening(o: {
         // device that opens it reaches that process, possibly a fake sign-in
         // page collecting the token (SecurityAudit, #480). Loud, repeated at
         // most once a minute while it lasts, with the owner when known.
+        const owner = o.ownerOf?.(o.host, o.port);
+        if (owner !== undefined && owner === (o.selfPid ?? process.pid)) {
+          // Not a squatter: another of autonomOS's OWN --host entries already
+          // covers this address (localhost = 127.0.0.1, a duplicate, or a
+          // wildcard like 0.0.0.0 next to a specific IP). Retrying can't help.
+          warn(
+            `[bind] ${o.host}:${o.port} is already served by another of this server's --host entries (a duplicate, localhost next to 127.0.0.1, or 0.0.0.0/:: next to a specific address). Remove it from --host; not retrying.`,
+          );
+          return;
+        }
         const t = now();
         if (t - lastInUseWarn >= IN_USE_REPEAT_MS) {
           lastInUseWarn = t;
           inUse = true;
-          const owner = o.ownerOf?.(o.host, o.port);
           warn(
             `[bind] ⚠ SECURITY: another process${owner ? ` (pid ${owner})` : ""} is serving ${o.host}:${o.port}, so devices that open that address may reach IT, not autonomOS, and could be shown a fake sign-in page. Stop it; autonomOS keeps retrying every ${Math.round(interval / 1000)}s.`,
           );
@@ -159,6 +183,18 @@ export function keepListening(o: {
           `[bind] ${o.host}:${o.port} is free again: autonomOS is now listening there.`,
         );
       log(`[bind] also listening on http://${o.host}:${o.port}`);
+      // A NAME can resolve through /etc/hosts before MagicDNS: a short name is
+      // usually the machine's hostname, which Debian/Ubuntu map to 127.0.1.1
+      // and cloud VMs to their VPC address (nox, #480). Then the tailnet can't
+      // reach this listener. Say so, once, naming the address it really got.
+      if (isIP(o.host) === 0) {
+        const bound = (o.server.address?.() as { address?: string } | null)
+          ?.address;
+        if (bound && !isTailscaleAddress(bound))
+          warn(
+            `[bind] ${o.host} resolved to ${bound}, which isn't a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48); /etc/hosts may map it before MagicDNS. Devices on your tailnet can't reach autonomOS there. Use the tailnet IP ($(tailscale ip -4)) or the full MagicDNS name (<name>.<tailnet>.ts.net).`,
+          );
+      }
     };
     o.server.once("error", onError);
     o.server.once("listening", onListening);

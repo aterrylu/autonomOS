@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   isLoopbackHost,
   isNetworkBind,
+  isTailscaleAddress,
   keepListening,
   parseBindHosts,
 } from "../bindHosts.js";
@@ -44,10 +45,11 @@ describe("isNetworkBind", () => {
 });
 
 /** A fake server whose listen() fails with `codes` in turn, then succeeds. */
-function fakeServer(codes: string[]) {
+function fakeServer(codes: string[], boundAddress?: string) {
   const ee = new EventEmitter() as EventEmitter & {
     listen: (port: number, host: string) => void;
     close: () => void;
+    address: () => { address: string } | null;
     attempts: number;
     closed: boolean;
   };
@@ -63,6 +65,7 @@ function fakeServer(codes: string[]) {
   ee.close = () => {
     ee.closed = true;
   };
+  ee.address = () => (boundAddress ? { address: boundAddress } : null);
   return ee;
 }
 
@@ -181,5 +184,90 @@ describe("keepListening", () => {
       !logs.some((l) => /Tailscale still starting/.test(l)),
       "not mistaken for 'not up yet'",
     );
+  });
+
+  it("a self-collision (another of our own --host entries) is said plainly, not as a squatter, and not retried", async () => {
+    const server = fakeServer(["EADDRINUSE", "EADDRINUSE"]);
+    const warns: string[] = [];
+    const t = instantTimers();
+    keepListening({
+      server,
+      host: "localhost",
+      port: 3100,
+      log: () => {},
+      warn: (l) => warns.push(l),
+      ownerOf: () => 777,
+      selfPid: 777,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    await new Promise((r) => setImmediate(r));
+    await t.drain();
+    assert.equal(server.attempts, 1, "not retried");
+    assert.equal(warns.length, 1);
+    assert.match(
+      warns[0],
+      /already served by another of this server's --host entries/,
+    );
+    assert.ok(!warns[0].includes("SECURITY"), "not a squatter alarm");
+  });
+
+  it("a NAME that resolves outside Tailscale (/etc/hosts 127.0.1.1, a VPC IP) is called out once", async () => {
+    for (const bound of ["127.0.1.1", "10.128.0.7"]) {
+      const server = fakeServer([], bound);
+      const warns: string[] = [];
+      keepListening({
+        server,
+        host: "dev-box",
+        port: 3100,
+        log: () => {},
+        warn: (l) => warns.push(l),
+      });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(warns.length, 1, bound);
+      assert.match(
+        warns[0],
+        new RegExp(
+          `dev-box resolved to ${bound.replace(/\./g, "\\.")}, which isn't a Tailscale address`,
+        ),
+      );
+      assert.match(warns[0], /tailscale ip -4/);
+    }
+  });
+
+  it("a name that resolves into the tailnet, or an IP, is not questioned", async () => {
+    for (const [host, bound] of [
+      ["dev-box", "100.70.53.56"],
+      ["dev-box.tail1234.ts.net", "fd7a:115c:a1e0::1"],
+      ["10.0.0.5", "10.0.0.5"],
+    ]) {
+      const server = fakeServer([], bound);
+      const warns: string[] = [];
+      keepListening({
+        server,
+        host,
+        port: 3100,
+        log: () => {},
+        warn: (l) => warns.push(l),
+      });
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(warns, [], `${host} → ${bound}`);
+    }
+  });
+});
+
+describe("isTailscaleAddress", () => {
+  it("is 100.64.0.0/10 and fd7a:115c:a1e0::/48 only", () => {
+    for (const a of ["100.64.0.1", "100.127.255.255", "fd7a:115c:a1e0:ab12::1"])
+      assert.equal(isTailscaleAddress(a), true, a);
+    for (const a of [
+      "100.63.0.1",
+      "100.128.0.1",
+      "127.0.1.1",
+      "10.0.0.1",
+      "fd7a:115c:a1e1::1",
+      "::1",
+    ])
+      assert.equal(isTailscaleAddress(a), false, a);
   });
 });
