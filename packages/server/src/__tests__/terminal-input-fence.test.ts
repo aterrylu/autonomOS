@@ -67,21 +67,28 @@ before(async () => {
 
   const slowApp = new Hono();
   const slow = createNodeWebSocket({ app: slowApp });
-  const deferredUpgrade = ((
-    createEvents: Parameters<typeof slow.upgradeWebSocket>[0],
-  ) =>
-    slow.upgradeWebSocket(async (c) => {
-      const events = await createEvents(c);
+  // terminalRouter hands upgradeWebSocket a SYNCHRONOUS events factory; wrap
+  // it so onOpen runs SLOW_ON_OPEN_MS late. Typed loosely at this test-only
+  // seam: hono's UpgradeWebSocket generics don't model a wrapper.
+  type Events = { onOpen?: (e: unknown, ws: unknown) => void };
+  // upgradeWebSocket is overloaded (factory form vs (c, events) form); this
+  // wrapper only uses the factory form, so cast to exactly that shape.
+  const upgrade = slow.upgradeWebSocket as unknown as (
+    createEvents: (c: unknown) => Events,
+  ) => unknown;
+  const deferredUpgrade = ((createEvents: (c: unknown) => Events) =>
+    upgrade((c) => {
+      const events = createEvents(c);
       const onOpen = events.onOpen;
       return {
         ...events,
         onOpen: onOpen
-          ? (e, ws) => {
+          ? (e: unknown, ws: unknown) => {
               setTimeout(() => onOpen(e, ws), SLOW_ON_OPEN_MS);
             }
           : undefined,
       };
-    })) as typeof slow.upgradeWebSocket;
+    })) as unknown as typeof slow.upgradeWebSocket;
   slowApp.get("/ws/terminal/:sessionId", terminalRouter(deferredUpgrade));
   slowServer = serve({ fetch: slowApp.fetch, port: 0 });
   slow.injectWebSocket(slowServer);
