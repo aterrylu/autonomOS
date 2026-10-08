@@ -190,6 +190,10 @@ async function resolveConnectedAgent(
   // Exact id match (UUID)
   const byId = sessionClients.get(idOrName);
   if (byId) return [idOrName, byId];
+  // A record's id owns its address too, connected or not. An absent agent's id
+  // used to fall through to the title scan below, where any agent that titled
+  // itself with that id (list_agents exposes ids) took the mail (nox on #519).
+  if (getAgent(idOrName)) return null;
 
   // Direct name match via store (case-insensitive, prefer running)
   const direct = resolveAgentByName(idOrName);

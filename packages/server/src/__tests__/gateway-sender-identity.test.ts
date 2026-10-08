@@ -127,6 +127,32 @@ describe("gateway identity comes from the agent record, never a session title (a
     );
   });
 
+  it("an agent titled as another agent's ID never receives that agent's mail", async () => {
+    // nox on #519: an id must own its address the way a name does. An absent
+    // agent's id misses both the live-socket and the name lookup, and used to
+    // fall through to the title scan, where a title equal to the victim's id
+    // (list_agents exposes it) took the mail.
+    const victim = agent("Victim-v10"); // exists, not connected
+    const mallory = agent("Mallory4", victim.id);
+    await assertTitleReadable(mallory, victim.id);
+    const malloryInbox = connect(mallory.id);
+    const err = await routeMessage(
+      `agent://${victim.id}`,
+      "secret",
+      agent("S3").id,
+    );
+    malloryInbox.close();
+    assert.equal(
+      malloryInbox.writes.length,
+      0,
+      "the impersonator got the id-addressed message",
+    );
+    assert.ok(
+      err,
+      "the victim isn't connected, so this must not report success",
+    );
+  });
+
   it("list_agents shows each agent by its record name", async () => {
     const mallory = agent("Mallory3", "TeamLead-list");
     await assertTitleReadable(mallory, "TeamLead-list");
