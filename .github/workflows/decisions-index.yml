@@ -75,6 +75,10 @@ jobs:
   index:
     if: "!startsWith(github.event.head_commit.message, 'docs(decisions): regenerate index')"
     runs-on: ubuntu-latest
+    # RELEASE_PAT lives in the protected `release` environment (deployment
+    # branches: main only), so a workflow run on any other branch can't read it
+    # (security audit H-1, ADR-151 follow-up).
+    environment: release
     concurrency:
       group: decisions-index
       # Queue, don't cancel: a push (collision) run and an hourly (index) run must not
