@@ -195,7 +195,15 @@ describe("NewDeviceLock", () => {
   });
 
   it("a damaged file fails CLOSED (locked, loudly), never crashes the boot", () => {
-    for (const junk of ["{not json", "null", "42", '"str"']) {
+    for (const junk of [
+      "{not json",
+      "null",
+      "42",
+      '"str"',
+      // Present but mistyped: must not read as "absent" (open).
+      '{"failures":20,"lockedAt":"x","known":[]}',
+      '{"failures":"20","lockedAt":null,"known":[]}',
+    ]) {
       const path = lockFile();
       writeFileSync(path, junk);
       const lines: string[] = [];

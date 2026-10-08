@@ -193,6 +193,16 @@ export function loadStateDetailed(path: string): {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Persisted>;
     if (typeof raw !== "object" || raw === null)
       throw new Error("not an object");
+    // A field that is PRESENT but the wrong type is damage too: reading it as
+    // absent would turn a locked file into an open one (SecurityAudit, #475).
+    if (
+      "lockedAt" in raw &&
+      raw.lockedAt !== null &&
+      typeof raw.lockedAt !== "number"
+    )
+      throw new Error("lockedAt is not a number");
+    if ("failures" in raw && !Number.isInteger(raw.failures))
+      throw new Error("failures is not an integer");
     return {
       state: {
         failures: Number.isInteger(raw.failures) ? (raw.failures as number) : 0,
