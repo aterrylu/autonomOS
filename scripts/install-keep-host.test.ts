@@ -64,3 +64,21 @@ describe("install.sh keeps the service's --trust-proxy (ADR-140)", () => {
     );
   });
 });
+
+describe("install.sh keeps an explicit --serve-socket (ADR-153)", () => {
+  it("survives the re-render", () => {
+    assert.equal(
+      kept(
+        "<string>--trust-proxy=tailscale</string><string>--serve-socket=/srv/aos/serve.sock</string>",
+        "KEPT_SERVE",
+      ),
+      "--serve-socket=/srv/aos/serve.sock",
+    );
+  });
+  it("and is passed to install-service", () => {
+    assert.match(
+      readFileSync(INSTALL, "utf8"),
+      /\[\[ -n "\$KEPT_SERVE" \]\] && KEEP_FLAGS\+=\("\$KEPT_SERVE"\)/,
+    );
+  });
+});
