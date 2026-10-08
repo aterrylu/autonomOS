@@ -768,6 +768,11 @@ function assertNotRestarting(existing: Agent, params: SpawnParams): void {
 export interface SpawnParams extends SpawnOptions {
   /** @internal Set only by restartAgent's own respawn (see assertNotRestarting). */
   fromRestart?: boolean;
+  /** Start a NEW conversation instead of resuming the recorded thread (Codex):
+   *  the only way a permission change can apply, since a resumed Codex thread
+   *  keeps the policy it was created with (ADR-104). Asked for explicitly by
+   *  the operator (the Permission… action), never inferred. */
+  freshConversation?: boolean;
   /** Internal autonomOS agent id to resume an existing record (was:
    *  resumeSessionId at the PTY layer). When provided, the Agent must already
    *  exist in the store — this is the managed-agent restart/attach path. */
@@ -1246,7 +1251,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // (any respawn — server-restart resume or restart-all), pass it so the
     // provider emits `codex resume <id> --remote` and reattaches the prior
     // conversation. Undefined on a fresh first spawn → a new thread is created.
-    providerThreadId: agent.providerThreadId,
+    providerThreadId: params.freshConversation
+      ? undefined
+      : agent.providerThreadId,
   };
 
   const env = provider.buildEnv(agent.id, agent.name);
@@ -1266,6 +1273,12 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // pushed only once the record is written, so a spawn that then fails never
   // leaves behind a notice claiming something that didn't happen.
   const pendingNotices: string[] = [];
+  if (params.freshConversation && agent.providerThreadId) {
+    noteFreshStart(agent.id, "thread", agent.providerThreadId);
+    pendingNotices.push(
+      `${agent.name} started a fresh ${provider.displayName} conversation, as asked, so its new permission applies. The previous conversation (${agent.providerThreadId}) is still on disk.`,
+    );
+  }
 
   // Pre-flight resume check (provider-parity, ADR-049): a resume only succeeds
   // if the provider actually has a resumable session on disk. Claude Code writes
@@ -2255,15 +2268,20 @@ export function shutdownAllAttachments(): void {
  *  configuration. */
 async function respawnAgent(
   a: Agent,
-  opts: { fromRestart?: boolean } = {},
+  opts: {
+    fromRestart?: boolean;
+    permission?: RuntimePermission;
+    freshConversation?: boolean;
+  } = {},
 ): Promise<void> {
   const tmpl = a.template ? getTemplate(a.template) : null;
   await spawnAgent({
     fromRestart: opts.fromRestart,
+    freshConversation: opts.freshConversation,
     workingDirectory: a.workingDirectory,
     resumeAgentId: a.id,
     name: a.name,
-    permission: a.permission,
+    permission: opts.permission ?? a.permission,
     permissionMode: a.permissionMode,
     appendSystemPrompt: tmpl?.systemPrompt,
     template: a.template,
@@ -2295,7 +2313,17 @@ const killedDuringRestart = new Set<UUID>();
  * Here each failure is a typed status the caller can show, and a respawn that
  * fails leaves the agent visibly stopped (crashed), never a "running" zombie.
  */
-export async function restartAgent(agentId: UUID): Promise<Agent> {
+/** A restart that also changes the agent's permission (the Permission…
+ *  action). Omitted = respawn exactly as recorded. */
+export interface RestartOptions {
+  permission?: RuntimePermission;
+  freshConversation?: boolean;
+}
+
+export async function restartAgent(
+  agentId: UUID,
+  opts: RestartOptions = {},
+): Promise<Agent> {
   assertControlPlaneReady();
   if (serverStopping) throw serverStoppingError();
   if (restartInFlight) {
@@ -2362,7 +2390,11 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
       );
     }
     try {
-      await respawnAgent(current, { fromRestart: true });
+      await respawnAgent(current, {
+        fromRestart: true,
+        permission: opts.permission,
+        freshConversation: opts.freshConversation,
+      });
     } catch (err) {
       // The server began stopping mid-respawn: leave the record "running" so
       // the next boot resumes it (restart-all does the same) — not crashed.
