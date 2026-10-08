@@ -917,3 +917,88 @@ describe("same-named agents are distinct (keyed by id, never by name)", () => {
     expect(card("bbbb2222")?.style.opacity).toBe("0.45");
   });
 });
+
+describe("Layout: Top-down / Left-right (Terry: 'an org chart from LEFT TO RIGHT')", () => {
+  const fleet = () => {
+    tree([
+      node("Root", "running", [
+        node("Mgr", "running", [node("R1", "running"), node("R2", "running")]),
+        node("Other", "running", [node("O1", "running")]),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["Root", "Mgr", "R1", "R2", "Other", "O1"].map((id) =>
+        session(id),
+      ),
+    });
+  };
+  const at = (id: string) => {
+    const el = card(id) as HTMLElement;
+    return {
+      x: Number.parseFloat(el.style.left),
+      y: Number.parseFloat(el.style.top),
+    };
+  };
+  const inspector = () =>
+    document.querySelector("[data-org-inspector]") as HTMLElement | null;
+
+  it("switching to Left-right puts managers to the LEFT of their reports, and the choice is remembered", async () => {
+    fleet();
+    const { unmount } = render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    // Default: top-down (reports below their manager).
+    expect(at("Mgr").y).toBeLessThan(at("R1").y);
+    fireEvent.click(
+      document.querySelector('[data-org-layout="lr"]') as HTMLElement,
+    );
+    expect(
+      document
+        .querySelector('[data-org-layout="lr"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(at("Root").x).toBeLessThan(at("Mgr").x);
+    expect(at("Mgr").x).toBeLessThan(at("R1").x);
+    expect(at("R1").x).toBe(at("R2").x); // one column
+    expect(at("R1").y).toBeLessThan(at("R2").y); // stacked top to bottom
+    unmount();
+    // A fresh mount keeps Left-right.
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    expect(at("Mgr").x).toBeLessThan(at("R1").x);
+  });
+
+  it("arrow keys rotate with it: → first report, ↑/↓ the column, ← the manager", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    const key = (id: string, k: string) =>
+      fireEvent.keyDown(card(id) as HTMLElement, { key: k });
+    const sel = () => inspector()?.dataset.orgInspector;
+    fireEvent.click(card("Mgr") as HTMLElement);
+    key("Mgr", "ArrowRight");
+    expect(sel()).toBe("R1");
+    key("R1", "ArrowDown");
+    expect(sel()).toBe("R2");
+    key("R2", "ArrowDown");
+    expect(sel()).toBe("O1"); // the same column continues into the next team
+    key("O1", "ArrowLeft");
+    expect(sel()).toBe("Other");
+    key("Other", "ArrowUp");
+    expect(sel()).toBe("Mgr");
+    key("Mgr", "ArrowLeft");
+    expect(sel()).toBe("Root");
+  });
+
+  it("a lead's fold toggle sits on its RIGHT edge (where its connector leaves) in Left-right", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    const t = document.querySelector(
+      '[data-org-collapse="Mgr"]',
+    ) as HTMLElement;
+    expect(Number.parseFloat(t.style.left)).toBe(at("Mgr").x + 200 - 11);
+    expect(Number.parseFloat(t.style.top)).toBe(at("Mgr").y + 30 - 9);
+  });
+});

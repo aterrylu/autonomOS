@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CARD_H,
   CARD_W,
+  COL_GAP,
   edgePath,
   elbowPath,
   H_GAP,
@@ -10,6 +11,7 @@ import {
   PAD,
   STACK_GAP,
   STACK_INDENT,
+  TEAM_GAP,
   V_GAP,
 } from "./layout";
 
@@ -177,5 +179,91 @@ describe("edgePath", () => {
 
   it("unknown ids draw nothing", () => {
     expect(edgePath(layoutOrg([n("A")]), "A", "ghost")).toBe("");
+  });
+});
+
+describe("layoutOrg — left→right", () => {
+  const lr = (roots: LayoutNode[], isTeam?: (n: LayoutNode) => boolean) =>
+    layoutOrg(roots, { direction: "lr", isTeam });
+  const col = (depth: number) => PAD + depth * (CARD_W + COL_GAP);
+
+  it("puts the root on the LEFT and each level one column to its right", () => {
+    const L = lr([n("R", n("L", n("w1")))]);
+    expect(L.direction).toBe("lr");
+    expect(L.pos.get("R")?.x).toBe(col(0));
+    expect(L.pos.get("L")?.x).toBe(col(1));
+    expect(L.pos.get("w1")?.x).toBe(col(2));
+  });
+
+  it("stacks reports top to bottom and centers the manager on them", () => {
+    const L = lr([n("M", n("r1"), n("r2"), n("r3"))]);
+    const ys = ["r1", "r2", "r3"].map((id) => L.pos.get(id)?.y ?? 0);
+    expect(ys[1] - ys[0]).toBe(CARD_H + STACK_GAP);
+    expect(ys[2] - ys[1]).toBe(CARD_H + STACK_GAP);
+    expect(L.pos.get("M")?.y).toBe((ys[0] + ys[2]) / 2);
+    expect(L.stacked.size).toBe(0); // no spine columns here
+  });
+
+  it("width grows with DEPTH, not agents: 30 reports are still two columns", () => {
+    const L = lr([n("M", ...Array.from({ length: 30 }, (_, i) => n(`r${i}`)))]);
+    expect(L.width).toBe(PAD * 2 + 2 * CARD_W + COL_GAP);
+  });
+
+  it("sibling TEAMS get room for a lead's rollup chips (19px above its card)", () => {
+    const L = lr([n("R", n("A", n("a1")), n("B", n("b1")))]);
+    const a = L.pos.get("A")?.y ?? 0;
+    const b = L.pos.get("B")?.y ?? 0;
+    expect(b - (a + CARD_H)).toBeGreaterThanOrEqual(TEAM_GAP);
+    expect(TEAM_GAP).toBeGreaterThan(19);
+  });
+
+  it("never overlaps two cards, and every lead's chip strip is clear, in a deep uneven fleet", () => {
+    const L = lr([
+      n(
+        "R",
+        n("A", n("a1"), n("a2", n("x1"), n("x2"))),
+        n("b"),
+        n("C", n("c1")),
+      ),
+      n("S", n("s1")),
+      n("solo"),
+    ]);
+    const boxes = [...L.pos.entries()];
+    for (const [i, [, p]] of boxes.entries())
+      for (const [, q] of boxes.slice(i + 1)) {
+        const apart =
+          p.x + CARD_W <= q.x ||
+          q.x + CARD_W <= p.x ||
+          p.y + CARD_H <= q.y ||
+          q.y + CARD_H <= p.y;
+        expect(apart).toBe(true);
+      }
+    // A lead's chips occupy [y-19, y) over its column: nothing else may.
+    for (const lead of ["R", "A", "a2", "C", "S"]) {
+      const p = L.pos.get(lead) as { x: number; y: number };
+      for (const [id, q] of boxes) {
+        if (id === lead || q.x !== p.x) continue;
+        const clear = q.y + CARD_H <= p.y - 19 || q.y >= p.y;
+        expect(clear, `${id} under ${lead}'s chips`).toBe(true);
+      }
+    }
+  });
+
+  it("solo agents still sit on the Unassigned shelf under the teams", () => {
+    const L = lr([n("M", n("r")), n("solo")]);
+    const shelfY = L.shelf?.y ?? 0;
+    expect(L.shelf?.count).toBe(1);
+    expect(L.pos.get("solo")?.y ?? 0).toBeGreaterThan(shelfY);
+    expect(shelfY).toBeGreaterThan((L.pos.get("r")?.y ?? 0) + CARD_H);
+  });
+
+  it("connectors run sideways: manager's RIGHT-middle → report's LEFT-middle", () => {
+    const L = lr([n("M", n("r1"), n("r2"))]);
+    const m = L.pos.get("M") as { x: number; y: number };
+    const r2 = L.pos.get("r2") as { x: number; y: number };
+    const d = edgePath(L, "M", "r2");
+    expect(d.startsWith(`M${m.x + CARD_W},${m.y + CARD_H / 2}`)).toBe(true);
+    expect(d.endsWith(`H${r2.x}`)).toBe(true);
+    expect(d).toContain(`,${r2.y + CARD_H / 2}`);
   });
 });
