@@ -36,6 +36,10 @@ permissions:
 jobs:
   version:
     runs-on: ubuntu-latest
+    # RELEASE_PAT lives in the protected `release` environment (deployment
+    # branches: main only), so a workflow run on any other branch can't read it
+    # (security audit H-1, ADR-151 follow-up).
+    environment: release
     # `bun install` runs the root `prepare` script, which runs `lefthook install`
     # and writes .git/hooks/{pre-commit,commit-msg,pre-push}. This job both
     # commits and pushes — the changesets action stages the regenerated
