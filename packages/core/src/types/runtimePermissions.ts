@@ -106,10 +106,9 @@ export const RUNTIME_PERMISSIONS: Readonly<
             // explicitly left the agent's processes writing past teardown in
             // 3/18 spawns (0/18 without the flag, interleaved) and slowed the
             // median prompt receipt 691 → 1150ms. So it's spawned with NO flag,
-            // which is Claude Code's own manual — unless settings.json says
-            // otherwise.
-            caveat:
-              "Spawned without a flag (Claude Code's built-in default), so a `defaultMode` in your Claude Code settings.json applies instead.",
+            // and pinned to manual through the inline --settings
+            // (`defaultMode: "default"`): with no flag, Claude Code 2.1.284+
+            // would start in auto, or in your settings.json `defaultMode`.
           },
           {
             value: "acceptEdits",

@@ -1,0 +1,21 @@
+## ADR-152: Claude manual is pinned: settings defaultMode on spawn, the flag on resume
+
+- **Date:** 2026-10-08
+- **Decided by:** TeamLead@autonomOS, relaying Terry's report and approving the fix ("`manual` must mean manual"). CodexGemini@autonomOS measured the facts and built it.
+- **Context:** ADR-119 spawns Claude Code's `manual` with no permission flag. It measured that choice on 2.1.282, and accepted that a settings.json `defaultMode` could widen it. Two things changed since, both measured on 2.1.293:
+  - **A flagless session starts in AUTO.** Since Claude Code 2.1.284, a session with no flag starts in auto (changelog, and the permission-modes docs) unless a settings file sets `defaultMode`. On top of that, the operator's own settings say `auto`. Hook `permission_mode` was `auto` for a flagless spawn. So every agent recorded `manual` ran auto: the inspector showed `manual` while Claude Code showed `auto` (Terry's report on #508's live look).
+  - **`--resume` restores the last mode.** An interactive `claude --resume` puts back the session's LAST mode, including one picked with Shift+Tab. That beats a `--settings` `defaultMode`: a session last in acceptEdits came back in acceptEdits. (Headless `-p --resume` doesn't do this, so it's the wrong proxy for testing it.)
+- **Decision:** `manual` gets an explicit pin, chosen per spawn shape. Every other value is unchanged: its own flag already wins over settings and over the resume restore.
+  - **Fresh spawn:** still no flag, as ADR-119 decided. The inline `--settings` we already pass carries `permissions.defaultMode: "default"`. Measured: the first turn runs `default`, under an operator settings file that says `auto`.
+  - **Resume or fork:** `--permission-mode manual` plus the same settings pin. Measured: a session last in acceptEdits resumes and runs `default`.
+  - The `manual` caveat ("a settings.json `defaultMode` applies instead") is removed, along with the matching "ask" explainer. It is no longer true.
+- **Rationale:** a record must never claim a mode the process isn't running (ADR-119's own rule).
+  - The settings pin keeps fresh spawns exactly as ADR-119 measured them: no flag on argv.
+  - The flag is used only where nothing else works, the resume.
+  - ADR-119's cost of the flag (processes surviving teardown) was measured on fresh spawns, so it was re-measured for resumes. The A/B on 2.1.293 had 12 interleaved resume-and-kill trials per arm, counting the agent's process-tree survivors 3 seconds after teardown. It found no difference: with the flag, 1 of 12 trials had survivors (2 processes); without it, also 1 of 12 (2). Caveat: several no-flag trials snapshotted the tree before its children existed, so that arm was slightly less sensitive.
+- **Alternatives considered:**
+  - **The flag everywhere** (ADR-115 pick 3). Fresh spawns don't need it, since the settings pin works there, and ADR-119 measured a teardown and latency cost for exactly that case.
+  - **The settings pin everywhere.** Measured: it loses to an interactive resume's restore, so resumed agents would keep running auto, including every older agent born flagless.
+  - **Leave it and only show the live mode.** The display fix ships too (the hook-reported mode in the inspector), but a `manual` that runs auto is the bug itself, not a display problem.
+- **Supersedes:** ADR-119 (outcome 1, in part: `manual` stays flagless on fresh spawns, but is no longer unpinned)
+- **Source:** Terry's report via TeamLead@autonomOS in the agent channel, 2026-10-08; Claude Code session (CodexGemini@autonomOS) with the measurements above.

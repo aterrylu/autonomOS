@@ -205,6 +205,52 @@ describe("claude-code: every permission-mode → exact permission argv", () => {
   }
 });
 
+/** The inline --settings JSON a Claude Code argv carries. */
+function claudeSettings(args: string[]): { permissions?: unknown } {
+  const i = args.indexOf("--settings");
+  assert.ok(i >= 0, "no --settings on argv");
+  return JSON.parse(args[i + 1]);
+}
+
+// With no flag, Claude Code 2.1.284+ starts in AUTO (and a user's settings.json
+// defaultMode applies; --resume restores the last mode), so a flagless
+// `manual` ran auto. The pin rides the inline --settings, which beats both,
+// measured on fresh AND resumed sessions.
+describe("claude-code: manual is pinned to manual through --settings, fresh and on resume", () => {
+  for (const { value } of RUNTIME_PERMISSIONS["claude-code"].axes[0].values) {
+    for (const resume of [false, true]) {
+      it(`permission-mode=${value}${resume ? " (resume)" : ""}`, () => {
+        const args = claudeCodeProvider.buildArgs(
+          opts({
+            permission: completePermission("claude-code", {
+              "permission-mode": value,
+            }),
+            ...(resume
+              ? { resumeSessionId: "33333333-3333-4333-8333-333333333333" }
+              : {}),
+          }),
+        );
+        if (resume)
+          assert.ok(args.includes("--resume"), "precondition: a resume argv");
+        const pin = claudeSettings(args).permissions;
+        if (value === "manual") {
+          assert.deepEqual(pin, { defaultMode: "default" });
+          // Fresh: no flag (ADR-119 measured its teardown cost on fresh
+          // spawns). Resume: an interactive --resume restores the session's
+          // LAST mode over the settings pin (measured), so only the flag wins.
+          assert.deepEqual(
+            claudePermTokens(args),
+            resume ? ["--permission-mode", "manual"] : [],
+          );
+        } else {
+          // Every other value has its flag, which beats settings: no pin.
+          assert.equal(pin, undefined);
+        }
+      });
+    }
+  }
+});
+
 // ── Gemini CLI ──────────────────────────────────────────────────────────────
 
 describe("gemini-cli: every approval-mode × Auto-Trust → exact argv and env", () => {
