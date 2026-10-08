@@ -60,7 +60,11 @@ export function markServeConnection(socket: object): void {
  *  known: the startup log, `token status` and the TCP refusal all print it. */
 let serveCommand: string | undefined;
 export function setServeSocketPath(path: string | undefined): void {
-  serveCommand = path ? `tailscale serve --bg unix:${path}` : undefined;
+  // Quoted when the path has spaces (the App Store default lives under
+  // "Group Containers"), so the printed command pastes into a shell as-is.
+  serveCommand = path
+    ? `tailscale serve --bg ${/\s/.test(path) ? `"unix:${path}"` : `unix:${path}`}`
+    : undefined;
 }
 export function getServeCommand(): string | undefined {
   return serveCommand;

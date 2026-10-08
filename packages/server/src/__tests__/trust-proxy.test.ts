@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import type { Context } from "hono";
 import {
   clientIdentity,
+  getServeCommand,
   markServeConnection,
   parseTrustProxy,
   setServeSocketPath,
@@ -189,6 +190,20 @@ describe("an unmarked unix socket is not the serve socket", () => {
     // and with no remote address it is not loopback, so no identity is taken.
     const r = clientIdentity(ctx({}, { "X-Forwarded-For": "100.70.53.56" }), T);
     assert.ok("error" in r || r.via !== "tailscale-serve");
+  });
+});
+
+describe("the serve command", () => {
+  it("is quoted when the socket path has spaces (the App Store default does), so it pastes into a shell", () => {
+    setServeSocketPath(
+      "/Users/u/Library/Group Containers/X.group.io.tailscale.ipn.macos/aos-3000.sock",
+    );
+    assert.equal(
+      getServeCommand(),
+      'tailscale serve --bg "unix:/Users/u/Library/Group Containers/X.group.io.tailscale.ipn.macos/aos-3000.sock"',
+    );
+    setServeSocketPath(SOCKET);
+    assert.equal(getServeCommand(), `tailscale serve --bg unix:${SOCKET}`);
   });
 });
 
