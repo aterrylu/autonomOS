@@ -171,7 +171,15 @@ jobs:
             close_open_pr "No number collision on main any more; main is invalid for another reason (see the decisions-index run)."
             exit 0
           fi
-          bun scripts/decisions.ts check   # the fix must leave main valid, or no PR
+          # The fix must leave main valid, or no PR: if main is ALSO invalid for another reason,
+          # that error can change the right fix, so a human goes first. Say which errors.
+          recheck="$RUNNER_TEMP/post-fix-check.txt"
+          if ! bun scripts/decisions.ts check > "$recheck" 2>&1; then
+            cat "$recheck"
+            others="$(grep '^- ' "$recheck" | head -5 | cut -c1-300 | awk '{printf "%s%%0A", $0}')"
+            echo "::error title=No renumber PR: main has other ADR errors::The number collision was fixed locally, but main is also invalid for another reason, so no renumber PR was opened. Fix these first; the next ADR push or hourly run then opens the PR.%0A${others}"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -q -m "$RENUMBER_TITLE"
