@@ -310,4 +310,76 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     );
     assert.ok(!paste.includes("\r"), "bare CR must be stripped from content");
   });
+
+  // Security audit V7: the single-pass strip above rebuilt a terminator from a
+  // nested one ("\x1b[20" + "\x1b[201~" + "1~"), closing paste mode early so
+  // the rest landed as raw keystrokes: Shift+Tab ("\x1b[Z") cycles Gemini's
+  // approval mode. The content may now carry no control character at all
+  // (ESC and C1 included), so no strip can rebuild a terminator.
+  const pasteBody = (w: string) => {
+    assert.ok(w.startsWith("\x1b[200~") && w.endsWith("\x1b[201~"));
+    return w.slice("\x1b[200~".length, -"\x1b[201~".length);
+  };
+  const deliver = (from: string, message: string) => {
+    const { id, writes } = seedGemini("Gigi");
+    const enq = enqueueHandoff(id, { from, message });
+    assert.ok(enq.ok);
+    if (!enq.ok) return "";
+    injectHandoffItem(id, enq.item.id);
+    const paste = writes.find((w) => w.startsWith("\x1b[200~"));
+    assert.ok(paste);
+    return paste;
+  };
+
+  it("a NESTED terminator can't be reassembled into a paste escape (audit V7)", () => {
+    const paste = deliver(
+      "ev\x1b[20\x1b[201~1~il",
+      "hi\x1b[20\x1b[201~1~\x1b[Zrest",
+    );
+    assert.equal(
+      paste.split("\x1b[201~").length - 1,
+      1,
+      "only the wrapper's terminator",
+    );
+    assert.ok(
+      !pasteBody(paste).includes("\x1b"),
+      "no ESC reaches the pane, so no keystroke (Shift+Tab) either",
+    );
+  });
+
+  it("an 8-bit C1 CSI terminator is stripped too (audit V7)", () => {
+    const body = pasteBody(deliver("s", "a\u009b201~\u009bZb"));
+    assert.ok(!/[\u0080-\u009f]/.test(body), "no C1 control in the content");
+  });
+
+  it("no mix of fragments can smuggle a control character or terminator (audit V7)", () => {
+    const parts = [
+      "\x1b",
+      "[",
+      "20",
+      "201~",
+      "1~",
+      "\x1b[201~",
+      "\r",
+      "\u009b",
+      "Z",
+      "x",
+      "\x03",
+      "\x7f",
+    ];
+    let seed = 7;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed;
+    };
+    for (let i = 0; i < 300; i++) {
+      let msg = "";
+      for (let j = rnd() % 12; j >= 0; j--) msg += parts[rnd() % parts.length];
+      const body = pasteBody(deliver("s", msg));
+      assert.ok(
+        !/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(body),
+        `control character survived in ${JSON.stringify(msg)}`,
+      );
+    }
+  });
 });
