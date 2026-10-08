@@ -34,6 +34,7 @@ import {
   adrFiles,
   appendedEntries,
   checkDecisions,
+  claimedNumbers,
   collisionPlan,
   DECISIONS_DIR,
   type Entry,
@@ -635,11 +636,14 @@ describe("index", () => {
 });
 
 describe("collision on main: the bot renumbers the LATER merge (CI guard)", () => {
-  // A scratch "main" where two PRs merged ADR-900. The later merge is deliberately
-  // BACK-DATED, so the test fails if "later" were ever judged by timestamp.
+  // A scratch "main" where two PRs merged ADR-900. The later merge's file sorts FIRST by name
+  // and its commit is BACK-DATED, so neither filename order nor timestamps can pass for
+  // history order.
   let root: string;
   let dir: string;
   const shas: Record<string, string> = {};
+  const LATER = "ADR-900-aaa-merged-second.md";
+  const EARLIER = "ADR-900-zzz-merged-first.md";
   const git = (args: string[], date = "2026-10-08T10:00:00Z") =>
     execFileSync("git", ["-C", root, ...args], {
       encoding: "utf8",
@@ -654,11 +658,11 @@ describe("collision on main: the bot renumbers the LATER merge (CI guard)", () =
     );
     return git(["rev-parse", "HEAD"]).trim();
   };
-  const filled = (num: string, title: string) =>
+  const filled = (num: string, title: string, extra = "") =>
     template(Number(num), title, "2026-10-08").replace(
       /TODO \([^)]*\)/g,
       "filled in",
-    );
+    ) + extra;
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "adr-collide-"));
@@ -667,19 +671,28 @@ describe("collision on main: the bot renumbers the LATER merge (CI guard)", () =
     writeFileSync(join(root, LEGACY_LOG), LEGACY_STUB);
     git(["init", "-q", "-b", "main"]);
     commit("base");
-    writeFileSync(
-      join(dir, "ADR-900-first-to-land.md"),
-      filled("900", "First to land"),
-    );
+    writeFileSync(join(dir, EARLIER), filled("900", "Merged first"));
     shas.first = commit("feat: first PR (#601)", "2026-10-08T12:00:00Z");
-    mkdirSync(join(root, "packages"), { recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(
-      join(dir, "ADR-900-second-to-land.md"),
-      filled("900", "Second to land"),
+      join(dir, LATER),
+      filled("900", "Merged second", "\nSee ADR-900 for the follow-up.\n"),
     );
     writeFileSync(
-      join(root, "packages", "x.ts"),
-      "// unrelated line\n// see ADR-900 for why\nconst y = 1; // ADR-9001 is a different number\n",
+      join(dir, "ADR-901-builds-on-it.md"),
+      filled("901", "Builds on it", "- **Supersedes:** ADR-900\n"),
+    );
+    writeFileSync(
+      join(root, "src", "x.ts"),
+      "// unrelated\n// see ADR-900 for why\nconst y = 1; // ADR-9001 is another number\n",
+    );
+    writeFileSync(
+      join(root, "src", "café.ts"),
+      "// ADR-900 in a non-ASCII path\n",
+    );
+    writeFileSync(
+      join(root, "src", "pp.md"),
+      "++ looks like a diff header\nmentions ADR-900 after it\n",
     );
     shas.second = commit("feat: second PR (#602)", "2026-10-01T00:00:00Z"); // back-dated
   });
@@ -690,66 +703,196 @@ describe("collision on main: the bot renumbers the LATER merge (CI guard)", () =
       /ADR-900 is used by 2 files/.test(e),
     );
     assert.equal(rest.length, 0);
-    assert.match(
-      err!,
-      new RegExp(
-        `ADR-900-first-to-land\\.md \\(added in ${shas.first!.slice(0, 7)} "feat: first PR \\(#601\\)"\\)`,
+    assert.ok(
+      err!.includes(
+        `${EARLIER} (added in ${shas.first!.slice(0, 7)} "feat: first PR (#601)")`,
       ),
+      err,
     );
-    assert.match(
-      err!,
-      new RegExp(
-        `ADR-900-second-to-land\\.md \\(added in ${shas.second!.slice(0, 7)} `,
+    assert.ok(
+      err!.includes(
+        `${LATER} (added in ${shas.second!.slice(0, 7)} "feat: second PR (#602)")`,
       ),
+      err,
     );
   });
 
-  it("plans to renumber the file merged later (history order, not date), with its code mentions", () => {
+  it("renumbers the file merged later by history, even though it sorts first and is older by date", () => {
     const plan = collisionPlan(root);
     assert.equal(plan.length, 1);
-    assert.equal(plan[0]!.keep, "ADR-900-first-to-land.md");
-    assert.equal(plan[0]!.renumber, "ADR-900-second-to-land.md");
+    assert.equal(plan[0]!.keep, EARLIER);
+    assert.equal(plan[0]!.renumber, LATER);
     assert.equal(plan[0]!.addedIn?.sha, shas.second);
-    // Only the line that names ADR-900 itself: not the ADR file, not ADR-9001.
-    assert.deepEqual(plan[0]!.mentions, [
-      "packages/x.ts:2: // see ADR-900 for why",
+    assert.equal(plan[0]!.toNum, 902); // 901 is taken by the sibling ADR
+  });
+
+  it("lists every mention the later merge added: code, quoted paths, other ADRs, its own body", () => {
+    const mentions = collisionPlan(root)[0]!.mentions!;
+    assert.deepEqual([...mentions].sort(), [
+      `${DECISIONS_DIR}/${LATER}:11: See ADR-900 for the follow-up.`,
+      `${DECISIONS_DIR}/ADR-901-builds-on-it.md:10: - **Supersedes:** ADR-900`,
+      "src/café.ts:1: // ADR-900 in a non-ASCII path",
+      "src/pp.md:2: mentions ADR-900 after it",
+      "src/x.ts:2: // see ADR-900 for why",
     ]);
+  });
+
+  it("skips the bot's OWN open PR when counting claimed numbers (no bump on every rerun)", () => {
+    const bin = mkdtempSync(join(tmpdir(), "adr-gh-"));
+    const prs = [
+      {
+        number: 7,
+        headRefName: "bot/decisions-renumber",
+        changedFiles: 1,
+        files: [{ path: `${DECISIONS_DIR}/ADR-902-aaa-merged-second.md` }],
+      },
+      {
+        number: 8,
+        headRefName: "feature",
+        changedFiles: 1,
+        files: [{ path: `${DECISIONS_DIR}/ADR-905-other.md` }],
+      },
+    ];
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/bin/sh\necho '${JSON.stringify(prs)}'\n`,
+      { mode: 0o755 },
+    );
+    const saved = {
+      PATH: process.env.PATH,
+      ADR_OFFLINE: process.env.ADR_OFFLINE,
+    };
+    process.env.PATH = `${bin}:${saved.PATH}`;
+    delete process.env.ADR_OFFLINE;
+    try {
+      const own = claimedNumbers(root, {
+        ignoreHead: "bot/decisions-renumber",
+      });
+      assert.ok(own.nums.includes(905), "a real PR's number is still claimed");
+      assert.ok(!own.nums.includes(902), "the bot's own PR is not");
+      assert.ok(
+        claimedNumbers(root).nums.includes(902),
+        "fixture: without ignoreHead it IS counted",
+      );
+    } finally {
+      process.env.PATH = saved.PATH;
+      process.env.ADR_OFFLINE = saved.ADR_OFFLINE;
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses in a shallow clone instead of ranking blind", () => {
+    const shallow = mkdtempSync(join(tmpdir(), "adr-shallow-"));
+    try {
+      execFileSync(
+        "git",
+        ["clone", "-q", "--depth", "1", `file://${root}`, shallow],
+        { stdio: "ignore" },
+      );
+      assert.throws(() => collisionPlan(shallow), /shallow clone/);
+      assert.deepEqual(
+        checkDecisions(shallow).filter((e) => /added in/.test(e)),
+        [],
+        "no add-commit blame in a shallow clone",
+      );
+    } finally {
+      rmSync(shallow, { recursive: true, force: true });
+    }
   });
 
   it("applies it: one staged rename + header, check goes green, and the PR body says so", () => {
     const fixes = fixCollisions(root);
     assert.equal(fixes.length, 1);
-    assert.equal(fixes[0]!.to, `${DECISIONS_DIR}/ADR-901-second-to-land.md`);
+    assert.equal(fixes[0]!.to, `${DECISIONS_DIR}/ADR-902-aaa-merged-second.md`);
     assert.match(
       readFileSync(join(root, fixes[0]!.to!), "utf8"),
-      /^## ADR-901: Second to land\n/,
+      /^## ADR-902: Merged second\n/,
     );
     assert.equal(
       git(["status", "--porcelain"]).trim(),
-      `R  ${DECISIONS_DIR}/ADR-900-second-to-land.md -> ${DECISIONS_DIR}/ADR-901-second-to-land.md`,
+      `R  ${DECISIONS_DIR}/${LATER} -> ${DECISIONS_DIR}/ADR-902-aaa-merged-second.md`,
     );
     assert.deepEqual(checkDecisions(root), []);
-    const body = renderCollisionBody(fixes);
+    const body = renderCollisionBody(fixes, [
+      "origin/main's docs/decisions/ not read (offline)",
+    ]);
     assert.ok(
       body.includes(
-        `| ADR-900 | \`ADR-900-first-to-land.md\` (${shas.first!.slice(0, 7)} "feat: first PR (#601)") | \`ADR-900-second-to-land.md\` (${shas.second!.slice(0, 7)} "feat: second PR (#602)") | **ADR-901** |`,
+        `| ADR-900 | \`${EARLIER}\` (${shas.first!.slice(0, 7)} "feat: first PR (#601)") | \`${LATER}\` (${shas.second!.slice(0, 7)} "feat: second PR (#602)") | **ADR-902** |`,
       ),
       body,
     );
+    assert.ok(body.includes("- `src/x.ts:2: // see ADR-900 for why`"), body);
+    assert.ok(body.includes("should change these to ADR-902"), body);
     assert.ok(
-      body.includes("- `packages/x.ts:2: // see ADR-900 for why`"),
+      body.includes(
+        "**Allocator notes:**\n- origin/main's docs/decisions/ not read (offline)",
+      ),
       body,
     );
-    assert.match(body, /never edits code/);
+    git([
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit",
+      "-qm",
+      "docs(decisions): renumber colliding ADR (#603)",
+    ]);
+  });
+
+  it("says when mentions couldn't be listed instead of claiming there are none", () => {
+    const body = renderCollisionBody([
+      {
+        num: 900,
+        keep: "a.md",
+        renumber: "b.md",
+        toNum: 902,
+        mentionsNote: "couldn't read the diff",
+      },
+      { num: 901, keep: "c.md", renumber: "d.md", toNum: 903, mentions: [] },
+    ]);
+    assert.match(
+      body,
+      /ADR-900 mentions added by an uncommitted change:\*\* not listed: couldn't read the diff\./,
+    );
+    assert.match(body, /ADR-901 mentions .*none \(the whole diff was scanned/);
+  });
+
+  it("a file moved by an earlier renumber PR that loses again is flagged, not scanned as 'none'", () => {
+    writeFileSync(join(dir, "ADR-902-again.md"), filled("902", "Again"));
+    commit("feat: third PR (#604)");
+    writeFileSync(join(dir, "ADR-902-again.md"), filled("902", "Again"));
+    const plan = collisionPlan(root, {
+      renumberTitle: "docs(decisions): renumber colliding ADR",
+    });
+    assert.equal(plan.length, 1);
+    // The bot's file (renumbered in #603) is older than #604, so #604's file moves.
+    assert.equal(plan[0]!.renumber, "ADR-902-again.md");
+    git(["rm", "-q", `${DECISIONS_DIR}/ADR-902-again.md`]);
+    commit("revert third");
+  });
+
+  it("reads a >1 MB squash diff (main already has one)", () => {
+    writeFileSync(
+      join(root, "src", "big.txt"),
+      `${"x".repeat(2 * 1024 * 1024)}\n`,
+    );
+    writeFileSync(join(dir, "ADR-904-big.md"), filled("904", "Big"));
+    writeFileSync(join(dir, "ADR-904-big-two.md"), filled("904", "Big two"));
+    writeFileSync(join(root, "src", "y.ts"), "// ADR-904\n");
+    commit("feat: big PR (#605)");
+    const plan = collisionPlan(root);
+    assert.equal(plan.length, 1);
+    assert.deepEqual(plan[0]!.mentions, ["src/y.ts:1: // ADR-904"]);
   });
 
   it("never moves a legacy entry: a new file reusing a legacy number is the one renumbered", () => {
-    git(["reset", "-q", "--hard", "HEAD"]);
     writeFileSync(
       join(dir, "ADR-104-reuses-legacy.md"),
       filled("104", "Reuses legacy"),
     );
-    commit("feat: reuses a legacy number (#603)");
+    commit("feat: reuses a legacy number (#606)");
     const plan = collisionPlan(root).filter((f) => f.num === 104);
     assert.equal(plan.length, 1);
     assert.equal(plan[0]!.renumber, "ADR-104-reuses-legacy.md");

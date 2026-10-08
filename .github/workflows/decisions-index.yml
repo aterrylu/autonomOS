@@ -43,7 +43,8 @@ name: Decisions index
 # validation finds a duplicate number, `fix-collisions` renumbers the ADR added
 # LATER (by history order, not date: the "later merger renumbers" rule, made
 # mechanical). It opens ONE rolling "docs(decisions): renumber colliding ADR" PR,
-# authored by aterrylu via RELEASE_PAT so nox approves it, with auto-merge on. Its
+# authored by aterrylu via RELEASE_PAT so nox reviews it (if nox holds back, a human
+# approves it), with auto-merge on. Its
 # body lists every ADR-NNN mention that the later merge added for that PR's owner
 # to fix; the bot never edits code. A validation failure stays RED in its own final
 # step, and the index still regenerates on schedule, so one bad merge can't freeze
@@ -146,15 +147,18 @@ jobs:
       - name: Open, update or close the collision renumber PR
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
           VALID: ${{ steps.validate.outcome == 'success' }}
+        # fix-collisions reads RENUMBER_BRANCH (skip the bot's own PR when counting claimed
+        # numbers, so a rerun never bumps it again) and RENUMBER_TITLE from the job env.
         run: |
           set -euo pipefail
           open_pr="$(gh pr list --head "$RENUMBER_BRANCH" --state open --json number -q '.[0].number')"
+          close_open_pr() {
+            if [ -n "$open_pr" ]; then gh pr close "$open_pr" --delete-branch --comment "$1"; fi
+          }
           if [ "$VALID" = "true" ]; then
-            # Main is valid (e.g. someone renumbered by hand): an open fix PR is redundant.
-            if [ -n "$open_pr" ]; then
-              gh pr close "$open_pr" --delete-branch --comment "Main's ADRs are valid now; no renumber needed."
-            fi
+            close_open_pr "Main's ADRs are valid now; no renumber needed."
             exit 0
           fi
           # Start from main itself; the index step may have left another branch checked out.
@@ -164,22 +168,32 @@ jobs:
           bun scripts/decisions.ts fix-collisions --body "$body"
           if [ -z "$(git status --porcelain -- docs/decisions)" ]; then
             echo "Validation failed for a reason other than a number collision; nothing to renumber (see the Validate step)."
+            close_open_pr "No number collision on main any more; main is invalid for another reason (see the decisions-index run)."
             exit 0
           fi
           bun scripts/decisions.ts check   # the fix must leave main valid, or no PR
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -q -m "$RENUMBER_TITLE"
-          git push --force origin "$RENUMBER_BRANCH"
-          if [ -z "$open_pr" ]; then
-            gh pr create --base main --head "$RENUMBER_BRANCH" --title "$RENUMBER_TITLE" --body-file "$body"
+          # Same fix as the open PR already carries? Don't force-push: that would restart its CI and review.
+          if [ -n "$open_pr" ] && git diff --quiet "origin/$RENUMBER_BRANCH" HEAD -- docs/decisions; then
+            echo "PR #$open_pr already carries this fix."
           else
-            gh pr edit "$open_pr" --body-file "$body"
+            git push --force origin "$RENUMBER_BRANCH"
+            if [ -z "$open_pr" ]; then
+              gh pr create --base main --head "$RENUMBER_BRANCH" --title "$RENUMBER_TITLE" --body-file "$body"
+            else
+              gh pr edit "$open_pr" --body-file "$body"
+            fi
           fi
           gh pr merge "$RENUMBER_BRANCH" --auto --squash
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::error::RELEASE_PAT is not set: the renumber PR was opened by GITHUB_TOKEN, so its required checks won't start and nox won't review it. Close + reopen it and approve it by hand, or it will never merge."
+            exit 1
+          fi
 
       - name: Fail if main's ADRs are invalid
         if: steps.validate.outcome == 'failure'
         run: |
-          echo "::error::docs/decisions on main is invalid (see the Validate ADRs step). A number collision gets a '$RENUMBER_TITLE' PR from the step above; anything else needs a human fix."
+          echo "::error::docs/decisions on main is invalid (see the Validate ADRs step). If it was a number collision, the step above opened or updated a '$RENUMBER_TITLE' PR; anything else needs a human fix."
           exit 1
