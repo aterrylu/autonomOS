@@ -57,9 +57,17 @@ set +m
   # caller's stdout/stderr open for the whole bound, so anything reading the
   # run's output (lefthook) would wait the full bound after every run.
   trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
-  sleep "$BOUND" &
-  sleeper=$!
-  wait "$sleeper"
+  # Count the bound in 1s steps and leave as soon as the runner is gone: one
+  # long sleep outlived a runner killed with SIGKILL (no trap), holding the
+  # lock's fd and the caller's output for the whole bound.
+  left=$BOUND
+  while [ "$left" -gt 0 ]; do
+    kill -0 "$owner" 2>/dev/null || exit 0
+    sleep 1 &
+    sleeper=$!
+    wait "$sleeper"
+    left=$((left - 1))
+  done
   kill -0 "$pid" 2>/dev/null || exit 0
   echo fired >"$fired"
   {

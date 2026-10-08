@@ -171,6 +171,28 @@ describe("scripts/run-bounded.sh", () => {
       await until(() => !alive(`^node .*${marker}`), 10_000),
       "the command outlived its killed runner",
     );
+    // …and nothing of the runner either: its bound watchdog (a subshell that
+    // carries the runner's command line) must not sleep out the whole bound.
+    assert.ok(
+      await until(() => !alive(`run-bounded\\.sh 600 .*${marker}`), 10_000),
+      "the runner's watchdog outlived it",
+    );
+  });
+
+  it("processes the command leaves running are swept when it exits", async () => {
+    // A test that leaked a live process (a server, a timer) used to keep it
+    // alive after the run, holding the lock's fd and the caller's output.
+    const marker = `leaked-${process.pid}-${Date.now()}`;
+    const r = await run("bash", [
+      BOUNDED,
+      "60",
+      "bash",
+      "-c",
+      `node -e "setInterval(() => {}, 1000)" ${marker} & echo started`,
+    ]);
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.ms < 10_000, `output held ${r.ms}ms by the leaked process`);
+    assert.equal(alive(`^node .*${marker}`), false, "the leaked process was swept");
   });
 
   it("stops the WHOLE process group at the bound, names the stuck test file, exits 124", async () => {
