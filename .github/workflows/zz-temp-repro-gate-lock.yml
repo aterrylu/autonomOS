@@ -1,0 +1,35 @@
+# TEMPORARY (removed before this PR is marked ready): Linux reproduction rig
+# for the ci-gate-lock.test.ts 300s CI timeouts (10-08). Runs both gate-lock
+# suites 15 times on ubuntu (flock path) with per-test timeouts.
+name: zz temp repro gate-lock
+on:
+  pull_request:
+    branches: [main]
+    paths: [".github/workflows/zz-temp-repro-gate-lock.yml", "scripts/run-bounded.*", "scripts/ci-gate-lock.*"]
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: bun install
+      - name: lsof / flock present?
+        run: command -v lsof flock || true
+      - name: 15 runs of both suites
+        run: |
+          fails=0
+          for i in $(seq 1 15); do
+            if ! scripts/test-file.sh scripts/ci-gate-lock.test.ts scripts/run-bounded.test.ts > run-$i.log 2>&1; then
+              fails=$((fails+1)); echo "=== RUN $i FAILED"; grep -E "✖|not ok|timed out|Error" run-$i.log | head -20
+            else
+              echo "run $i ok ($(grep -E 'ℹ pass' run-$i.log))"
+            fi
+          done
+          echo "FAILED RUNS: $fails / 15"
+          test "$fails" -eq 0
