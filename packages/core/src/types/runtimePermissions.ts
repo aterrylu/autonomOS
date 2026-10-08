@@ -397,6 +397,17 @@ export function legacyModeFor(
 }
 
 /**
+ * Claude Code's hook `permission_mode` → its permission-mode value in our
+ * table. The hooks spell manual as `default` (Claude Code's internal name);
+ * every other value is the same word. An unknown value passes through as-is
+ * (honest over tidy: a newer Claude Code mode still shows).
+ */
+export function claudeLiveMode(hookValue: unknown): string | undefined {
+  if (typeof hookValue !== "string" || hookValue === "") return undefined;
+  return hookValue === "default" ? "manual" : hookValue;
+}
+
+/**
  * The canonical display string: the CLI's own values, nothing invented.
  * Single-axis runtimes show the bare value (`acceptEdits`, `yolo`); Codex shows
  * `key=value` pairs, omitting axes still at Codex's own default where that

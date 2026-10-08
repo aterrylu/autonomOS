@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { AgentTreeNode } from "@autonomos/core";
+import { type AgentTreeNode, completePermission } from "@autonomos/core";
 import {
   act,
   fireEvent,
@@ -419,6 +419,56 @@ describe("selection + inspector", () => {
     expect(card("Mgr")?.style.opacity).toBe(""); // manager chain: lit
     expect(card("Other")?.style.opacity).toBe("0.45"); // outside: dimmed
     expect(card("R2")?.style.opacity).toBe("0.45"); // a sibling isn't chain
+  });
+
+  it("Permissions shows what Claude Code is ACTUALLY running next to what it was set to", async () => {
+    tree([
+      node("C", "running", [], {
+        permission: completePermission("claude-code", {
+          "permission-mode": "manual",
+        }),
+      }),
+      node("X", "running", [], {
+        provider: "codex",
+        permission: completePermission("codex", {}),
+      } as Partial<AgentTreeNode>),
+    ]);
+    useStore.setState({
+      sessions: [session("C"), session("X", { provider: "codex" })],
+      agentStatuses: {
+        C: { status: "idle", livePermission: "auto" },
+        X: { status: "idle", livePermission: "auto" },
+      },
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("X")).not.toBeNull());
+    fireEvent.click(card("C") as HTMLElement);
+    const row = () =>
+      document.querySelector(
+        "[data-org-inspector-permission]",
+      ) as HTMLElement | null;
+    // Differs: "set: manual · running: auto".
+    expect(row()).toHaveTextContent("set:");
+    expect(row()).toHaveTextContent("manual");
+    const differs = row()?.querySelector('[data-live-permission="differs"]');
+    expect(differs).toHaveTextContent("running: auto");
+    // The live mode moves (a Shift+Tab back, seen at the next hook): the row
+    // follows from the store, no reload.
+    act(() =>
+      useStore.setState({
+        agentStatuses: {
+          C: { status: "idle", livePermission: "manual" },
+          X: { status: "idle", livePermission: "auto" },
+        },
+      }),
+    );
+    expect(
+      row()?.querySelector('[data-live-permission="match"]'),
+    ).toHaveTextContent("running");
+    expect(row()).not.toHaveTextContent("set:");
+    // Codex reports no live mode: nothing extra, even with a stray value.
+    fireEvent.click(card("X") as HTMLElement);
+    expect(row()?.querySelector("[data-live-permission]")).toBeNull();
   });
 
   it("the inspector shows status, config and team, and its chips move the selection", async () => {

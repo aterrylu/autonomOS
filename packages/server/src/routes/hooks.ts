@@ -1,9 +1,10 @@
-import type {
-  AgentActivityState,
-  AgentActivityStatus,
-  AgentStatusMap,
-  NotificationFeed,
-  UUID,
+import {
+  type AgentActivityState,
+  type AgentActivityStatus,
+  type AgentStatusMap,
+  claudeLiveMode,
+  type NotificationFeed,
+  type UUID,
 } from "@autonomos/core";
 import { type Context, Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
@@ -664,6 +665,22 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
         });
         emitStatusDelta(sessionId);
       }
+    }
+  }
+
+  // ── The CLI's own permission mode (Claude Code reports it per hook) ──
+  // What the agent is ACTUALLY running, which the record can't know: a live
+  // Shift+Tab, or a settings default. A new process (SessionStart) starts
+  // unknown: SessionStart carries no mode, so the first prompt/tool tells.
+  if (agent?.provider === "claude-code" || (agent && !agent.provider)) {
+    const cur = agentStates.get(sessionId);
+    const live =
+      event === "SessionStart" && body.source !== "compact"
+        ? undefined
+        : (claudeLiveMode(body.permission_mode) ?? cur?.livePermission);
+    if (cur && cur.livePermission !== live) {
+      agentStates.set(sessionId, { ...cur, livePermission: live });
+      emitStatusDelta(sessionId);
     }
   }
 
