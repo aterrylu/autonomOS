@@ -58,8 +58,9 @@ export function projectsView(
 /**
  * The branch chip for a session row: its git branch when the runtime recorded
  * one (Claude Code does), else the worktree it ran in, named relative to its
- * repo ("autonomOS-terry-x" under autonomOS → "terry-x"). Nothing for a
- * session in the project's own directory: there's no worktree to name.
+ * repo ("autonomOS-terry-x" under autonomOS → "terry-x"), or a subdirectory as
+ * its path relative to the repo ("packages/server"). Nothing for a session in
+ * the project's own directory.
  */
 export function sessionChip(
   s: Pick<ProjectSession, "gitBranch" | "cwd">,
@@ -67,6 +68,14 @@ export function sessionChip(
 ): string | undefined {
   if (s.gitBranch) return s.gitBranch;
   if (!s.cwd || s.cwd === project.path) return undefined;
+  // A subdirectory of the repo (the server folds `repo/packages/server` in
+  // too) is shown as its path RELATIVE to the repo, so it reads as a location,
+  // not as a branch name in the branch-chip slot (nox on #443).
+  if (s.cwd.startsWith(`${project.path}/`)) {
+    return (
+      s.cwd.slice(project.path.length + 1).replace(/\/+$/, "") || undefined
+    );
+  }
   const base = s.cwd.split("/").filter(Boolean).pop();
   if (!base) return undefined;
   const prefix = `${project.name}-`;

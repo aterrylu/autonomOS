@@ -137,10 +137,18 @@ describe("sessionChip", () => {
     expect(sessionChip({ cwd: REPO }, proj)).toBeUndefined();
     expect(sessionChip({}, proj)).toBeUndefined();
   });
-  it("a subdirectory or unrelated worktree name is shown as-is", () => {
+  // REGRESSION GUARD (nox on #443): a Codex/Gemini row in a plain
+  // SUBDIRECTORY must not show a bare folder name in the branch slot ("server"
+  // read like a branch); it shows the path relative to the repo.
+  it("a subdirectory of the repo shows its path relative to the repo, not a bare folder name", () => {
     expect(sessionChip({ cwd: `${REPO}/packages/server` }, proj)).toBe(
-      "server",
+      "packages/server",
     );
+    expect(sessionChip({ cwd: `${REPO}/docs/` }, proj)).toBe("docs");
+    // a sibling dir that merely SHARES the prefix is not a subdirectory
+    expect(sessionChip({ cwd: `${REPO}-terry-x` }, proj)).toBe("terry-x");
+  });
+  it("an unrelated directory name is shown as-is", () => {
     expect(sessionChip({ cwd: "/x/autonomOS-" }, proj)).toBe("autonomOS-");
   });
 });
