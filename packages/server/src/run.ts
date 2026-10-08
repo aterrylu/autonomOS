@@ -68,6 +68,7 @@ import {
   assertUsableSocketPath,
   getControlSocketPath,
   prepareControlSocket,
+  probeControlSocket,
   removeControlSocket,
   restrictControlSocket,
 } from "./internalSocket.js";
@@ -117,12 +118,19 @@ import {
   setInternalSocketPath,
   setServerPort,
 } from "./serverState.js";
+import {
+  assertServeSocketPath,
+  defaultServeSocketPath,
+} from "./serveSocket.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
 import {
   clientIdentity,
+  getServeCommand,
   getTrustProxyMode,
+  markServeConnection,
   parseTrustProxy,
+  setServeSocketPath,
   setTrustProxyMode,
   trustProxyGuard,
 } from "./trustProxy.js";
@@ -254,9 +262,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       ].join("\n"),
     );
   setTrustProxyMode(trustProxy);
-  if (trustProxy === "tailscale")
-    console.log(
-      "ℹ Trusting tailscale serve: requests it forwards are identified by the visitor's tailnet address (X-Forwarded-For). Requests from other programs on this machine are trusted as before.",
+  const serveSocketOverride =
+    cliArgs.serveSocket ??
+    (process.env.AUTONOMOS_SERVE_SOCKET?.trim() || undefined);
+  if (serveSocketOverride && trustProxy !== "tailscale")
+    console.warn(
+      "[serve] --serve-socket is set but --trust-proxy=tailscale isn't, so no serve socket is opened.",
     );
 
   // The operator token, and whether it's strong enough to start with. Decided
@@ -726,7 +737,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // the operator's unlock. Both behind auth, so only a device holding the
   // token (which the lock never refuses) can read or clear it.
   app.get("/api/auth/lock", (c) =>
-    c.json({ ...newDeviceLock.status(), trustProxy: getTrustProxyMode() }),
+    c.json({
+      ...newDeviceLock.status(),
+      trustProxy: getTrustProxyMode(),
+      serveCommand: getServeCommand() ?? null,
+    }),
   );
   app.post("/api/auth/unlock", (c) => {
     newDeviceLock.unlock();
@@ -1041,6 +1056,49 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   );
   const bindHost = bindHosts?.[0];
   const extraListeners: Array<{ stop: () => void }> = [];
+  let serveSocket:
+    | { server: { close: () => unknown }; path: string }
+    | undefined;
+  /** Listen on the owner-only serve socket. A failure is loud but fails
+   *  CLOSED: TCP serve stays refused, so nothing is silently weakened. */
+  async function openServeSocket(port: number): Promise<void> {
+    const path =
+      serveSocketOverride ??
+      defaultServeSocketPath({ configDir: getConfigDir(), port });
+    // Published before anything can arrive: the TCP refusal names it too.
+    setServeSocketPath(path);
+    try {
+      assertServeSocketPath(path);
+      const probe = await probeControlSocket(path);
+      if (probe === "live")
+        throw new Error(
+          `another process is already serving ${path}; stop it or pass a different --serve-socket`,
+        );
+      if (probe === "not-a-socket")
+        throw new Error(`${path} exists and isn't a socket; remove it by hand`);
+      if (probe === "stale") removeControlSocket(path);
+      const srv = createAdaptorServer({ fetch: app.fetch });
+      injectWebSocket(srv);
+      srv.on("connection", (sock) => markServeConnection(sock));
+      await new Promise<void>((resolveListen, rejectListen) => {
+        srv.once("error", rejectListen);
+        srv.listen(path, () => {
+          srv.off("error", rejectListen);
+          resolveListen();
+        });
+      });
+      restrictControlSocket(path);
+      serveSocket = { server: srv, path };
+      console.log(
+        `ℹ Trusting tailscale serve on ${path} (owner-only). Point it there once: ${getServeCommand()}`,
+      );
+    } catch (err) {
+      console.error(
+        `[serve] ✖ couldn't open the tailscale serve socket (${err instanceof Error ? err.message : err}). tailscale serve can't reach autonomOS until this is fixed; requests it sends over TCP are refused, never trusted.`,
+      );
+    }
+  }
+
   const server = serve(
     {
       fetch: app.fetch,
@@ -1083,6 +1141,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           }),
         );
       }
+      // tailscale serve's socket (ADR-153): the ONLY place identity headers
+      // are trusted. Opened once the port is known (the default path names it).
+      if (trustProxy === "tailscale") void openServeSocket(actualPort);
       if (bindHosts && bindHosts.length > 1 && !isLoopbackHost(bindHosts[0]))
         console.warn(
           `[bind] the first --host (${bindHosts[0]}) isn't loopback: the autonomos CLI on this machine talks to localhost, so put 127.0.0.1 first.`,
@@ -1172,6 +1233,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       internalServer.close();
       for (const l of extraListeners) l.stop();
       removeControlSocket(controlSocketPath);
+      if (serveSocket) {
+        serveSocket.server.close();
+        removeControlSocket(serveSocket.path);
+      }
     } finally {
       process.exit(0);
     }
