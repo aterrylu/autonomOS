@@ -114,14 +114,15 @@ describe("trust-proxy=tailscale: loopback TCP is never trusted for identity", ()
   });
 
   it("FAILS CLOSED: loopback TCP carrying tailscale identity headers (serve pointed at the port) is refused, naming the socket command", () => {
-    for (const headers of [
+    const cases: Array<Record<string, string>> = [
       { "X-Forwarded-For": "100.70.53.56" },
       { "Tailscale-User-Login": "terry@example.com" },
       {
         "X-Forwarded-For": "100.70.53.56",
         "Tailscale-User-Login": "terry@example.com",
       },
-    ]) {
+    ];
+    for (const headers of cases) {
       const r = clientIdentity(tcp("127.0.0.1", headers), T);
       assert.ok("error" in r, JSON.stringify(headers));
       if ("error" in r) {
