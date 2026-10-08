@@ -397,6 +397,21 @@ describe("performUpgrade", () => {
     });
   }
 
+  it("an ABSOLUTE link is refused even when it names a path inside the extracted dir", async () => {
+    // It resolves inside `.new` at check time, but the dir is renamed into
+    // place afterwards: the link would dangle, or follow whatever replaces it.
+    const bundleDir = installLiveBundle("0.5.0");
+    const apiBase = await startFixtureServer(["0.6.0"], {
+      symlinks: { entry: `${bundleDir}.new/index.js` },
+    });
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+    });
+    assertError(result, /contains a link that points outside the bundle/);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+  });
+
   it("in-bundle links still install (a release may legitimately ship one)", async () => {
     const apiBase = await startFixtureServer(["0.6.0"], {
       symlinks: { "bin/autonomos": "../index.js", "lib/self": "." },
