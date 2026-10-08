@@ -27,10 +27,11 @@ import {
 import { readBundleVersion } from "@autonomos/server/upgrade.js";
 import {
   findInstalledService,
+  type InstalledService,
   restartService,
   restartServiceReloading,
 } from "./service-control.js";
-import { syncServiceUnitFor } from "./service-sync.js";
+import { syncServiceUnitFor, type UnitSyncOutcome } from "./service-sync.js";
 
 /**
  * The version to health-gate on after a swap: what the swapped-in bundle
@@ -71,23 +72,44 @@ export function syncSupervisorUnit(opts: { restartFollows: boolean }): {
 } {
   const svc = findInstalledService();
   if (!svc) return { reloadUnit: false };
-  const outcome = syncServiceUnitFor(svc);
+  return reportUnitSync(syncServiceUnitFor(svc), svc.platform, opts);
+}
+
+/** What syncSupervisorUnit prints for an outcome — split out so a test can
+ *  hold the loud dropped-env warning (ADR-089) in place. */
+export function reportUnitSync(
+  outcome: UnitSyncOutcome,
+  platform: InstalledService["platform"],
+  opts: { restartFollows: boolean },
+  out: Pick<Console, "log" | "warn"> = console,
+): { reloadUnit: boolean } {
   switch (outcome.kind) {
     case "in-sync":
       return { reloadUnit: false };
     case "updated": {
-      console.log(
+      out.log(
         "✓ Supervisor unit re-rendered to the current template " +
-          "(install-time program path, port/host, and environment preserved).",
+          "(install-time program path, port/host, HOME/PATH and the " +
+          "AUTONOMOS_TOKEN/HOST/CONFIG_DIR settings preserved).",
       );
+      if (outcome.droppedEnvKeys?.length) {
+        // ADR-089: never drop an operator's override silently. Names only —
+        // values may be secrets.
+        out.warn(
+          `  ⚠️  The service unit set environment variables autonomOS doesn't manage: ${outcome.droppedEnvKeys.join(", ")}.\n` +
+            "  They are NOT in the updated unit. The previous unit is saved at\n" +
+            `  ${outcome.backupFile} — copy a line back from there if you still ` +
+            "need it (the next template change will drop it and warn again).",
+        );
+      }
       if (outcome.reloadWarning) {
-        console.warn(
+        out.warn(
           `  ⚠️  systemd daemon-reload failed: ${outcome.reloadWarning}\n` +
             "  The updated unit applies at the next daemon-reload or reboot.",
         );
       }
-      if (!opts.restartFollows && svc.platform === "darwin") {
-        console.log(
+      if (!opts.restartFollows && platform === "darwin") {
+        out.log(
           "  It takes effect at the next full service reload " +
             "(autonomos stop && autonomos restart) or reboot — not forcing " +
             "a restart for a unit-file change alone.",
@@ -96,7 +118,7 @@ export function syncSupervisorUnit(opts: { restartFollows: boolean }): {
       return { reloadUnit: true };
     }
     case "skipped":
-      console.warn(
+      out.warn(
         `⚠️  Supervisor unit not synced: ${outcome.reason}.\n` +
           "  Continuing the upgrade under the existing unit. Re-render " +
           "manually with: autonomos install-service --force (keep any " +

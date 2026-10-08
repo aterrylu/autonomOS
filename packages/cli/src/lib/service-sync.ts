@@ -14,7 +14,8 @@
 //
 //   - Install-time parameters are PRESERVED, never regenerated: the program
 //     path (bundle bin or .autonomos-bin wrapper), --port/--host flags, and
-//     the baked HOME/PATH environment are recovered from the INSTALLED unit
+//     the baked HOME/PATH environment — plus the operator-identity keys
+//     (ADR-089: AUTONOMOS_TOKEN/HOST/CONFIG_DIR) — are recovered from the INSTALLED unit
 //     and the fresh template is rendered around them. Re-rendering from the
 //     current process env instead would flip PATH/port on every upgrade run
 //     from a different shell — exactly the silent-config-drift this feature
@@ -40,6 +41,7 @@ import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { ensureUserBusEnv, type InstalledService } from "./service-control.js";
 import {
   BOOT_ERROR_LOG,
+  IDENTITY_ENV_KEYS,
   renderLaunchAgentPlist,
   renderSystemdUserUnit,
 } from "./service-templates.js";
@@ -60,7 +62,95 @@ export type RecoveredUnitParams = {
    * daemon (see the test-label ADR).
    */
   label?: string;
+  /** Operator-identity env (IDENTITY_ENV_KEYS) found in the unit: CARRIED. */
+  extraEnv?: Record<string, string>;
+  /**
+   * Every other env key the unit had that the template doesn't own: NOT
+   * carried (ADR-089: identity keys migrate, other overrides drop LOUDLY).
+   * Names only — values may be secrets.
+   */
+  droppedEnvKeys?: string[];
 };
+
+/** Env keys the template itself renders (never "dropped"). */
+const TEMPLATE_ENV_KEYS = new Set(["HOME", "PATH", "AUTONOMOS_SERVICE_LABEL"]);
+const IDENTITY = new Set<string>(IDENTITY_ENV_KEYS);
+
+/** Split a unit's env into what the template needs, carries, and drops. */
+function classifyEnv(
+  kv: Map<string, string>,
+): Pick<
+  RecoveredUnitParams,
+  "home" | "path" | "extraEnv" | "droppedEnvKeys"
+> | null {
+  const home = kv.get("HOME");
+  const path = kv.get("PATH");
+  if (home === undefined || path === undefined) return null;
+  const extraEnv: Record<string, string> = {};
+  const dropped: string[] = [];
+  for (const [k, v] of kv) {
+    if (TEMPLATE_ENV_KEYS.has(k)) continue;
+    if (IDENTITY.has(k)) extraEnv[k] = v;
+    else dropped.push(k);
+  }
+  return {
+    home,
+    path,
+    ...(Object.keys(extraEnv).length > 0 && { extraEnv }),
+    ...(dropped.length > 0 && { droppedEnvKeys: dropped.sort() }),
+  };
+}
+
+/** Undo service-templates' systemdEscapePct: `%%` is a literal `%`. */
+function unescapePct(s: string): string {
+  return s.replace(/%%/g, "%");
+}
+
+/**
+ * The assignments in one `Environment=` line, by systemd's own word rules:
+ * whitespace separates assignments; "…" groups with `\` escapes; '…' groups
+ * literally. Accepts both the current quoted render and legacy raw lines
+ * (where `X=a b` really is "X=a" plus an ignored word — measured on
+ * systemd 255 — so preserving that is preserving what actually runs).
+ * Words without `=` are ignored, as systemd ignores them. null = malformed.
+ */
+function systemdEnvAssignments(line: string): [string, string][] | null {
+  const words: string[] = [];
+  let cur = "";
+  let started = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote === "'") {
+      if (c === "'") quote = null;
+      else cur += c;
+    } else if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === "\\") {
+        if (i + 1 >= line.length) return null;
+        cur += line[++i];
+      } else cur += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      started = true;
+    } else if (c === " " || c === "\t") {
+      if (started) words.push(cur);
+      cur = "";
+      started = false;
+    } else {
+      cur += c;
+      started = true;
+    }
+  }
+  if (quote) return null;
+  if (started) words.push(cur);
+  const out: [string, string][] = [];
+  for (const w of words) {
+    const eq = w.indexOf("=");
+    if (eq > 0) out.push([w.slice(0, eq), unescapePct(w.slice(eq + 1))]);
+  }
+  return out;
+}
 
 // Reverse of service-templates' escapeXml. Entity order matters: &amp; must
 // be decoded LAST or "&amp;lt;" would double-decode into "<".
@@ -104,22 +194,21 @@ export function parseLaunchAgentPlist(
   if (!errPath.endsWith(suffix)) return null;
   const logDir = errPath.slice(0, -suffix.length);
 
-  const env = content.match(
+  const envDict = content.match(
     /<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/,
   );
-  if (!env) return null;
+  if (!envDict) return null;
   const kv = new Map(
     [
-      ...env[1].matchAll(
+      ...envDict[1].matchAll(
         /<key>([\s\S]*?)<\/key>\s*<string>([\s\S]*?)<\/string>/g,
       ),
     ].map((m) => [xmlUnescape(m[1]), xmlUnescape(m[2])]),
   );
-  const home = kv.get("HOME");
-  const path = kv.get("PATH");
-  if (home === undefined || path === undefined) return null;
+  const env = classifyEnv(kv);
+  if (!env) return null;
 
-  return { programArgs, logDir, home, path, label: xmlUnescape(label[1]) };
+  return { programArgs, logDir, ...env, label: xmlUnescape(label[1]) };
 }
 
 /**
@@ -167,22 +256,28 @@ export function parseSystemdUserUnit(
 ): RecoveredUnitParams | null {
   const exec = content.match(/^ExecStart=(.*)$/m);
   if (!exec) return null;
-  const programArgs = shellUnquote(exec[1]);
-  if (!programArgs) return null;
+  const quoted = shellUnquote(exec[1]);
+  if (!quoted) return null;
+  const programArgs = quoted.map(unescapePct);
 
   const se = content.match(/^StandardError=append:(.*)$/m);
   if (!se) return null;
+  const errPath = unescapePct(se[1]);
   const suffix = `/${BOOT_ERROR_LOG}`;
-  if (!se[1].endsWith(suffix)) return null;
-  const logDir = se[1].slice(0, -suffix.length);
+  if (!errPath.endsWith(suffix)) return null;
+  const logDir = errPath.slice(0, -suffix.length);
 
-  // Environment= values are rendered raw (unquoted), so the value is simply
-  // the rest of the line — including any spaces.
-  const home = content.match(/^Environment=HOME=(.*)$/m);
-  const path = content.match(/^Environment=PATH=(.*)$/m);
-  if (!home || !path) return null;
+  // Every Environment= line, in order; a later assignment wins, as in systemd.
+  const kv = new Map<string, string>();
+  for (const m of content.matchAll(/^Environment=(.*)$/gm)) {
+    const pairs = systemdEnvAssignments(m[1]);
+    if (!pairs) return null;
+    for (const [k, v] of pairs) kv.set(k, v);
+  }
+  const env = classifyEnv(kv);
+  if (!env) return null;
 
-  return { programArgs, logDir, home: home[1], path: path[1] };
+  return { programArgs, logDir, ...env };
 }
 
 export type UnitSyncPlan =
@@ -224,7 +319,14 @@ export type UnitSyncOutcome =
   | { kind: "in-sync" }
   // File rewritten (and daemon-reload issued on Linux). On macOS the caller
   // must apply it with a RELOADING restart — kickstart won't re-read it.
-  | { kind: "updated"; reloadWarning?: string }
+  | {
+      kind: "updated";
+      reloadWarning?: string;
+      /** Env keys the old unit had that were NOT carried (names only). */
+      droppedEnvKeys?: string[];
+      /** A copy of the unit as it was, kept when keys were dropped. */
+      backupFile?: string;
+    }
   // Anything that stopped the sync (unreadable, unparseable, write failure).
   // Deliberately non-fatal: the upgrade proceeds under the existing unit.
   | { kind: "skipped"; reason: string };
@@ -253,6 +355,21 @@ export function syncServiceUnitFor(
     return { kind: "skipped", reason: plan.reason };
   }
 
+  // Dropping keys? Keep the unit as it was, so the operator can copy a key
+  // back (ADR-089: name what's dropped, point at the one place it survives).
+  const dropped = plan.params.droppedEnvKeys ?? [];
+  const backupFile = `${svc.serviceFile}.before-sync`;
+  if (dropped.length > 0) {
+    try {
+      writeFileSync(backupFile, installed, { mode: 0o600 });
+    } catch (err) {
+      return {
+        kind: "skipped",
+        reason: `could not save ${backupFile} before dropping env keys (${dropped.join(", ")}): ${err instanceof Error ? err.message : err}`,
+      };
+    }
+  }
+
   // Same-directory temp + rename so a crash mid-write can't leave a torn
   // unit file for the supervisor to choke on (writeInstallJson's pattern).
   const tmp = `${svc.serviceFile}.tmp`;
@@ -278,8 +395,15 @@ export function syncServiceUnitFor(
     ensureUserBusEnv();
     const reload = runCmd("systemctl", ["--user", "daemon-reload"]);
     if (!reload.ok) {
-      return { kind: "updated", reloadWarning: reload.stderr.trim() };
+      return {
+        kind: "updated",
+        reloadWarning: reload.stderr.trim(),
+        ...(dropped.length > 0 && { droppedEnvKeys: dropped, backupFile }),
+      };
     }
   }
-  return { kind: "updated" };
+  return {
+    kind: "updated",
+    ...(dropped.length > 0 && { droppedEnvKeys: dropped, backupFile }),
+  };
 }

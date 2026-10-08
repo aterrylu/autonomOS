@@ -79,6 +79,44 @@ function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * The operator-IDENTITY env keys (ADR-089): the ones whose loss silently
+ * changes who can log in (AUTONOMOS_TOKEN), where the server listens
+ * (AUTONOMOS_HOST: dropping a loopback restriction WIDENS the bind) or which
+ * agents/config it serves (AUTONOMOS_CONFIG_DIR). install-source.sh migrates
+ * exactly these across install shapes (MIGRATED_ENV_KEYS); the unit re-render
+ * carries them too. Every other hand-added key is dropped LOUDLY.
+ */
+export const IDENTITY_ENV_KEYS = [
+  "AUTONOMOS_TOKEN",
+  "AUTONOMOS_HOST",
+  "AUTONOMOS_CONFIG_DIR",
+] as const;
+
+/**
+ * systemd expands %-specifiers in ExecStart=, StandardError= and Environment=
+ * (measured on systemd 255: `Environment=X=100%h` hands the process
+ * "100/home/<user>"). Every literal % must be written as %%.
+ */
+export function systemdEscapePct(s: string): string {
+  return s.replace(/%/g, "%%");
+}
+
+/**
+ * One `Environment=` assignment, double-quoted so spaces survive (measured:
+ * an unquoted `X=a b` reaches the process as "a"), with `\` and `"` escaped
+ * for systemd's C-style unquoting and every % doubled.
+ */
+function systemdEnvLine(key: string, value: string): string {
+  const v = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `Environment="${key}=${systemdEscapePct(v)}"`;
+}
+
+/** Identity env, in a stable order so a re-render is byte-identical. */
+function sortedEnv(env?: Readonly<Record<string, string>>): [string, string][] {
+  return Object.entries(env ?? {}).sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
 export type LaunchAgentOptions = {
   /** Argv to invoke (e.g., ["/usr/local/bin/autonomos", "start"]) */
   programArgs: readonly string[];
@@ -94,6 +132,8 @@ export type LaunchAgentOptions = {
    * re-render can never re-address a unit to a different job.
    */
   label?: string;
+  /** Operator-identity env carried across a re-render (IDENTITY_ENV_KEYS). */
+  extraEnv?: Readonly<Record<string, string>>;
 };
 
 /** A non-default label rides into the daemon's env so it can recognize its
@@ -133,7 +173,13 @@ ${argsXml}
         <key>HOME</key>
         <string>${escapeXml(opts.home)}</string>
         <key>PATH</key>
-        <string>${escapeXml(opts.path)}</string>${
+        <string>${escapeXml(opts.path)}</string>${sortedEnv(opts.extraEnv)
+          .map(
+            ([k, v]) => `
+        <key>${escapeXml(k)}</key>
+        <string>${escapeXml(v)}</string>`,
+          )
+          .join("")}${
           extraEnv
             ? `
         <key>AUTONOMOS_SERVICE_LABEL</key>
@@ -155,10 +201,21 @@ export type SystemdUserUnitOptions = {
   home: string;
   /** Value of $PATH to set in the daemon's environment */
   path: string;
+  /** Operator-identity env carried across a re-render (IDENTITY_ENV_KEYS). */
+  extraEnv?: Readonly<Record<string, string>>;
 };
 
 export function renderSystemdUserUnit(opts: SystemdUserUnitOptions): string {
-  const execStart = opts.programArgs.map(shellQuote).join(" ");
+  const execStart = opts.programArgs
+    .map((a) => systemdEscapePct(shellQuote(a)))
+    .join(" ");
+  const label = labelEnv(serviceLabel());
+  const envLines = [
+    systemdEnvLine("HOME", opts.home),
+    systemdEnvLine("PATH", opts.path),
+    ...sortedEnv(opts.extraEnv).map(([k, v]) => systemdEnvLine(k, v)),
+    ...(label ? [systemdEnvLine("AUTONOMOS_SERVICE_LABEL", label)] : []),
+  ].join("\n");
   return `[Unit]
 Description=autonomOS server (agent orchestration platform)
 After=default.target
@@ -175,10 +232,9 @@ ExecStart=${execStart}
 Restart=always
 RestartSec=5
 StandardOutput=null
-StandardError=append:${opts.logDir}/${BOOT_ERROR_LOG}
-Environment=HOME=${opts.home}
-Environment=PATH=${opts.path}
-${labelEnv(serviceLabel()) ? `Environment=AUTONOMOS_SERVICE_LABEL=${serviceLabel()}\n` : ""}
+StandardError=append:${systemdEscapePct(opts.logDir)}/${BOOT_ERROR_LOG}
+${envLines}
+
 [Install]
 WantedBy=default.target
 `;

@@ -20,6 +20,7 @@ import {
 import { writePidFile } from "@autonomos/server/pid-file.js";
 import {
   expectedVersionAfterSwap,
+  reportUnitSync,
   verifyDaemonVersion,
 } from "../lib/apply-bundle.js";
 
@@ -116,5 +117,44 @@ describe("expectedVersionAfterSwap", () => {
     const emptyDir = join(bundleRoot, "empty");
     mkdirSync(emptyDir, { recursive: true });
     assert.equal(expectedVersionAfterSwap(emptyDir, "1.0.0"), "1.0.0");
+  });
+});
+
+describe("reportUnitSync: a dropped env override is never silent (ADR-089)", () => {
+  function capture() {
+    const lines: { log: string[]; warn: string[] } = { log: [], warn: [] };
+    return {
+      lines,
+      out: {
+        log: (m: string) => lines.log.push(m),
+        warn: (m: string) => lines.warn.push(m),
+      },
+    };
+  }
+
+  it("names every dropped key and the backup, as a warning", () => {
+    const { lines, out } = capture();
+    const r = reportUnitSync(
+      {
+        kind: "updated",
+        droppedEnvKeys: ["HTTP_PROXY", "NODE_OPTIONS"],
+        backupFile: "/u/autonomos.service.before-sync",
+      },
+      "linux",
+      { restartFollows: true },
+      out,
+    );
+    assert.deepEqual(r, { reloadUnit: true });
+    const warned = lines.warn.join("\n");
+    assert.match(warned, /HTTP_PROXY, NODE_OPTIONS/);
+    assert.match(warned, /NOT in the updated unit/);
+    assert.match(warned, /\/u\/autonomos\.service\.before-sync/);
+  });
+
+  it("a clean re-render claims only what it preserved, and warns nothing", () => {
+    const { lines, out } = capture();
+    reportUnitSync({ kind: "updated" }, "linux", { restartFollows: true }, out);
+    assert.equal(lines.warn.length, 0);
+    assert.match(lines.log.join("\n"), /AUTONOMOS_TOKEN\/HOST\/CONFIG_DIR/);
   });
 });

@@ -15,7 +15,13 @@
 //      never guessed at, and the installed file is left untouched.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -27,6 +33,7 @@ import {
   syncServiceUnitFor,
 } from "../lib/service-sync.js";
 import {
+  IDENTITY_ENV_KEYS,
   renderLaunchAgentPlist,
   renderSystemdUserUnit,
 } from "../lib/service-templates.js";
@@ -300,5 +307,172 @@ describe("syncServiceUnitFor (IO boundary)", () => {
     assert.ok(outcome.kind === "skipped");
     assert.match(outcome.reason, /could not read/);
     assert.equal(calls.length, 0);
+  });
+});
+
+// ADR-089 applied to the unit file: a re-render carries the operator-identity
+// keys (login, bind address, state location) and DROPS every other override
+// out loud — named, with the old unit kept — never silently.
+describe("hand-edited env: identity keys carried, others dropped loudly", () => {
+  const identity = {
+    AUTONOMOS_TOKEN: "tok%en with space",
+    AUTONOMOS_HOST: "0.0.0.0",
+    AUTONOMOS_CONFIG_DIR: "/srv/autonomos state",
+  };
+  const SECRET = "proxy-password-123";
+
+  // How an operator actually edits a unit: raw lines appended by hand, in
+  // systemd's own syntax, alongside the template's.
+  const handEditedUnit = renderSystemdUserUnit(params).replace(
+    /^(StandardError=.*)$/m,
+    [
+      "$1",
+      'Environment="AUTONOMOS_TOKEN=tok%%en with space"',
+      "Environment=AUTONOMOS_HOST=0.0.0.0",
+      "Environment='AUTONOMOS_CONFIG_DIR=/srv/autonomos state'",
+      `Environment=HTTP_PROXY=http://u:${SECRET}@proxy:3128 NODE_OPTIONS=--max-old-space-size=4096`,
+    ].join("\n"),
+  );
+
+  const handEditedPlist = renderLaunchAgentPlist(params).replace(
+    /(<key>PATH<\/key>\s*<string>[\s\S]*?<\/string>)/,
+    `$1
+        <key>AUTONOMOS_TOKEN</key>
+        <string>tok%en with space</string>
+        <key>AUTONOMOS_HOST</key>
+        <string>0.0.0.0</string>
+        <key>AUTONOMOS_CONFIG_DIR</key>
+        <string>/srv/autonomos state</string>
+        <key>HTTP_PROXY</key>
+        <string>http://u:${SECRET}@proxy:3128</string>
+        <key>NODE_OPTIONS</key>
+        <string>--max-old-space-size=4096</string>`,
+  );
+
+  for (const [platform, content, parse] of [
+    ["linux", handEditedUnit, parseSystemdUserUnit],
+    ["darwin", handEditedPlist, parseLaunchAgentPlist],
+  ] as const) {
+    it(`${platform}: the re-render keeps every identity key, value-exact`, () => {
+      const plan = planUnitSync(platform, content);
+      assert.ok(plan.kind === "drift", plan.kind);
+      assert.deepEqual(plan.params.extraEnv, identity);
+      assert.deepEqual(parse(plan.fresh)?.extraEnv, identity);
+    });
+
+    it(`${platform}: every other key is named as dropped, and absent from the new unit`, () => {
+      const plan = planUnitSync(platform, content);
+      assert.ok(plan.kind === "drift");
+      assert.deepEqual(plan.params.droppedEnvKeys, [
+        "HTTP_PROXY",
+        "NODE_OPTIONS",
+      ]);
+      assert.ok(!plan.fresh.includes("HTTP_PROXY"));
+      assert.ok(!plan.fresh.includes(SECRET));
+    });
+
+    it(`${platform}: sync keeps the old unit, reports names only, and the heal is stable`, () => {
+      const svc = tempService(platform, content);
+      const { runCmd } = recordingRun();
+
+      const outcome = syncServiceUnitFor(svc, runCmd);
+
+      assert.ok(outcome.kind === "updated", outcome.kind);
+      assert.deepEqual(outcome.droppedEnvKeys, ["HTTP_PROXY", "NODE_OPTIONS"]);
+      assert.equal(outcome.backupFile, `${svc.serviceFile}.before-sync`);
+      assert.equal(
+        readFileSync(`${svc.serviceFile}.before-sync`, "utf-8"),
+        content,
+      );
+      assert.equal(
+        statSync(`${svc.serviceFile}.before-sync`).mode & 0o777,
+        0o600,
+      );
+      // Names, never values: the outcome is printed.
+      assert.ok(!JSON.stringify(outcome).includes(SECRET));
+      // The healed unit is in sync — no re-render (or warning) on every run.
+      assert.equal(syncServiceUnitFor(svc, runCmd).kind, "in-sync");
+    });
+  }
+
+  it("nothing dropped → no backup written, no dropped list", () => {
+    const old = renderSystemdUserUnit({
+      ...params,
+      extraEnv: identity,
+    }).replace("RestartSec=5", "RestartSec=9");
+    const svc = tempService("linux", old);
+    const outcome = syncServiceUnitFor(svc, recordingRun().runCmd);
+    assert.ok(outcome.kind === "updated");
+    assert.equal(outcome.droppedEnvKeys, undefined);
+    assert.equal(outcome.backupFile, undefined);
+    assert.ok(!existsSync(`${svc.serviceFile}.before-sync`));
+  });
+
+  it("the carried set is exactly the one install-source.sh migrates (ADR-089)", () => {
+    const script = readFileSync(
+      join(import.meta.dirname, "../../../../scripts/install-source.sh"),
+      "utf-8",
+    );
+    const m = script.match(/^MIGRATED_ENV_KEYS="([^"]*)"$/m);
+    assert.ok(m, "MIGRATED_ENV_KEYS not found in install-source.sh");
+    assert.deepEqual([...IDENTITY_ENV_KEYS].sort(), m[1].split(/\s+/).sort());
+  });
+});
+
+describe("systemd parsing follows systemd's own rules", () => {
+  it("round-trips %, spaces, quotes and backslashes everywhere", () => {
+    const hostile = {
+      programArgs: ["/opt/100%h/my bin/autonomos", "start", "--host=a%b"],
+      logDir: "/home/u/logs 50%",
+      home: "/home/my user",
+      path: '/opt/a%ib:/opt/q"uote:/opt/back\\slash',
+      extraEnv: { AUTONOMOS_TOKEN: "t%%k e\\n\"x'" },
+    };
+    const unit = renderSystemdUserUnit(hostile);
+    assert.deepEqual(parseSystemdUserUnit(unit), hostile);
+    assert.equal(planUnitSync("linux", unit).kind, "in-sync");
+  });
+
+  it("a legacy unquoted unit parses as systemd ran it, and heals once", () => {
+    // Pre-quoting template: raw `Environment=K=V` lines. systemd 255 runs
+    // `Environment=PATH=/a b` as PATH=/a (measured), so that IS the value.
+    const legacy = renderSystemdUserUnit(params)
+      .replace(/^Environment="HOME=.*"$/m, "Environment=HOME=/home/u")
+      .replace(/^Environment="PATH=.*"$/m, "Environment=PATH=/usr/bin:/bin");
+    const svc = tempService("linux", legacy);
+    const { calls, runCmd } = recordingRun();
+
+    const outcome = syncServiceUnitFor(svc, runCmd);
+
+    assert.ok(outcome.kind === "updated");
+    assert.equal(outcome.droppedEnvKeys, undefined);
+    assert.equal(
+      readFileSync(svc.serviceFile, "utf-8"),
+      renderSystemdUserUnit({
+        ...params,
+        home: "/home/u",
+        path: "/usr/bin:/bin",
+      }),
+    );
+    assert.deepEqual(calls, [["systemctl", "--user", "daemon-reload"]]);
+    assert.equal(syncServiceUnitFor(svc, runCmd).kind, "in-sync");
+  });
+
+  it("a later assignment wins, as in systemd", () => {
+    const unit = renderSystemdUserUnit(params).replace(
+      /^(StandardError=.*)$/m,
+      "$1\nEnvironment=AUTONOMOS_HOST=127.0.0.1\nEnvironment=AUTONOMOS_HOST=0.0.0.0",
+    );
+    assert.deepEqual(parseSystemdUserUnit(unit)?.extraEnv, {
+      AUTONOMOS_HOST: "0.0.0.0",
+    });
+  });
+
+  it("an unbalanced quote in Environment= is unparseable, not guessed at", () => {
+    const unit = renderSystemdUserUnit(params).replace(
+      /^(StandardError=.*)$/m,
+      '$1\nEnvironment="AUTONOMOS_TOKEN=unterminated',
+    );
+    assert.equal(planUnitSync("linux", unit).kind, "unparseable");
   });
 });
