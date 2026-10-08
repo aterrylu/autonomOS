@@ -23,6 +23,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -215,6 +216,30 @@ export function snapshotForVersion(
   );
 }
 
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The first node under `path` that is not a plain file or directory — a
+ * symlink, device, FIFO or socket — as a path relative to `root`, or null.
+ * lstat, never stat: a symlink is judged as itself, not as what it points at.
+ */
+function firstNonPlainNode(root: string, rel: string): string | null {
+  const st = lstatSync(join(root, rel));
+  if (st.isFile()) return null;
+  if (!st.isDirectory()) return rel;
+  for (const child of readdirSync(join(root, rel))) {
+    const bad = firstNonPlainNode(root, join(rel, child));
+    if (bad) return bad;
+  }
+  return null;
+}
+
 /**
  * Restore a snapshot's entries over the live state. The CALLER must have
  * stopped the daemon first — a running daemon would keep writing the records
@@ -232,6 +257,11 @@ export function snapshotForVersion(
  *      not be put back and where its original is.
  * Entries absent from the snapshot are left alone (they didn't exist at
  * snapshot time and nothing reads them on old code).
+ *
+ * A snapshot holds only regular files and directories (createSnapshot copies
+ * nothing else), so one containing a symlink or device was not made by us:
+ * it is refused before anything is touched. Copying it would put a link to an
+ * arbitrary path — or a device — where the server reads its token and records.
  */
 export function restoreSnapshot(
   id: string,
@@ -252,6 +282,15 @@ export function restoreSnapshot(
     id,
     entries: (raw.entries ?? []).filter((e) => allowed.has(e)),
   };
+  for (const e of manifest.entries) {
+    if (!existsSync(join(src, e)) && !isSymlink(join(src, e))) continue;
+    const bad = firstNonPlainNode(src, e);
+    if (bad) {
+      throw new Error(
+        `snapshot ${id} contains ${bad}, which is not a regular file or directory (a symlink or device) — refusing to restore it; live state was left as it was`,
+      );
+    }
+  }
 
   const saved = createSnapshot(liveVersion, manifest.fromVersion, configDir);
 

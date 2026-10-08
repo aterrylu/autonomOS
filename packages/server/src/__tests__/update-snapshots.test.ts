@@ -2,18 +2,21 @@
 // verification, and the no-irreversible-migrations guard (ADR-105 amendment).
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { Hono } from "hono";
 import {
@@ -263,6 +266,78 @@ describe("snapshot hardening", () => {
     pruneSnapshots(cfg, 0);
     assert.ok(existsSync(cfg), "pruning never escapes snapshots/");
   });
+
+  // createSnapshot copies only files and directories, so a link or device in
+  // a snapshot was planted. Restoring it would put a pointer to an arbitrary
+  // path (or a device) where the server reads its token and records.
+  for (const [name, plant] of [
+    [
+      "a symlinked entry (agents → a directory outside the config dir)",
+      (snap: string, outside: string) => {
+        rmSync(join(snap, "agents"), { recursive: true, force: true });
+        symlinkSync(dirname(outside), join(snap, "agents"));
+        return "agents";
+      },
+    ],
+    [
+      "a symlink nested inside a directory entry",
+      (snap: string, outside: string) => {
+        symlinkSync(outside, join(snap, "agents", "a2.json"));
+        return join("agents", "a2.json");
+      },
+    ],
+    [
+      "a dangling symlink",
+      (snap: string) => {
+        rmSync(join(snap, "settings.json"));
+        symlinkSync(
+          "/nonexistent/autonomos-probe",
+          join(snap, "settings.json"),
+        );
+        return "settings.json";
+      },
+    ],
+    [
+      "a FIFO (a non-regular, device-like node)",
+      (snap: string) => {
+        const fifo = join(snap, "env-presets", "pipe.json");
+        const r = spawnSync("mkfifo", [fifo]);
+        assert.equal(r.status, 0, "precondition: mkfifo made the FIFO");
+        return join("env-presets", "pipe.json");
+      },
+    ],
+  ] as const) {
+    it(`refuses ${name}, before touching anything`, () => {
+      seedState();
+      const m = createSnapshot("0.6.1", "0.7.0", cfg);
+      const outside = join(mkdtempSync(join(tmpdir(), "autonomos-out-")), "x");
+      writeFileSync(outside, "NOT-AUTONOMOS-STATE");
+      const bad = plant(join(snapshotsDir(cfg), m.id), outside);
+      writeFileSync(join(cfg, "settings.json"), '{"live":1}');
+      const before = listSnapshots(cfg).length;
+
+      assert.throws(
+        () => restoreSnapshot(m.id, "0.7.0", cfg),
+        (err: Error) =>
+          err.message.includes(bad) &&
+          /not a regular file or directory/.test(err.message) &&
+          /live state was left as it was/.test(err.message),
+      );
+      assert.equal(
+        readFileSync(join(cfg, "settings.json"), "utf-8"),
+        '{"live":1}',
+      );
+      assert.ok(lstatSync(join(cfg, "agents")).isDirectory());
+      assert.ok(existsSync(join(cfg, "agents", "a1.json")));
+      assert.equal(
+        listSnapshots(cfg).length,
+        before,
+        "no safety snapshot taken",
+      );
+      assert.ok(!readdirSync(cfg).some((d) => d.startsWith(".restore-")));
+      rmSync(dirname(outside), { recursive: true, force: true });
+    });
+  }
 
   it("restore only ever touches the known entries", () => {
     seedState();

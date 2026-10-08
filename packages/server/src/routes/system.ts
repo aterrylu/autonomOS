@@ -171,11 +171,12 @@ systemRouter.get("/upgrade", async (c) => {
  * the per-agent X-Agent-Token header, or bearer-token API calls. The trigger
  * therefore requires the dashboard's login COOKIE and refuses both.
  *
- * Honest boundary (ADR-105): an agent's MCP config carries the operator
- * token, so an agent that deliberately forges a browser request with it
- * could pass this check. That is the same trusted-fleet boundary every
- * operator route already has (ADR-067's caveat); this guard closes every
- * agent-FACING path, not a determined forgery.
+ * Honest boundary (ADR-105, narrowed by ADR-129): agents are no longer
+ * GIVEN the operator token (not in argv, env or MCP config), but a same-user
+ * agent can still read `<configDir>/token` off disk and forge a browser
+ * request with it. That is the same trusted-fleet boundary every operator
+ * route already has (ADR-067's caveat); this guard closes every agent-FACING
+ * path, not a determined forgery.
  */
 /** The dashboard's session cookie, looked up by the SAME name login sets
  *  (per port — authCookie.ts), then the legacy shared name a browser signed
