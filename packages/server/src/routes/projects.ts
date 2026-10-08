@@ -24,9 +24,48 @@ export type { ProjectInfo, ProjectSession } from "@autonomos/core";
 
 export const projectRouter = new Hono();
 
+type ProjectsResult =
+  | { status: 200; body: ProjectInfo[] }
+  | { status: 500; body: { error: string; detail: string } };
+
+/**
+ * Shared across requests: each open dashboard tab polls this every 30s on its
+ * own phase, and every request ran the full scan (SDK listing + JSONL heads +
+ * Codex/Gemini scans + titles: ~35-50ms of event-loop work on a real history,
+ * ~3x that on a loaded box). Concurrent requests now share ONE in-flight scan,
+ * and a successful result is reused for PROJECTS_CACHE_MS. Failures are never
+ * cached, so the next request retries.
+ */
+let projectsCacheMs = 5_000;
+let projectsCache: { at: number; result: ProjectsResult } | null = null;
+let projectsInFlight: Promise<ProjectsResult> | null = null;
+
 /** GET /api/projects — Claude Code, Codex and Gemini sessions (plus every
  *  managed agent) grouped by project directory. */
 projectRouter.get("/", async (c) => {
+  const now = Date.now();
+  if (projectsCache && now - projectsCache.at < projectsCacheMs) {
+    const { status, body } = projectsCache.result;
+    return c.json(body, status);
+  }
+  if (!projectsInFlight) {
+    const run = computeProjects();
+    projectsInFlight = run;
+    // Cleared after assignment (never inside the body: a body that settles
+    // synchronously would clear it first and pin a stale promise).
+    const clear = () => {
+      if (projectsInFlight === run) projectsInFlight = null;
+    };
+    run.then((result) => {
+      if (result.status === 200) projectsCache = { at: Date.now(), result };
+      clear();
+    }, clear);
+  }
+  const { status, body } = await projectsInFlight;
+  return c.json(body, status);
+});
+
+async function computeProjects(): Promise<ProjectsResult> {
   // The three listings are independent — start the Codex/Gemini scans now so
   // they overlap the Claude Code listing instead of queuing behind it. Each
   // settles to rows or to its error; one failing costs only its own rows.
@@ -55,10 +94,10 @@ projectRouter.get("/", async (c) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Failed to list projects:", message);
-    return c.json(
-      { error: "Failed to list Claude Code sessions", detail: message },
-      500,
-    );
+    return {
+      status: 500,
+      body: { error: "Failed to list Claude Code sessions", detail: message },
+    };
   }
 
   const needsTitleLookup = sessions
@@ -279,8 +318,8 @@ projectRouter.get("/", async (c) => {
   }
 
   projects.sort((a, b) => b.lastActive - a.lastActive);
-  return c.json(projects);
-});
+  return { status: 200, body: projects };
+}
 
 /** A Codex/Gemini session row plus the cwd it groups under (sessionScanners.ts);
  *  the shared `ProjectSession` shape is what the UI renders. */
@@ -306,7 +345,13 @@ export function _setDepsForTesting(overrides: {
   listCodexSessions?: () => Promise<CodexSessionRow[]>;
   listGeminiSessions?: () => Promise<CodexSessionRow[]>;
   readClaudeSessionMeta?: () => Promise<Map<string, ClaudeSessionMeta>>;
+  /** Shared-result TTL; tests that change deps between requests get a clean
+   *  cache either way (both hooks clear it). */
+  cacheMs?: number;
 }): void {
+  projectsCache = null;
+  projectsInFlight = null;
+  if (overrides.cacheMs !== undefined) projectsCacheMs = overrides.cacheMs;
   if (overrides.listSessions) listSessionsFn = overrides.listSessions;
   if (overrides.batchGetTitles) batchGetTitlesFn = overrides.batchGetTitles;
   if (overrides.listCodexSessions)
@@ -318,6 +363,9 @@ export function _setDepsForTesting(overrides: {
 }
 
 export function _resetForTesting(): void {
+  projectsCache = null;
+  projectsInFlight = null;
+  projectsCacheMs = 5_000;
   listSessionsFn = listSessions;
   batchGetTitlesFn = batchGetTitles;
   listCodexSessionsFn = () => listCodexSessions();
