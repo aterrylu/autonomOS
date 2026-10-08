@@ -17,11 +17,12 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { readInstallJson } from "../installInfo.js";
 import { verifyReleaseProvenance } from "../provenance.js";
@@ -65,9 +66,16 @@ afterEach(async () => {
 });
 
 /** Build a real bundle tarball whose package.json carries `version`. */
-function makeTarball(version: string): Buffer {
+function makeTarball(
+  version: string,
+  symlinks: Record<string, string> = {},
+): Buffer {
   const stage = join(root, `stage-${version}`);
   mkdirSync(stage, { recursive: true });
+  for (const [path, target] of Object.entries(symlinks)) {
+    mkdirSync(dirname(join(stage, path)), { recursive: true });
+    symlinkSync(target, join(stage, path));
+  }
   writeFileSync(
     join(stage, "package.json"),
     JSON.stringify({ name: "@autonomos/server", version, type: "module" }),
@@ -92,6 +100,8 @@ type FixtureOptions = {
   brokenDownloads?: boolean;
   /** The version INSIDE every bundle, whatever its tag says (a relabel). */
   bundleVersion?: string;
+  /** Symlinks planted in every bundle: relative path → link target. */
+  symlinks?: Record<string, string>;
 };
 
 /**
@@ -104,7 +114,10 @@ async function startFixtureServer(
   opts: FixtureOptions = {},
 ): Promise<string> {
   const tarballs = new Map(
-    versions.map((v) => [v, makeTarball(opts.bundleVersion ?? v)]),
+    versions.map((v) => [
+      v,
+      makeTarball(opts.bundleVersion ?? v, opts.symlinks),
+    ]),
   );
   const latest = versions[versions.length - 1];
 
@@ -360,6 +373,41 @@ describe("performUpgrade", () => {
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
     assert.equal(existsSync(`${bundleDir}.new`), false);
     assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  // tar refuses `..` members and writing through a link, but a link on its
+  // own extracts with exit 0 — and once swapped in, the bundle would reach
+  // outside itself. Refused before the swap; in-bundle links still install.
+  for (const [name, symlinks] of [
+    ["an absolute link (/etc)", { "data/etc": "/etc" }],
+    ["a relative link out of the bundle", { up: "../../.." }],
+    ["an outward link nested deep", { "a/b/c/out": "../../../../x" }],
+  ] as const) {
+    it(`a bundle with ${name} is refused, the live bundle untouched`, async () => {
+      const apiBase = await startFixtureServer(["0.6.0"], { symlinks });
+      const bundleDir = installLiveBundle("0.5.0");
+      const result = await performUpgrade({
+        ...baseOpts(bundleDir, apiBase),
+        currentVersion: "0.5.0",
+      });
+      assertError(result, /contains a link that points outside the bundle/);
+      assert.equal(readBundleVersion(bundleDir), "0.5.0");
+      assert.equal(existsSync(`${bundleDir}.new`), false);
+      assert.equal(existsSync(`${bundleDir}.previous`), false);
+    });
+  }
+
+  it("in-bundle links still install (a release may legitimately ship one)", async () => {
+    const apiBase = await startFixtureServer(["0.6.0"], {
+      symlinks: { "bin/autonomos": "../index.js", "lib/self": "." },
+    });
+    const bundleDir = installLiveBundle("0.5.0");
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+    });
+    assert.equal(result.status, "upgraded", JSON.stringify(result));
+    assert.equal(readBundleVersion(bundleDir), "0.6.0");
   });
 
   it("provenance MISSING: the update is POSTPONED — nothing extracted, nothing changed (ADR-126 D)", async () => {

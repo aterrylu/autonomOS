@@ -24,15 +24,18 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type InstallInfo, writeInstallJson } from "./installInfo.js";
 import {
   type ProvenanceResult,
@@ -375,6 +378,20 @@ export async function performUpgrade(
       };
     }
 
+    // No link may point out of the bundle. tar already refuses `..` members
+    // and writing THROUGH a link (GNU tar 1.35 + bsdtar 3.5.3, measured), but
+    // a link on its own extracts cleanly — and once swapped in, code that
+    // reads or writes "inside the bundle" would reach anywhere. A release
+    // never ships one (v0.7.0: no links at all); in-bundle links stay allowed.
+    const outward = firstOutwardSymlink(newDir);
+    if (outward) {
+      rmSync(newDir, { recursive: true, force: true });
+      return {
+        status: "error",
+        message: `The v${releaseVersion} download contains a link that points outside the bundle (${outward}), so it wasn't installed. A release never does; please report this.`,
+      };
+    }
+
     // The bundle must BE the version its tag names. A writer can put tag vN
     // on an OLD commit on main: it passes the "built from main" check, and
     // its signed build is genuinely the old code — installed as "vN" it's a
@@ -528,6 +545,30 @@ export function performRollback(bundleDir: string): RollbackResult {
 }
 
 /** Version stamped into a bundle dir's package.json, or "unknown". */
+/**
+ * The first symlink under `root` whose target is absolute or resolves outside
+ * `root`, as "path → target", or null. lstat-walked, never followed. An
+ * absolute target is refused even when it names a path inside: the dir is
+ * renamed into place after extraction, so it would dangle (or worse) there.
+ */
+export function firstOutwardSymlink(root: string, rel = ""): string | null {
+  for (const name of readdirSync(join(root, rel))) {
+    const r = join(rel, name);
+    const st = lstatSync(join(root, r));
+    if (st.isSymbolicLink()) {
+      const target = readlinkSync(join(root, r));
+      const inside = relative(root, resolve(dirname(join(root, r)), target));
+      if (isAbsolute(target) || inside.startsWith("..") || isAbsolute(inside)) {
+        return `${r} → ${target}`;
+      }
+    } else if (st.isDirectory()) {
+      const bad = firstOutwardSymlink(root, r);
+      if (bad) return bad;
+    }
+  }
+  return null;
+}
+
 export function readBundleVersion(bundleDir: string): string {
   try {
     const pkg = JSON.parse(
