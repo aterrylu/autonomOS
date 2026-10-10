@@ -23,6 +23,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -216,6 +217,22 @@ export function snapshotForVersion(
 }
 
 /**
+ * The first node at or under `join(root, rel)` that is not a plain file or directory — a
+ * symlink, device, FIFO or socket — as a path relative to `root`, or null.
+ * lstat, never stat: a symlink is judged as itself, not as what it points at.
+ */
+function firstNonPlainNode(root: string, rel: string): string | null {
+  const st = lstatSync(join(root, rel));
+  if (st.isFile()) return null;
+  if (!st.isDirectory()) return rel;
+  for (const child of readdirSync(join(root, rel))) {
+    const bad = firstNonPlainNode(root, join(rel, child));
+    if (bad) return bad;
+  }
+  return null;
+}
+
+/**
  * Restore a snapshot's entries over the live state. The CALLER must have
  * stopped the daemon first — a running daemon would keep writing the records
  * being replaced.
@@ -232,6 +249,11 @@ export function snapshotForVersion(
  *      not be put back and where its original is.
  * Entries absent from the snapshot are left alone (they didn't exist at
  * snapshot time and nothing reads them on old code).
+ *
+ * A snapshot holds only regular files and directories (createSnapshot copies
+ * nothing else), so one containing a symlink or device was not made by us:
+ * it is refused before anything is touched. Copying it would put a link to an
+ * arbitrary path — or a device — where the server reads its token and records.
  */
 export function restoreSnapshot(
   id: string,
@@ -252,6 +274,16 @@ export function restoreSnapshot(
     id,
     entries: (raw.entries ?? []).filter((e) => allowed.has(e)),
   };
+  for (const e of manifest.entries) {
+    // lstat, not existsSync: a dangling symlink must still be judged.
+    if (!lstatSync(join(src, e), { throwIfNoEntry: false })) continue;
+    const bad = firstNonPlainNode(src, e);
+    if (bad) {
+      throw new Error(
+        `snapshot ${id} contains ${bad}, which is not a regular file or directory (a symlink, device, FIFO or socket) — refusing to restore it; live state was left as it was`,
+      );
+    }
+  }
 
   const saved = createSnapshot(liveVersion, manifest.fromVersion, configDir);
 
@@ -265,6 +297,10 @@ export function restoreSnapshot(
         recursive: true,
         preserveTimestamps: true,
       });
+      // Judge the COPY too: a link planted between the check above and this
+      // copy (cpSync copies links as links) never reaches the live dir.
+      const bad = firstNonPlainNode(stage, e);
+      if (bad) throw new Error(`${bad} is not a regular file or directory`);
     }
   } catch (err) {
     rmSync(stage, { recursive: true, force: true });
