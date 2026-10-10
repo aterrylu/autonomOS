@@ -384,3 +384,23 @@ aside.overflow-y-auto::-webkit-scrollbar {
     stroke-opacity: 0;
   }
 }
+
+/* Org chart card (Balanced): a soft pulse on the dot while an agent works or
+   waits on you. Static under reduced motion. */
+.org-dot-pulse {
+  animation: org-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes org-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-dot-pulse {
+    animation: none;
+  }
+}

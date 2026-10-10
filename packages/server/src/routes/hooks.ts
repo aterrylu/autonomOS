@@ -431,19 +431,113 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
 }
 
 /** Extract a short detail string from tool input (filename or truncated command) */
-function extractToolDetail(event: HookEvent): string | undefined {
-  const input = event.tool_input;
-  if (!input) return undefined;
+/** Longest detail we keep; longer names keep their tail (the extension). */
+export const TOOL_DETAIL_MAX = 32;
 
-  if (input.file_path) {
-    return input.file_path.split("/").pop();
-  }
-  if (input.command) {
-    return input.command.length > 40
-      ? `${input.command.slice(0, 37)}...`
-      : input.command;
+/**
+ * What a tool is working ON, for the status line ("Edit store.ts",
+ * "Running npm"). Deliberately narrow, because the status feed goes to every
+ * dashboard reader: a file tool gives the file's BASENAME (never its path), a
+ * shell tool gives only the PROGRAM name (never its arguments, and never a
+ * leading `VAR=value`, whose value may be a secret). Anything we can't read
+ * confidently is `undefined` rather than a guess.
+ */
+export function extractToolDetail(event: HookEvent): string | undefined {
+  const input = event.tool_input as Record<string, unknown> | undefined;
+  if (!input) return undefined;
+  // Claude Code's file tools use file_path (NotebookEdit: notebook_path);
+  // Gemini's read_file has used absolute_path.
+  const file = [input.file_path, input.notebook_path, input.absolute_path].find(
+    (v): v is string => typeof v === "string" && v.length > 0,
+  );
+  if (file) return capDetail(basename(file));
+  if (typeof input.command === "string") {
+    const program = programName(input.command);
+    return program ? capDetail(program) : undefined;
   }
   return undefined;
+}
+
+function basename(path: string): string {
+  return (
+    path
+      .replace(/[/\\]+$/, "")
+      .split(/[/\\]/)
+      .pop() ?? ""
+  );
+}
+
+function capDetail(s: string): string | undefined {
+  if (!s) return undefined;
+  if (s.length <= TOOL_DETAIL_MAX) return s;
+  const tail = 10;
+  return `${s.slice(0, TOOL_DETAIL_MAX - tail - 1)}…${s.slice(-tail)}`;
+}
+
+/** Words that run the NEXT word as the program. */
+const WRAPPERS = new Set(["sudo", "env", "time", "nohup", "exec", "command"]);
+const SEPARATORS = new Set(["&&", "||", ";", "|", "&"]);
+
+/**
+ * The program a shell command runs: its first word after `VAR=value`
+ * assignments and wrappers, skipping a leading `cd <dir> &&` (agents prefix
+ * almost everything with one). Quote-aware, so `A="x y" npm` never yields
+ * `y`. Only a plain name survives: `$(…)`, subshells and quoted programs
+ * give `undefined`.
+ */
+function programName(command: string): string | undefined {
+  const words = shellWords(command);
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || WRAPPERS.has(w)) {
+      i++;
+      continue;
+    }
+    if (w === "cd") {
+      // Skip to just past the next separator; a bare `cd dir` has no program.
+      while (i < words.length && !SEPARATORS.has(words[i])) i++;
+      i++;
+      continue;
+    }
+    const name = basename(w);
+    return /^[A-Za-z0-9][\w.+-]*$/.test(name) ? name : undefined;
+  }
+  return undefined;
+}
+
+/** Split on unquoted whitespace, keeping quoted runs inside their word and
+ *  `&&` `||` `;` `|` as words of their own. Quote characters are kept, so a
+ *  quoted word fails the plain-name check instead of being unwrapped. */
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  const flush = () => {
+    if (cur) words.push(cur);
+    cur = "";
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      cur += c;
+      quote = c;
+    } else if (/\s/.test(c)) {
+      flush();
+    } else if (c === ";" || c === "|" || c === "&") {
+      const two = command.slice(i, i + 2);
+      flush();
+      if (two === "&&" || two === "||") {
+        words.push(two);
+        i++;
+      } else words.push(c);
+    } else cur += c;
+  }
+  flush();
+  return words;
 }
 
 // ── Routers ──────────────────────────────────────────────────────────

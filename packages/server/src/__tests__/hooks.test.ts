@@ -23,6 +23,7 @@ import {
   agentStatusRouter,
   clearAgentState,
   clearNotifications,
+  extractToolDetail,
   getAgentState,
   hooksIngestRouter,
 } from "../routes/hooks.js";
@@ -72,7 +73,8 @@ describe("hooks — agent status derivation", () => {
     const state = getAgentState(sid);
     assert.equal(state.status, "tool_running");
     assert.equal(state.currentTool, "Bash");
-    assert.equal(state.toolDetail, "npm test");
+    // The program only — never its arguments.
+    assert.equal(state.toolDetail, "npm");
   });
 
   it("PostToolUse → working (clears tool)", async () => {
@@ -739,5 +741,61 @@ describe("hooks — Gemini event translation", () => {
     const body = (await res.json()) as { event: string };
     assert.equal(body.event, "dropped");
     assert.equal(getAgentState(sid).status, "working");
+  });
+});
+
+describe("extractToolDetail — what the status line may say a tool is working on", () => {
+  const detail = (tool_input: Record<string, unknown>) =>
+    extractToolDetail({ hook_event_name: "PreToolUse", tool_input } as never);
+
+  it("file tools give the BASENAME, never the path", () => {
+    assert.equal(
+      detail({ file_path: "/home/u/proj/src/store.ts" }),
+      "store.ts",
+    );
+    assert.equal(
+      detail({ notebook_path: "/w/analysis.ipynb" }),
+      "analysis.ipynb",
+    );
+    assert.equal(detail({ absolute_path: "C:\\w\\app.py" }), "app.py");
+  });
+
+  it("shell tools give the PROGRAM, never its arguments", () => {
+    assert.equal(detail({ command: "npm test -- --watch" }), "npm");
+    assert.equal(detail({ command: "/usr/bin/git push origin main" }), "git");
+    assert.equal(
+      detail({ command: "cd packages/server && bun run build" }),
+      "bun",
+    );
+    assert.equal(detail({ command: "cd /tmp; ls -la" }), "ls");
+    assert.equal(detail({ command: "sudo apt-get install jq" }), "apt-get");
+  });
+
+  it("a VAR=value prefix is skipped whole — its value (maybe a secret) never leaks", () => {
+    assert.equal(detail({ command: "TOKEN=abc123 curl https://x" }), "curl");
+    // Quoted with spaces: no word of the value may surface as the "program".
+    assert.equal(
+      detail({ command: 'API_KEY="sk live secret" node run.js' }),
+      "node",
+    );
+    assert.equal(detail({ command: "env A='x y z' python3 -V" }), "python3");
+  });
+
+  it("anything that isn't a plain program name is undefined, not a guess", () => {
+    assert.equal(detail({ command: "$(cat cmd.txt) --go" }), undefined);
+    assert.equal(detail({ command: "( make -j )" }), undefined);
+    assert.equal(detail({ command: '"my tool" --x' }), undefined);
+    assert.equal(detail({ command: "cd somewhere" }), undefined);
+    assert.equal(detail({ command: "" }), undefined);
+    assert.equal(detail({ pattern: "TODO" }), undefined); // Grep: not a file
+  });
+
+  it("long names are capped, keeping the tail (the extension)", () => {
+    const d = detail({
+      file_path: `/w/${"a".repeat(60)}.component.test.tsx`,
+    }) as string;
+    assert.ok(d.length <= 32, d);
+    assert.ok(d.endsWith(".test.tsx"), d);
+    assert.ok(d.includes("…"), d);
   });
 });

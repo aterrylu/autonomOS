@@ -13,10 +13,11 @@ import { useStore } from "../../store";
 import type { AgentMenuTarget } from "../AgentContextMenu";
 import { formatAge, recencyTimestampStyle } from "../recency";
 import { statusLabelStyle } from "../statusLabelStyle";
-import { agentStatusLabel } from "../ui/agent-status-icon";
 import { ProviderAgentIcon } from "../ui/provider-icon";
+import { segmentColor, stripLayout } from "./activityStrip";
 import {
   type AgentInfo,
+  actionLabel,
   menuTarget,
   nodeStatus,
   type PageTheme,
@@ -290,23 +291,6 @@ function Rows({
   );
 }
 
-const WORKING_STATUSES = new Set([
-  "working",
-  "tool_running",
-  "orchestrating",
-  "compacting",
-]);
-
-/** Color for a status segment on the 24h strip. */
-function segmentColor(status: string, tokens: OrgChartTokens): string {
-  if (status === "needs_input") return tokens.status.needsInput;
-  if (status === "error") return tokens.status.error;
-  if (WORKING_STATUSES.has(status)) return tokens.status.active;
-  if (status === "idle" || status === "ready")
-    return `${tokens.status.ready}80`;
-  return tokens.cardBorder; // stopped / unknown
-}
-
 function ActivityStrip({
   a,
   now,
@@ -318,9 +302,7 @@ function ActivityStrip({
 }) {
   // Span from the first recorded change (at most 24h back): a young agent's
   // few minutes would otherwise be a hairline in a 24-hour-wide strip.
-  const first = a.activity[0]?.from ?? now;
-  const start = Math.max(now - 86_400_000, Math.min(first, now - 60_000));
-  const span = now - start;
+  const { start, span, segments } = stripLayout(a.activity, now);
   const caption =
     now - start >= 86_400_000 - 60_000
       ? "Last 24 hours"
@@ -340,26 +322,19 @@ function ActivityStrip({
           background: tokens.chip,
         }}
       >
-        {a.activity.map((seg, i) => {
-          // The last state is still going: draw it to the CLIENT's clock, not
-          // the server's at fetch time, or the right edge shows an empty band
-          // (read as an unrecorded gap) until the next refetch.
-          const to =
-            i === a.activity.length - 1 ? Math.max(seg.to, now) : seg.to;
-          return (
-            <span
-              key={`${seg.from}-${seg.status}`}
-              data-org-segment={seg.status}
-              className="absolute top-0 bottom-0"
-              title={`${seg.status} · ${formatDuration(to - seg.from)}`}
-              style={{
-                left: `${((Math.max(seg.from, start) - start) / span) * 100}%`,
-                width: `${(Math.max(0, to - Math.max(seg.from, start)) / span) * 100}%`,
-                background: segmentColor(seg.status, tokens),
-              }}
-            />
-          );
-        })}
+        {segments.map((seg) => (
+          <span
+            key={`${seg.from}-${seg.status}`}
+            data-org-segment={seg.status}
+            className="absolute top-0 bottom-0"
+            title={`${seg.status} · ${formatDuration(seg.to - seg.from)}`}
+            style={{
+              left: `${seg.left}%`,
+              width: `${seg.width}%`,
+              background: segmentColor(seg.status, tokens),
+            }}
+          />
+        ))}
       </div>
       <span
         data-org-activity-caption
@@ -442,7 +417,7 @@ export function OrgInspector({
 }) {
   const exited = node.status !== "running";
   const status = nodeStatus(node, info);
-  const label = exited ? "Exited" : agentStatusLabel(status, info?.currentTool);
+  const label = exited ? "Exited" : actionLabel(status, info);
   const labelStyle = statusLabelStyle(status, tokens.isLight);
   const s = info?.session;
   const lastActive =
