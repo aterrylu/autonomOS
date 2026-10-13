@@ -412,7 +412,10 @@ describe("agent API forwards a real adapter request (Node 23+ Illegal invocation
   let base: string;
 
   before(async () => {
-    server = createAdaptorServer({ fetch: internalApp().fetch, port: 0 });
+    server = createAdaptorServer({
+      fetch: internalApp().fetch,
+      port: 0,
+    }) as Server;
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const addr = server.address();
     if (!addr || typeof addr === "string") throw new Error("no port");
