@@ -14,7 +14,8 @@
     "changeset": "changeset",
     "version": "changeset version && bun scripts/sync-changelog.ts",
     "release:notes": "bun scripts/release-notes.ts",
-    "prepare": "lefthook install || true"
+    "prepare": "lefthook install || true",
+    "postinstall": "bash scripts/ensure-node-pty.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.6",
