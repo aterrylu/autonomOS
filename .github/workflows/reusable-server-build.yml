@@ -35,11 +35,15 @@ jobs:
             runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # Pin Node 22 LTS so node-pty's nan-based native binding compiles cleanly
-      # (it does NOT build against Node 25's V8 headers).
+      # node-pty >= 1.1.0 is node-addon-api (N-API) based: its binary is ABI
+      # stable across Node majors, so the bundle this job ships runs on every
+      # Node >= MIN_NODE and on future releases. (The old 1.0.0 nan binding
+      # forced a Node 22 pin here, and that pin is what produced bundles that
+      # died with ERR_DLOPEN_FAILED on a user's newer Node.) Build on current
+      # LTS; the resulting artifact is not tied to it.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version: "lts/*"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest

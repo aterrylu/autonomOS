@@ -393,3 +393,77 @@ describe("/ws/gateway upgrade accepts the agent credential (and still the operat
     );
   });
 });
+
+/**
+ * forward() over a REAL socket, not Hono's in-memory `app.request()`.
+ *
+ * Every other test in this file calls `app.request()`, which builds a genuine
+ * `Request`. @hono/node-server does not: it hands handlers a lazy Request
+ * subclass whose internals are materialized on first property read. Handing
+ * THAT to `new Request(url, init)` throws `TypeError: Illegal invocation` on
+ * Node 23+, which took out every agent-side call through this router — spawn,
+ * templates, agent tree — while the whole in-memory suite stayed green.
+ *
+ * So this one goes over a listening socket, the only way the adapter's Request
+ * reaches forward() at all.
+ */
+describe("agent API forwards a real adapter request (Node 23+ Illegal invocation)", () => {
+  let server: Server;
+  let base: string;
+
+  before(async () => {
+    server = createAdaptorServer({
+      fetch: internalApp().fetch,
+      port: 0,
+    }) as Server;
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("no port");
+    base = `http://127.0.0.1:${addr.port}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("GET reaches the mounted router instead of throwing", async () => {
+    const res = await fetch(`${base}/api/templates`, { headers: asAgent() });
+    assert.equal(res.status, 200, await res.text());
+  });
+
+  it("keeps the query string across the rewrite", async () => {
+    const res = await fetch(`${base}/api/agents/tree?depth=1`, {
+      headers: asAgent(),
+    });
+    assert.equal(res.status, 200, await res.text());
+  });
+
+  it("a POST body survives the rewrite", async () => {
+    // Create a template and then read it back. A status code alone would be a
+    // weak signal — the point is that the BODY crossed the rewrite intact, so
+    // the assertion is that the name we sent comes back out of the listing.
+    const name = `forward-probe-${Date.now()}`;
+    const created = await fetch(`${base}/api/templates`, {
+      method: "POST",
+      headers: { ...asAgent(), "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        role: "a probe for the forward() rewrite",
+        description: "created over a real socket to exercise forward()",
+        systemPrompt: "You are a probe.",
+      }),
+    });
+    assert.ok(
+      created.ok,
+      `create failed ${created.status}: ${await created.text()}`,
+    );
+
+    const listed = await fetch(`${base}/api/templates`, { headers: asAgent() });
+    assert.equal(listed.status, 200);
+    assert.match(
+      await listed.text(),
+      new RegExp(name),
+      "the created template is absent — the POST body did not survive forward()",
+    );
+  });
+});

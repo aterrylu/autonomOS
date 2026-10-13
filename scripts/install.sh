@@ -64,14 +64,21 @@ esac
 echo "[install] Detected platform: $PLATFORM"
 
 # ── node version check ────────────────────────────────────────────────────
+# A FLOOR ONLY — there is deliberately no upper bound. The bundle's one native
+# dependency (node-pty >= 1.1.0) is node-addon-api/N-API based, so its binary is
+# ABI stable across Node majors and keeps loading on Node releases that postdate
+# this installer. Do not reintroduce a ceiling or pin: the ERR_DLOPEN_FAILED
+# "compiled against a different Node.js version (NODE_MODULE_VERSION ...)" class
+# of bug came from the old nan-based node-pty@1.0.0, not from this check.
+MIN_NODE=20
 if [[ "${SKIP_NODE_CHECK:-0}" != "1" ]]; then
   if ! command -v node >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 Error: Node.js is required.
 
 The autonomOS bundle is a Node-runtime JS application (the static-binary path
-is blocked on a Bun/node-pty ABI issue, tracked separately). Install Node 20+
-via your package manager:
+is blocked on a Bun/node-pty ABI issue, tracked separately). Install Node 20 or
+newer via your package manager — any newer major works:
 
   macOS:    brew install node
   Linux:    https://nodejs.org/en/download/package-manager
@@ -79,8 +86,8 @@ EOF
     exit 1
   fi
   NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])')
-  if [[ "$NODE_MAJOR" -lt 20 ]]; then
-    echo "Error: node 20+ required (found $(node --version))" >&2
+  if [[ "$NODE_MAJOR" -lt "$MIN_NODE" ]]; then
+    echo "Error: node $MIN_NODE+ required (found $(node --version))" >&2
     exit 1
   fi
 fi

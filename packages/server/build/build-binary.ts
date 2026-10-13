@@ -85,80 +85,140 @@ function currentTarget(): string {
 const wantAll = process.argv.includes("--all");
 const targets = wantAll ? [...ALL_TARGETS] : [currentTarget()];
 
-// node-pty ships a separate `spawn-helper` executable that its native addon
-// posix_spawn()s to set up the PTY before exec'ing the target command. bun does
-// NOT bundle it (it's referenced by a runtime path string, not an import), and
-// worse, bun bakes node-pty's `__dirname` as the BUILD machine's absolute
-// node_modules path — so the bundled `helperPath` (`<__dirname>/../build/Release/
-// spawn-helper`) points at a location that does not exist inside the shipped app
-// or on any other machine. Result: agent spawn fails with "posix_spawnp failed."
-// (Intel) or silently produces a zombie child (Apple Silicon, where posix_spawn
-// defers the ENOENT). This staged neither caught it because the smoke test only
-// asserted the spawn HTTP response, not that the child actually lives.
+// node-pty's native pieces are NOT bundled by bun, and must be staged by hand:
 //
-// Fix: copy spawn-helper next to index.js and repoint node-pty's resolution to
-// the runtime bundle dir via import.meta.url (import.meta.dirname is NOT
-// populated in a bun --target=node bundle; fileURLToPath also decodes the %20 in
-// the ".app" volume path, which `.pathname` would not). Asserts on the anchor so
-// a node-pty upgrade that changes the shape fails the build loudly instead of
-// silently shipping a broken spawner.
-function stageNodePtySpawnHelper(outdir: string, target: string): void {
-  // spawn-helper is macOS-ONLY: node-pty's native pty.cc uses posix_spawn() of
-  // the helper under `#if defined(__APPLE__)`, and plain forkpty() everywhere
-  // else (Linux ignores the helperPath arg entirely). So there's nothing to
-  // stage or repoint for non-darwin targets — and node-pty doesn't even ship a
-  // spawn-helper there, which is why requiring it would (and did) break the
-  // Linux server build. Key off the TARGET (not the build host) so `--all` on a
-  // Mac doesn't try to stage a darwin helper into the Linux bundles.
-  if (!target.includes("darwin")) return;
+//   1. `pty.node` — the N-API addon. Under node-pty 1.0.0 (nan) this came along
+//      for free: unixTerminal.js had a STATIC `require('../build/Release/pty.node')`
+//      that bun's bundler saw and emitted as an asset. 1.1.0 replaced that with
+//      `loadNativeModule()`, which builds the path at runtime
+//      (`require(dir + "/" + name + ".node")`). bun cannot resolve a computed
+//      specifier, so it compiles down to a bare `__require(...)` and the addon is
+//      silently left out of the bundle. Staging it is now mandatory.
+//   2. `spawn-helper` — a separate executable node-pty posix_spawn()s to set up
+//      the PTY before exec'ing the target command. Never bundled (referenced by a
+//      runtime path string), and bun bakes node-pty's `__dirname` as the BUILD
+//      machine's absolute node_modules path, so the shipped `helperPath` points at
+//      a directory that exists on no other machine. Result: agent spawn fails with
+//      "posix_spawnp failed." (Intel) or silently produces a zombie child (Apple
+//      Silicon, where posix_spawn defers the ENOENT).
+//
+// Both are staged FLAT next to index.js and both of node-pty's resolution paths
+// are repointed at the bundle dir (computed from import.meta.url — note
+// import.meta.dirname is NOT populated in a bun --target=node bundle, and
+// fileURLToPath correctly decodes the %20 in a ".app" volume path, which
+// `.pathname` would not).
+//
+// Every patch asserts on its anchor, so a node-pty upgrade that changes the
+// loader shape fails the build loudly instead of silently shipping a broken
+// spawner — which is exactly how the 1.0.0 → 1.1.0 bump surfaced.
+function stageNodePtyNative(outdir: string, target: string): void {
+  const hostTarget = currentTarget();
+  if (target !== hostTarget) {
+    // node-pty's native artifacts are platform-specific and this build host only
+    // has its own. CI builds every target on its native runner (see
+    // .github/workflows/reusable-server-build.yml), so this only trips on a local
+    // `--all`. Warn rather than throw: the JS bundle is still useful for
+    // inspection, it just cannot spawn an agent.
+    console.warn(
+      `[build-binary] ! ${target}: skipping node-pty staging (host is ${hostTarget}). ` +
+        `This bundle has NO pty.node and cannot spawn agents — build it on a ${target} host.`,
+    );
+    return;
+  }
 
   // Validate EVERYTHING before mutating the filesystem, so a node-pty shape
-  // change (or missing helper) aborts with `outdir` left pristine rather than
-  // half-staged (helper copied next to an un-repointed index.js). Matters if
-  // this is ever wrapped in a continue-on-error loop.
+  // change (or missing artifact) aborts with `outdir` left pristine rather than
+  // half-staged (addon copied next to an un-repointed index.js).
   const ptyRequire = createRequire(import.meta.url);
-  const ptyPkg = ptyRequire.resolve("node-pty/package.json");
-  const helperSrc = resolve(dirname(ptyPkg), "build/Release/spawn-helper");
-  if (!existsSync(helperSrc)) {
+  const ptyRoot = dirname(ptyRequire.resolve("node-pty/package.json"));
+
+  // 1.1.0 ships prebuilt N-API binaries under prebuilds/<platform>-<arch>/ for
+  // darwin and win32. Linux has no prebuild, so `npm install` falls back to
+  // `node-gyp rebuild`, which lands in build/Release/. Check both, in the same
+  // order node-pty's own loadNativeModule() does.
+  const nativeDirs = [
+    resolve(ptyRoot, "build/Release"),
+    resolve(ptyRoot, `prebuilds/${nodePlatform()}-${nodeArch()}`),
+  ];
+  const nativeDir = nativeDirs.find((d) => existsSync(resolve(d, "pty.node")));
+  if (!nativeDir) {
     throw new Error(
-      `[build-binary] node-pty spawn-helper not found at ${helperSrc}. ` +
-        `node-pty must be built before bundling (its prebuilt or node-gyp output).`,
+      `[build-binary] node-pty's pty.node not found. Looked in:\n` +
+        nativeDirs.map((d) => `  ${d}`).join("\n") +
+        `\nnode-pty must be installed with its prebuild downloaded (or node-gyp built) before bundling.`,
+    );
+  }
+  const ptyNodeSrc = resolve(nativeDir, "pty.node");
+
+  // spawn-helper is macOS-ONLY: node-pty's pty.cc posix_spawn()s it under
+  // `#if defined(__APPLE__)` and uses plain forkpty() everywhere else (Linux
+  // ignores the helperPath argument entirely). node-pty does not even ship one
+  // on Linux, which is why unconditionally requiring it broke the Linux build.
+  const wantHelper = target.includes("darwin");
+  const helperSrc = resolve(nativeDir, "spawn-helper");
+  if (wantHelper && !existsSync(helperSrc)) {
+    throw new Error(
+      `[build-binary] node-pty spawn-helper not found at ${helperSrc}.`,
     );
   }
 
   const indexPath = resolve(outdir, "index.js");
-  const src = readFileSync(indexPath, "utf-8");
-  const anchor = "helperPath = path.resolve(__dirname, helperPath);";
-  const occurrences = src.split(anchor).length - 1;
-  if (occurrences !== 1) {
-    throw new Error(
-      `[build-binary] expected exactly 1 node-pty helperPath anchor, found ${occurrences}. ` +
-        `node-pty's loader shape changed — update stageNodePtySpawnHelper().`,
-    );
+  let src = readFileSync(indexPath, "utf-8");
+
+  // Anchor 1: the computed-path loader. Appending a bundle-dir attempt INSIDE
+  // loadNativeModule (rather than relying on its "./" probe) makes resolution
+  // deterministic — its default list tries "../build/Release/" first, which
+  // would reach OUTSIDE the install dir and could pick up a stranger's pty.node.
+  const dirsAnchor =
+    'var dirs = ["build/Release", "build/Debug", "prebuilds/" + process.platform + "-" + process.arch];';
+  // Anchor 2: the spawn-helper path, resolved against bun's baked __dirname.
+  const helperAnchor = "helperPath = path.resolve(__dirname, helperPath);";
+
+  for (const [label, anchor] of [
+    ["loadNativeModule dirs", dirsAnchor],
+    ["helperPath", helperAnchor],
+  ] as const) {
+    const n = src.split(anchor).length - 1;
+    if (n !== 1) {
+      throw new Error(
+        `[build-binary] expected exactly 1 node-pty ${label} anchor, found ${n}. ` +
+          `node-pty's loader shape changed — update stageNodePtyNative().`,
+      );
+    }
   }
 
-  // Validation passed — now mutate. Repoint node-pty to resolve spawn-helper from
-  // the runtime bundle dir (computed from import.meta.url) instead of bun's baked
-  // build-machine __dirname. The occurrences===1 check above guarantees the
-  // single-arg replace() below hits the one and only anchor.
+  // Validation passed — now mutate.
+  src = src.replace(
+    dirsAnchor,
+    `${dirsAnchor}\n    try { return { dir: __AUTONOMOS_BUNDLE_DIR + "/", module: __require(__AUTONOMOS_BUNDLE_DIR + "/" + name + ".node") }; } catch (e) { lastError = e; }`,
+  );
+  src = src.replace(
+    helperAnchor,
+    'helperPath = path.resolve(__AUTONOMOS_BUNDLE_DIR, "spawn-helper");',
+  );
+
   const prelude =
     'import { fileURLToPath as __aoFileURLToPath } from "node:url";\n' +
     'import { dirname as __aoDirname } from "node:path";\n' +
     "const __AUTONOMOS_BUNDLE_DIR = __aoDirname(__aoFileURLToPath(import.meta.url));\n";
-  const repointed = src.replace(
-    anchor,
-    'helperPath = path.resolve(__AUTONOMOS_BUNDLE_DIR, "spawn-helper");',
-  );
   // Insert the constant AFTER the shebang (line 1) so `#!/usr/bin/env node`
   // stays first.
-  const patched = repointed.startsWith("#!")
-    ? repointed.replace(/^(#![^\n]*\n)/, `$1${prelude}`)
-    : prelude + repointed;
+  src = src.startsWith("#!")
+    ? src.replace(/^(#![^\n]*\n)/, `$1${prelude}`)
+    : prelude + src;
 
-  writeFileSync(indexPath, patched);
-  copyFileSync(helperSrc, resolve(outdir, "spawn-helper"));
-  chmodSync(resolve(outdir, "spawn-helper"), 0o755);
-  console.log("[build-binary] ✓ staged node-pty spawn-helper + repointed path");
+  writeFileSync(indexPath, src);
+  copyFileSync(ptyNodeSrc, resolve(outdir, "pty.node"));
+  if (wantHelper) {
+    copyFileSync(helperSrc, resolve(outdir, "spawn-helper"));
+    // node-pty's npm tarball ships spawn-helper mode 644; without +x the
+    // posix_spawn fails at runtime with EACCES.
+    chmodSync(resolve(outdir, "spawn-helper"), 0o755);
+  }
+  console.log(
+    `[build-binary] ✓ staged node-pty pty.node${wantHelper ? " + spawn-helper" : ""} ` +
+      `from ${nativeDir} + repointed paths`,
+  );
 }
 
 // Runtime-loaded .mjs scripts (statusline renderer, MCP channel-server) are
@@ -213,7 +273,7 @@ for (const target of targets) {
     resolve(outdir, "package.json"),
     `${JSON.stringify({ name: serverPkg.name, version: serverPkg.version, type: "module" }, null, 2)}\n`,
   );
-  stageNodePtySpawnHelper(outdir, target);
+  stageNodePtyNative(outdir, target);
   stageRuntimeScripts(outdir);
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
 
