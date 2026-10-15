@@ -67,7 +67,7 @@ jobs:
     env:
       LEFTHOOK: "0"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           # Persist these credentials for the later `git push` of the tag. Using
@@ -84,7 +84,7 @@ jobs:
 
       - name: Maintain Version Packages PR
         id: changesets
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           version: bun run version
           # No `publish` — releases are produced by release.yml on the v-tag,
