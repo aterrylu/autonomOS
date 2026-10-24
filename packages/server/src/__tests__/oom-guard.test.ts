@@ -1,6 +1,7 @@
 // OOM containment (agents/oomGuard.ts) against a FAKE /proc and cgroup tree,
 // so the decisions run on any OS. The real kernel + systemd behavior is the
-// CI job in .github/workflows/oom-isolation.yml (scripts/oom-isolation-ci.sh).
+// CI step "OOM isolation (real systemd)" in .github/workflows/test.yml
+// (scripts/oom-isolation-ci.sh).
 
 import assert from "node:assert/strict";
 import {
@@ -229,15 +230,36 @@ describe("OomGuard: per-agent cgroups (delegated unit)", () => {
 });
 
 describe("OomGuard: telling the operator which agent", () => {
-  it("an agent killed by SIGKILL with its cgroup's OOM counter up → 'oom'", () => {
-    const { g } = guard();
+  /** A delegated guard with agent `id` attached at `pid` and its counter at 0. */
+  function attached(id = "a", pid = 500) {
+    const { g, logs } = guard();
     g.init();
-    addProc(500, SELF);
-    g.attach("a", 500);
-    setEvents(join(unitDir, "agent-a"), 0);
-    g.attach("a", 500); // re-read baseline (fake has no counter until now)
-    setEvents(join(unitDir, "agent-a"), 1);
+    addProc(pid, SELF);
+    setEvents(join(unitDir, `agent-${id}`), 0);
+    g.attach(id, pid, { leader: true });
+    return {
+      g,
+      logs,
+      bump: (n: number) => setEvents(join(unitDir, `agent-${id}`), n),
+    };
+  }
+
+  it("SIGKILL with the agent's cgroup counting an OOM kill → 'oom'", () => {
+    const { g, bump } = attached();
+    bump(1);
     assert.equal(g.exitVerdict("a", 9), "oom");
+  });
+
+  it("a crash that ISN'T a SIGKILL after an OOM kill → still 'oom' (the Codex daemon died, its TUI exited 1)", () => {
+    const { g, bump } = attached();
+    bump(1);
+    assert.equal(g.exitVerdict("a", undefined, 1), "oom");
+  });
+
+  it("a clean exit after a process it started was OOM-killed → 'oom-then-exited' (reported, not resumed)", () => {
+    const { g, bump } = attached();
+    bump(1);
+    assert.equal(g.exitVerdict("a", undefined, 0), "oom-then-exited");
   });
 
   it("a kill BEFORE this life of the agent isn't news (respawn reuses the cgroup)", () => {
@@ -245,37 +267,33 @@ describe("OomGuard: telling the operator which agent", () => {
     const { g } = guard();
     g.init();
     addProc(500, SELF);
-    g.attach("a", 500);
+    g.attach("a", 500, { leader: true });
     assert.equal(g.exitVerdict("a", 9), "sigkill");
   });
 
   it("SIGKILL with no OOM counted → 'sigkill' (systemd-oomd, kill -9)", () => {
-    const { g } = guard();
-    g.init();
-    addProc(500, SELF);
-    setEvents(join(unitDir, "agent-a"), 0);
-    g.attach("a", 500);
+    const { g } = attached();
     assert.equal(g.exitVerdict("a", 9), "sigkill");
   });
 
-  it("a normal exit or another signal is not an outside kill", () => {
-    const { g } = guard();
-    g.init();
-    addProc(500, SELF);
-    setEvents(join(unitDir, "agent-a"), 0);
-    g.attach("a", 500);
-    setEvents(join(unitDir, "agent-a"), 1);
-    assert.equal(g.exitVerdict("a", undefined), null);
+  it("an ordinary exit or another signal with no OOM counted → null", () => {
+    const { g } = attached();
+    assert.equal(g.exitVerdict("a", undefined, 0), null);
+    assert.equal(g.exitVerdict("a", undefined, 1), null);
     assert.equal(g.exitVerdict("a", 15), null);
   });
 
-  it("without per-agent cgroups, a unit-level OOM kill makes it 'oom-likely'", () => {
-    const { g } = guard({});
-    g.init();
-    addProc(500, SELF);
-    g.attach("a", 500);
-    setEvents(unitDir, 1);
-    assert.equal(g.exitVerdict("a", 9), "oom-likely");
+  it("the poll leaves an agent whose main process is already gone to its exit verdict (no double, wrong report)", () => {
+    const { g, bump } = attached();
+    bump(1);
+    // The kernel killed the leader; node-pty hasn't run onExit yet, so the
+    // agent is still "live" to the poll. It's a zombie until reaped.
+    writeFileSync(
+      join(proc, "500", "stat"),
+      `500 (node) Z ${SELF} 500 500 0 -1`,
+    );
+    assert.deepEqual(g.pollKills(() => true).perAgent, []);
+    assert.equal(g.exitVerdict("a", 9), "oom");
   });
 
   it("a build an agent survives is reported once, for that agent only", () => {
@@ -285,8 +303,8 @@ describe("OomGuard: telling the operator which agent", () => {
     addProc(700, SELF);
     setEvents(join(unitDir, "agent-a"), 0);
     setEvents(join(unitDir, "agent-b"), 0);
-    g.attach("a", 500);
-    g.attach("b", 700);
+    g.attach("a", 500, { leader: true });
+    g.attach("b", 700, { leader: true });
     setEvents(join(unitDir, "agent-a"), 2);
     assert.deepEqual(g.pollKills(() => true).perAgent, [
       { agentId: "a", kills: 2 },
@@ -294,24 +312,96 @@ describe("OomGuard: telling the operator which agent", () => {
     assert.deepEqual(g.pollKills(() => true).perAgent, []);
   });
 
-  it("without per-agent cgroups, a unit-level kill is reported unattributed", () => {
+  it("isolated: a kill in the SERVER's leaf is reported, unattributed", () => {
+    setEvents(join(unitDir, SERVER_LEAF), 0);
+    const { g } = guard();
+    g.init();
+    setEvents(join(unitDir, SERVER_LEAF), 1);
+    assert.equal(g.pollKills(() => true).unattributed, 1);
+    assert.equal(g.pollKills(() => true).unattributed, 0);
+  });
+
+  it("isolated: a released agent's leftovers are still watched", () => {
+    const { g, bump } = attached();
+    g.release("a", 60_000);
+    bump(1);
+    assert.equal(g.pollKills(() => true).unattributed, 1);
+  });
+
+  it("a failed move into the agent's cgroup is reported for THAT agent, and its verdict doesn't trust the empty cgroup", () => {
+    const { g, logs } = guard();
+    g.init();
+    addProc(500, SELF);
+    mkdirSync(join(unitDir, "agent-a", "cgroup.procs"), { recursive: true }); // writes fail (EISDIR)
+    g.attach("a", 500, { leader: true });
+    addProc(700, SELF);
+    mkdirSync(join(unitDir, "agent-b", "cgroup.procs"), { recursive: true });
+    g.attach("b", 700, { leader: true });
+    const text = logs.join("\n");
+    assert.match(text, /agent a \(pid 500\)/);
+    assert.match(text, /agent b \(pid 700\)/);
+    assert.equal(g.exitVerdict("a", 9), "sigkill");
+  });
+
+  it("without per-agent cgroups, an exit claims the unit-level kill → 'oom-likely', and the poll doesn't report it again", () => {
+    const { g } = guard({});
+    g.init();
+    addProc(500, SELF);
+    g.attach("a", 500, { leader: true });
+    setEvents(unitDir, 1);
+    assert.equal(g.pollKills(() => true, 1_000, 5_000).unattributed, 0); // held a cycle
+    assert.equal(g.exitVerdict("a", 9), "oom-likely");
+    assert.equal(g.pollKills(() => true, 10_000, 5_000).unattributed, 0);
+  });
+
+  it("without per-agent cgroups, an unclaimed unit-level kill is reported after a cycle", () => {
     const { g } = guard({});
     g.init();
     setEvents(unitDir, 1);
-    assert.equal(g.pollKills(() => true).unattributed, 1);
-    assert.equal(g.pollKills(() => true).unattributed, 0);
+    assert.equal(g.pollKills(() => true, 1_000, 5_000).unattributed, 0);
+    assert.equal(g.pollKills(() => true, 6_000, 5_000).unattributed, 1);
+    assert.equal(g.pollKills(() => true, 12_000, 5_000).unattributed, 0);
+  });
+
+  it("outside a systemd service (a terminal's scope), unrelated kills aren't reported as ours", () => {
+    const scope =
+      "/user.slice/user-1000.slice/user@1000.service/app.slice/vte-spawn-x.scope";
+    writeFileSync(join(proc, String(SELF), "cgroup"), `0::${scope}\n`);
+    mkdirSync(join(cg, scope), { recursive: true });
+    writeFileSync(join(cg, scope, "cgroup.procs"), `${SELF}\n`);
+    setEvents(join(cg, scope), 0);
+    const { g } = guard({});
+    g.init();
+    setEvents(join(cg, scope), 4);
+    assert.equal(g.pollKills(() => true, 1_000, 0).unattributed, 0);
+    assert.equal(g.pollKills(() => true, 9_000, 0).unattributed, 0);
   });
 
   it("release removes the agent's cgroup once it's empty", async () => {
     const { g } = guard();
     g.init();
     addProc(500, SELF);
-    g.attach("a", 500);
+    g.attach("a", 500, { leader: true });
     rmSync(join(unitDir, "agent-a"), { recursive: true }); // emulate "emptied"
     mkdirSync(join(unitDir, "agent-a"));
     g.release("a", 0);
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(existsSync(join(unitDir, "agent-a")), false);
+  });
+});
+
+describe("OomGuard: delegation is all or nothing", () => {
+  it("if controllers can't be enabled, every process goes BACK to the unit and the reason is kept", () => {
+    rmSync(join(unitDir, "cgroup.subtree_control"));
+    mkdirSync(join(unitDir, "cgroup.subtree_control")); // the write fails
+    const { g } = guard();
+    g.init();
+    assert.equal(g.isolated, false);
+    assert.ok(g.degradedReason);
+    // Moved back: the fake unit's cgroup.procs (it was "100\n101\n") now
+    // holds the last pid written back from the leaf. (Real cgroupfs would
+    // also let the emptied leaf be removed; a fake dir with files can't.)
+    assert.equal(readFileSync(join(unitDir, "cgroup.procs"), "utf-8"), "101");
   });
 });
 

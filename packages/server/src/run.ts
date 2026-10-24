@@ -929,6 +929,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     //      the window is closed — the loop cannot run a handler between them.
     sweepAgentTokenFiles();
     sweepStaleStatuslineCaches();
+    // OOM containment (ADR-155), here for the same reason: with a delegated
+    // unit the server moves into its own leaf cgroup, and an agent spawned
+    // before that (POST /api/agents is live from the bind) would be moved
+    // into the server's leaf with it. Synchronous; no await before it.
+    startOomGuard();
 
     // Snapshot the agents to resume HERE, synchronously, for the same reason
     // the token sweep sits here: POST /api/agents is live from the bind, and
@@ -999,10 +1004,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // keep its agent's thread loaded, so a resumed agent could never receive
     // inbound). Awaited: no daemon may start beside an orphan. It covers agents
     // that won't be resumed too. A failure is logged and never blocks resume.
-    // OOM containment first: with a delegated unit the server moves into its
-    // own leaf cgroup, which must happen before any agent (resumed or new)
-    // is spawned into a sibling.
-    startOomGuard();
     void reapAllOrphanSidecars()
       .then((reaped) => {
         const stopped = reaped.filter((r) => r.outcome === "reaped");

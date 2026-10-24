@@ -87,6 +87,8 @@ run_variant() { # variant expectation
   local v="$1" out="$WORK/$1"
   install_unit "$v"
   systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
+  local t0
+  t0="$(date +%s)"
   systemctl --user start "$UNIT"
   local pid0=""
   for _ in $(seq 1 40); do
@@ -112,6 +114,18 @@ run_variant() { # variant expectation
   # Taken NOW, before the stop below kills everything anyway.
   local alive=0
   kill -0 "$server" 2>/dev/null && alive=1
+  # Evidence the kernel really OOM-killed something in THIS unit (not merely
+  # that a process died): the unit cgroup's hierarchical oom_kill counter.
+  local cgpath oomk=0
+  cgpath="$(systemctl --user show "$UNIT" -p ControlGroup --value)"
+  if [[ -n "$cgpath" && -r "/sys/fs/cgroup$cgpath/memory.events" ]]; then
+    oomk="$(awk '$1=="oom_kill"{print $2}' "/sys/fs/cgroup$cgpath/memory.events")"
+  fi
+  # After a restart the cgroup is new; the journal still says what happened.
+  if [[ "$oomk" == 0 ]] && journalctl --user -u "$UNIT" --since "@$t0" --no-pager -o cat 2>/dev/null |
+    grep -q "killed by the OOM killer"; then
+    oomk=1
+  fi
   local res nr state pid1
   res="$(systemctl --user show "$UNIT" -p Result --value)"
   nr="$(systemctl --user show "$UNIT" -p NRestarts --value)"
@@ -120,8 +134,8 @@ run_variant() { # variant expectation
   echo "[$v] unit: state=$state result=$res restarts=$nr mainpid $pid0→$pid1"
   [[ -f "$out/result.json" ]] && echo "[$v] fixture: $(cat "$out/result.json")"
   journalctl --user -u "$UNIT" --since "-3min" --no-pager -o cat 2>/dev/null | grep -E "OOM|oom|fixture" | tail -5 || true
-  echo "[$v] first server process alive at outcome: $alive"
-  printf '%s %s %s %s %s %s\n' "$state" "$res" "$nr" "$pid0" "$pid1" "$alive" >"$out/unit"
+  echo "[$v] first server process alive at outcome: $alive; OOM kills counted: $oomk"
+  printf '%s %s %s %s %s %s %s\n' "$state" "$res" "$nr" "$pid0" "$pid1" "$alive" "$oomk" >"$out/unit"
   systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
   systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
 }
@@ -142,9 +156,20 @@ print(d)' "$1" "$2"
 # Assertions below must all report, not abort at the first failure.
 set +e
 
+# Each variant's outcome, never a previous variant's leftovers.
+read_outcome() { unset state res nr pid0 pid1 alive oomk; }
+ran() { # variant: did it produce an outcome at all?
+  if [[ ! -f "$WORK/$1/unit" ]]; then
+    echo "  ✗ variant $1 never produced an outcome"
+    FAIL=1
+    mkdir -p "$WORK/$1"
+    echo "none none none none none none 0" >"$WORK/$1/unit"
+  fi
+}
+
 # ── A: the real unit + guard ──
-run_variant A
-read -r state res nr pid0 pid1 alive <"$WORK/A/unit"
+run_variant A; ran A
+read_outcome; read -r state res nr pid0 pid1 alive oomk <"$WORK/A/unit"
 r="$WORK/A/result.json"
 echo "A — the fix:"
 [[ -f "$r" ]]; check "the fixture recorded the agent's exit (server alive to write it)" $?
@@ -156,19 +181,20 @@ if [[ -f "$r" ]]; then
   [[ "$(json "$r" serverPid)" == "$(json "$WORK/A/pids.json" server)" ]]; check "the server is the same process that started (never restarted)" $?
 fi
 [[ "$state" == active && "$nr" == 0 && "$pid0" == "$pid1" && "$alive" == 1 ]]; check "the unit stayed up: active, no restart, same MainPID, server alive" $?
+[[ "$oomk" -ge 1 ]]; check "an OOM kill really happened in the unit (oom_kill=$oomk)" $?
 
 # ── B: without OOMPolicy (the bug) ──
-run_variant B
-read -r state res nr pid0 pid1 alive <"$WORK/B/unit"
+run_variant B; ran B
+read_outcome; read -r state res nr pid0 pid1 alive oomk <"$WORK/B/unit"
 echo "B — the bug reproduces with the pre-fix unit:"
-[[ "$res" == oom-kill || "$nr" != 0 || "$pid0" != "$pid1" ]]; check "systemd stopped the whole unit (result=$res restarts=$nr)" $?
+[[ "$oomk" -ge 1 && ( "$res" == oom-kill || "$nr" != 0 || "$pid0" != "$pid1" ) ]]; check "an OOM kill happened AND systemd stopped the whole unit (result=$res restarts=$nr oom_kill=$oomk)" $?
 
 # ── C: guard off ──
-run_variant C
+run_variant C; ran C
 r="$WORK/C/result.json"
-read -r state res nr pid0 pid1 alive <"$WORK/C/unit"
+read_outcome; read -r state res nr pid0 pid1 alive oomk <"$WORK/C/unit"
 echo "C — without the guard the kernel picks the server:"
-[[ "$alive" == 0 ]]; check "the server process was the OOM victim" $?
+[[ "$oomk" -ge 1 && "$alive" == 0 ]]; check "an OOM kill happened and the server process was its victim (oom_kill=$oomk)" $?
 
 if [[ "$FAIL" != 0 ]]; then
   echo "OOM isolation guard FAILED" >&2
