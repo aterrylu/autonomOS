@@ -28,10 +28,15 @@ jobs:
           fails=0
           for i in $(seq 1 15); do
             if ! scripts/test-file.sh scripts/ci-gate-lock.test.ts scripts/run-bounded.test.ts > run-$i.log 2>&1; then
-              fails=$((fails+1)); echo "=== RUN $i FAILED"; grep -E "✖|not ok|timed out|Error" run-$i.log | head -20
+              fails=$((fails+1)); echo "=== RUN $i FAILED (exit $?)"; sed 's/\x1b\[[0-9;]*m//g' run-$i.log | grep -nE "not ok|✖|timed out|Error|fail [1-9]|# fail" | head -30; echo "--- tail"; sed 's/\x1b\[[0-9;]*m//g' run-$i.log | tail -60
             else
-              echo "run $i ok ($(grep -E 'ℹ pass' run-$i.log))"
+              echo "run $i ok ($(sed 's/\x1b\[[0-9;]*m//g' run-$i.log | grep -E '(ℹ|#) (pass|duration_ms)' | tr '\n' ' '))"
             fi
           done
           echo "FAILED RUNS: $fails / 15"
           test "$fails" -eq 0
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gate-lock-repro-logs
+          path: run-*.log
