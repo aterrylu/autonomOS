@@ -443,6 +443,21 @@ describe("performUpgrade", () => {
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
   });
 
+  it("a link that leaves the bundle and comes back in by its OWN name is refused (it would dangle after the rename)", async () => {
+    // nox (#523): resolves inside `.new` at check time, but `.new` is renamed
+    // into place, so `../<bundle>.new/…` then points at nothing (or anything).
+    const bundleDir = installLiveBundle("0.5.0");
+    const apiBase = await startFixtureServer(["0.6.0"], {
+      symlinks: { back: `../${basename(bundleDir)}.new/index.js` },
+    });
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+    });
+    assertError(result, /contains a link that points outside the bundle/);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+  });
+
   it("in-bundle links still install (a release may legitimately ship one)", async () => {
     const apiBase = await startFixtureServer(["0.6.0"], {
       symlinks: { "bin/autonomos": "../index.js", "lib/self": "." },

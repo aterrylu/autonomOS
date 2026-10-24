@@ -567,6 +567,11 @@ export function firstOutwardSymlink(
     if (st.isSymbolicLink()) {
       const target = readlinkSync(path);
       if (isAbsolute(target)) return `${r} → ${target}`;
+      // A relative path that climbs above the bundle at any point and comes
+      // back in by the dir's own name (`../<bundle>.new/foo`) resolves inside
+      // now but dangles after the rename into place: the absolute-inside
+      // case's twin (nox, #523).
+      if (climbsAboveRoot(r, target)) return `${r} → ${target}`;
       let real: string;
       try {
         // .native = libc realpath(3), which walks links as the kernel does.
@@ -587,6 +592,22 @@ export function firstOutwardSymlink(
     }
   }
   return null;
+}
+
+/** Whether a relative link target, walked segment by segment from the
+ *  link's own directory, ever goes above the bundle root (lexically: links
+ *  inside it are judged by realpath in firstOutwardSymlink). */
+function climbsAboveRoot(linkRel: string, target: string): boolean {
+  let depth = linkRel.split(/[\\/]/).filter(Boolean).length - 1;
+  for (const seg of target.split("/")) {
+    if (seg === "..") {
+      depth--;
+      if (depth < 0) return true;
+    } else if (seg && seg !== ".") {
+      depth++;
+    }
+  }
+  return false;
 }
 
 /** Version stamped into a bundle dir's package.json, or "unknown". */
