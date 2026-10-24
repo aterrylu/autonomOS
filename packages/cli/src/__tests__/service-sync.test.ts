@@ -714,3 +714,28 @@ describe("the template's own delegation marker is never a 'dropped' setting", ()
     assert.deepEqual(plan.params.droppedEnvKeys, ["HTTP_PROXY"]);
   });
 });
+
+describe("migration keeps the operator's identity env (ADR-089) while adding the OOM directives", () => {
+  it("a pre-OOM unit with a hand-added token heals: directives in, token carried, nothing else touched", () => {
+    const preFix = renderSystemdUserUnit(params)
+      .replace(/^# An agent's runaway[\s\S]*?^Delegate=yes\n/m, "")
+      .replace(/^Environment="AUTONOMOS_CGROUP_DELEGATED=1"\n/m, "")
+      .replace(
+        /^(StandardError=.*)$/m,
+        '$1\nEnvironment="AUTONOMOS_TOKEN=keep-me-token"\nEnvironment=AUTONOMOS_HOST=0.0.0.0',
+      );
+    assert.doesNotMatch(
+      preFix,
+      /OOMPolicy|Delegate|AUTONOMOS_CGROUP_DELEGATED/,
+    );
+    const svc = tempService("linux", preFix);
+    const outcome = syncServiceUnitFor(svc, recordingRun().runCmd);
+    assert.ok(outcome.kind === "updated");
+    assert.equal(outcome.droppedEnvKeys, undefined, "nothing dropped");
+    const healed = readFileSync(svc.serviceFile, "utf-8");
+    assert.match(healed, /^OOMPolicy=continue$/m);
+    assert.match(healed, /^Delegate=yes$/m);
+    assert.match(healed, /^Environment="AUTONOMOS_TOKEN=keep-me-token"$/m);
+    assert.match(healed, /^Environment="AUTONOMOS_HOST=0\.0\.0\.0"$/m);
+  });
+});
