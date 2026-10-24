@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { readInstallJson } from "../installInfo.js";
 import { verifyReleaseProvenance } from "../provenance.js";
@@ -382,6 +382,16 @@ describe("performUpgrade", () => {
     ["an absolute link (/etc)", { "data/etc": "/etc" }],
     ["a relative link out of the bundle", { up: "../../.." }],
     ["an outward link nested deep", { "a/b/c/out": "../../../../x" }],
+    // nox's chain (#523): every link's STRING resolves inside the bundle.
+    [
+      "a chain of individually-inside links (self → ., up → self/..)",
+      {
+        "lib/self": ".",
+        up: "lib/self/../..",
+      },
+    ],
+    ["a dangling link", { gone: "nope/missing" }],
+    ["a link loop", { loopA: "loopB", loopB: "loopA" }],
   ] as const) {
     it(`a bundle with ${name} is refused, the live bundle untouched`, async () => {
       const apiBase = await startFixtureServer(["0.6.0"], { symlinks });
@@ -403,6 +413,27 @@ describe("performUpgrade", () => {
     const bundleDir = installLiveBundle("0.5.0");
     const apiBase = await startFixtureServer(["0.6.0"], {
       symlinks: { entry: `${bundleDir}.new/index.js` },
+    });
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+    });
+    assertError(result, /contains a link that points outside the bundle/);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+  });
+
+  it("a link into a SIBLING whose name merely extends the bundle's is refused", async () => {
+    // `<bundle>.new-sibling` starts with `<bundle>.new` as a string; only a
+    // separator-aware prefix test tells it apart from inside.
+    const bundleDir = installLiveBundle("0.5.0");
+    const sibling = `${bundleDir}.new-sibling`;
+    mkdirSync(sibling, { recursive: true });
+    assert.ok(
+      existsSync(sibling),
+      "precondition: the sibling exists (else it's 'dangling')",
+    );
+    const apiBase = await startFixtureServer(["0.6.0"], {
+      symlinks: { sib: `../${basename(sibling)}` },
     });
     const result = await performUpgrade({
       ...baseOpts(bundleDir, apiBase),
