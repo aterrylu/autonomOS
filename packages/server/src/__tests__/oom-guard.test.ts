@@ -328,7 +328,7 @@ describe("OomGuard: telling the operator which agent", () => {
     assert.equal(g.pollKills(() => true).unattributed, 1);
   });
 
-  it("a failed move into the agent's cgroup is reported for THAT agent, and its verdict doesn't trust the empty cgroup", () => {
+  it("a failed move into the agent's cgroup is reported for EACH agent it hits, not once per server life", () => {
     const { g, logs } = guard();
     g.init();
     addProc(500, SELF);

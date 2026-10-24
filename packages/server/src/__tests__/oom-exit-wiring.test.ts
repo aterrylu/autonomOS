@@ -15,7 +15,7 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -54,15 +54,24 @@ const cwd = mkdtempSync(join(tmpdir(), "aos-oom-wiring-"));
 /** When set, the stand-in ignores SIGHUP/SIGTERM, so the server's own stop
  *  has to escalate to SIGKILL, the same signal an outside kill uses. */
 let stubborn = false;
+/** When set, the next spawn's binary lookup fails (an operator's Resume that
+ *  doesn't come up). */
+let failNextSpawn = false;
 const fake: AgentProvider = {
   ...claudeCodeProvider,
   name: "fakeoom" as never,
   displayName: "FakeOOM",
-  resolveBinary: () => process.execPath,
+  resolveBinary: () => {
+    if (failNextSpawn) {
+      failNextSpawn = false;
+      throw new Error("resume failed (test)");
+    }
+    return process.execPath;
+  },
   buildArgs: () => [
     "-e",
     stubborn
-      ? "process.on('SIGHUP',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"
+      ? `process.on('SIGHUP',()=>{});process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(join(cwd, "stubborn-ready"))}+process.pid,'');setInterval(()=>{},1000)`
       : "setInterval(()=>{},1000)",
   ],
   // No real ~/.claude lookups: every respawn is a plain start of the record.
@@ -92,6 +101,16 @@ async function until(cond: () => boolean, ms: number, what: string) {
   }
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The stubborn stand-in has installed its SIGHUP/SIGTERM handlers (until
+ *  then a stop would kill it with the first SIGHUP and never escalate). */
+async function handlersInstalled(pid: number) {
+  await until(
+    () => existsSync(join(cwd, `stubborn-ready${pid}`)),
+    10_000,
+    "the stand-in's signal handlers",
+  );
+}
 
 async function newAgent(prefix: string) {
   const name = `${prefix}-${randomUUID().slice(0, 4)}`;
@@ -138,6 +157,26 @@ describe("an agent killed from outside autonomOS", { timeout: 90_000 }, () => {
     assert.equal(isLive(), false, "the pending resume was cancelled");
   });
 
+  it("an operator's Resume during the wait ends the automatic one, even when it fails", async () => {
+    const { agent, isLive, leader } = await newAgent("resumefails");
+    process.kill(leader(), "SIGKILL");
+    await until(() => !isLive(), 10_000, "the kill to land");
+    failNextSpawn = true;
+    await assert.rejects(
+      spawnAgent({
+        workingDirectory: cwd,
+        provider: "fakeoom" as never,
+        resumeAgentId: agent.id,
+      }),
+    );
+    await sleep(1_500);
+    assert.equal(
+      isLive(),
+      false,
+      "the operator acted; no automatic resume after it",
+    );
+  });
+
   it("the operator's Resume during the wait doesn't double-spawn", async () => {
     const { agent, isLive, leader } = await newAgent("resumewins");
     process.kill(leader(), "SIGKILL");
@@ -162,8 +201,9 @@ describe("the server's own kills", { timeout: 90_000 }, () => {
   it("a stop that escalates to SIGKILL is not reported as an outside kill, and not resumed", async () => {
     stubborn = true;
     try {
-      const { agent, isLive } = await newAgent("ownkill");
-      killAttachment(agent.id);
+      const { agent, isLive, leader } = await newAgent("ownkill");
+      await handlersInstalled(leader());
+      killAttachment(agent.id); // SIGHUP, SIGTERM ignored → SIGKILL at 2 s
       await awaitPtyExits(15_000);
       await sleep(1_000);
       assert.doesNotMatch(notices(agent.id), /was killed/);
@@ -177,7 +217,8 @@ describe("the server's own kills", { timeout: 90_000 }, () => {
   it("a restart (SIGTERM → SIGKILL) is not reported as an outside kill", async () => {
     stubborn = true;
     try {
-      const { agent, isLive } = await newAgent("ownrestart");
+      const { agent, isLive, leader } = await newAgent("ownrestart");
+      await handlersInstalled(leader());
       await restartAgent(agent.id);
       await sleep(1_000);
       assert.doesNotMatch(notices(agent.id), /was killed/);
