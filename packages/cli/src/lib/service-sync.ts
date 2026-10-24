@@ -128,7 +128,7 @@ function unescapePct(s: string): string | null {
  * (where `X=a b` really is "X=a" plus an ignored word — measured on
  * systemd 255 — so preserving that is preserving what actually runs).
  * Words without `=` are ignored, as systemd ignores them. null = anything we
- * can't be sure systemd read the same way: a `\` outside double quotes or any
+ * can't be sure systemd read the same way: a `\` in single quotes or bare, or any
  * escape but `\\` / `\"` (systemd C-unescapes those), a `%` specifier, or an
  * unbalanced quote.
  */
@@ -140,6 +140,9 @@ function systemdEnvAssignments(line: string): [string, string][] | null {
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     if (quote === "'") {
+      // systemd C-unescapes inside single quotes too (EXTRACT_CUNESCAPE),
+      // so a `\` there may not mean what we'd carry: refuse.
+      if (c === "\\") return null;
       if (c === "'") quote = null;
       else cur += c;
     } else if (quote === '"') {

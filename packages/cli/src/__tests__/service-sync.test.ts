@@ -500,6 +500,10 @@ describe("forms we can't read exactly are refused, not guessed", () => {
     ],
     ["a backslash outside quotes", "Environment=AUTONOMOS_TOKEN=a\\ b"],
     [
+      "a backslash inside single quotes (systemd C-unescapes there too)",
+      "Environment='AUTONOMOS_CONFIG_DIR=/x\\ty'",
+    ],
+    [
       "a bare Environment= reset",
       "Environment=AUTONOMOS_TOKEN=old\nEnvironment=",
     ],
