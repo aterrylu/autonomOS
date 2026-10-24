@@ -224,36 +224,47 @@ describe("codex scanner — live failure reason + fallback backoff", () => {
     assert.match(net.error ?? "", /\(ECONNREFUSED\)/);
   });
 
-  it("a known file's new turns show every poll; a NEW file waits for a discovery walk, whose interval doubles until live answers", async () => {
+  it("a new thread (newest day bucket) shows on the next poll; one in an OLDER day waits for a deeper walk, whose interval doubles until live answers", async () => {
     writeAuth(Math.floor(1_800_000_000_000 / 1000) + 86_400);
     const pct = async () =>
       (await getCodexUsage(status503)).primary?.usedPercent;
-    const newRollout = (day: string, used: number) => {
+    const newRollout = (day: string, used: number, ts: string) => {
       const dir = join(SESSIONS, "2026/07", day);
       mkdirSync(dir, { recursive: true });
-      const file = join(dir, `rollout-2026-07-${day}T00-00-00-x.jsonl`);
+      const file = join(dir, `rollout-2026-07-${day}T00-00-00-${used}.jsonl`);
       writeFileSync(
         file,
-        `${JSON.stringify({ timestamp: `2026-07-${day}T00:00:00.000Z`, type: "event_msg", payload: { type: "token_count", rate_limits: { primary: { used_percent: used, window_minutes: 300 } } } })}\n`,
+        `${JSON.stringify({ timestamp: ts, type: "event_msg", payload: { type: "token_count", rate_limits: { primary: { used_percent: used, window_minutes: 300 } } } })}\n`,
       );
       rolloutMtime += 1;
       utimesSync(file, rolloutMtime, rolloutMtime);
     };
     writeRollout(10); // 2026-06-28, the known file
-    assert.equal(await pct(), 10); // t=0: full walk
+    assert.equal(await pct(), 10); // t=0: full walk; deeper walk next at 60s
 
-    newRollout("01", 20);
-    mock.timers.tick(61_000); // recent walk due (60s) → found; next in 120s
-    assert.equal(await pct(), 20);
+    mock.timers.tick(61_000); // t=61: deeper walk (next at 181)
+    assert.equal(await pct(), 10);
 
-    newRollout("02", 30);
-    mock.timers.tick(61_000); // t=122: no walk due (next at 181)
-    assert.equal(await pct(), 20, "a new file waits for the next walk");
-    mock.timers.tick(61_000); // t=183: walk → found; next in 240s
+    // A just-spawned agent: its thread is created in the NEWEST day bucket,
+    // which every read lists — no waiting for the backed-off walk.
+    newRollout("10", 20, "2026-07-10T00:00:00.000Z");
+    mock.timers.tick(61_000); // t=122: no deeper walk due
+    assert.equal(await pct(), 20, "a new thread is seen on the next poll");
+
+    // A thread created on an OLDER day, first written now: found only by the
+    // deeper walk (due at t=181), not the newest-day listing.
+    newRollout("05", 30, "2026-07-10T05:00:00.000Z");
+    mock.timers.tick(30_000); // t=152
+    assert.equal(
+      await pct(),
+      20,
+      "an older-day file waits for the deeper walk",
+    );
+    mock.timers.tick(31_000); // t=183: walk → found; next in 240s (t=423)
     assert.equal(await pct(), 30);
 
-    newRollout("03", 40);
-    mock.timers.tick(61_000); // t=244: not due (next at 423)
+    newRollout("06", 40, "2026-07-10T06:00:00.000Z");
+    mock.timers.tick(61_000); // t=244: not due
     assert.equal(await pct(), 30);
     // Live answers once (t=305): discovery starts over, so the next outage
     // walks at once — without the reset the next walk is due only at t=423.

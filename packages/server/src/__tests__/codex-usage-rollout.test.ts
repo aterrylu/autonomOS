@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -160,6 +166,33 @@ describe("codex rolloutScanner — discovery", () => {
     const snap = await readFreshestRollout();
     assert.equal(snap?.primary?.usedPercent, 93);
     assert.equal(snap?.snapshotAt, "2026-07-20T12:00:00.000Z");
+  });
+
+  it("a top file whose read FAILED is retried on the next read, not at the next walk", {
+    skip: process.getuid?.() === 0 && "root ignores file modes",
+  }, async () => {
+    // Old-day file (only a walk or the retry set can bring it back) with the
+    // freshest event; a newer-day file with an older one.
+    const old = "2026/01/05/rollout-x.jsonl";
+    writeRollout(old, {
+      timestamp: "2026-07-20T00:00:00.000Z",
+      primaryPercent: 90,
+      mtimeSec: 9000,
+    });
+    writeRollout("2026/07/01/rollout-y.jsonl", {
+      timestamp: "2026-07-01T00:00:00.000Z",
+      primaryPercent: 10,
+      mtimeSec: 1000,
+    });
+    const oldPath = join(SESSIONS, old);
+    chmodSync(oldPath, 0o000); // EACCES: a real (non-ENOENT) failure
+    try {
+      assert.equal((await readFreshestRollout())?.primary?.usedPercent, 10);
+    } finally {
+      chmodSync(oldPath, 0o644); // mode change: same size, same mtime
+    }
+    // No deeper walk is due (< 60s): only the retry set re-offers it.
+    assert.equal((await readFreshestRollout())?.primary?.usedPercent, 90);
   });
 });
 

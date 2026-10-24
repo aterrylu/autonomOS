@@ -17,12 +17,13 @@
  * fallback poll. Two costs, handled differently:
  *   - FRESHNESS — every read re-stats the current top files and tail-reads
  *     (≤ MAX_TAIL_BYTES) only the ones that changed; an idle file is free.
- *   - DISCOVERY — which files are the top ones needs a directory walk. A full
+ *   - DISCOVERY — which files are the top ones needs a directory walk. Every
+ *     read lists the NEWEST day bucket (new threads are created there). A full
  *     walk (readdir + stat, no reads) runs on the first read and every
  *     FULL_WALK_MS: a thread's day bucket is its CREATION date, so a resumed
- *     long-lived agent writes into an old day. In between, only recent days
- *     are listed, on an interval that doubles while the fallback stays in use
- *     (resetRolloutDiscovery() when the live endpoint answers again).
+ *     long-lived agent writes into an old day. In between, a deeper walk of
+ *     recent days runs on an interval that doubles while the fallback stays
+ *     in use (resetRolloutDiscovery() when the live endpoint answers again).
  *
  * NOTE the rollout uses different field names than the live API
  * (`window_minutes` + `resets_at` vs `limit_window_seconds` + `reset_at`), so it
@@ -215,16 +216,23 @@ export function resetRolloutDiscovery(): void {
  *  usage-cache invalidation). */
 export function clearRolloutCache(): void {
   fileCache.clear();
+  retryPaths.clear();
   lastFullWalkAt = Number.NEGATIVE_INFINITY;
   resetRolloutDiscovery();
 }
 
-/** Paths to stat this read: whatever a due walk finds, plus the files that
- *  were in the top set last time (wherever they live). Throws if a due walk
- *  can't list the sessions root (absent = nothing, not an error). */
+/** Top files whose last read failed (not ENOENT): kept as candidates so a
+ *  transient failure is retried on the next read, not at the next walk. */
+const retryPaths = new Set<string>();
+
+/** Paths to stat this read: the NEWEST day bucket (a new thread is created
+ *  there, so a just-spawned agent is seen at once — a few readdirs), whatever
+ *  a due deeper walk finds, the files in the top set last time (wherever they
+ *  live), and failed reads to retry. Throws if the sessions root can't be
+ *  listed (absent = nothing, not an error). */
 async function candidatePaths(root: string): Promise<string[]> {
   const now = Date.now();
-  let found: string[] = [];
+  let found: string[];
   if (now - lastFullWalkAt >= FULL_WALK_MS) {
     found = await recentCodexRolloutPaths(root, Number.POSITIVE_INFINITY);
     lastFullWalkAt = lastRecentWalkAt = now;
@@ -233,9 +241,12 @@ async function candidatePaths(root: string): Promise<string[]> {
     found = await recentCodexRolloutPaths(root, MAX_FILES_SCANNED * 2);
     lastRecentWalkAt = now;
     recentWalkInterval = Math.min(recentWalkInterval * 2, RECENT_WALK_MAX_MS);
+  } else {
+    found = await recentCodexRolloutPaths(root, 1); // the newest day only
   }
   const all = new Set(found);
   for (const path of fileCache.keys()) all.add(path);
+  for (const path of retryPaths) all.add(path);
   return [...all];
 }
 
@@ -274,14 +285,17 @@ export async function readFreshestRollout(
       try {
         found = await lastRateLimitsInFile(path, size);
       } catch (err) {
-        // Not cached either way, so it's retried next read.
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT")
+        // Not cached; a real failure is retried on the next read.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          retryPaths.add(path);
           warnOnce(
             `read:${path}`,
             `codex usage fallback: can't read ${path}: ${(err as Error).message}`,
           );
+        }
         continue;
       }
+      retryPaths.delete(path);
       fileCache.set(path, { size, mtimeMs, found });
     }
     // Compare parsed instants, not raw strings — robust to any timestamp format
@@ -295,6 +309,7 @@ export async function readFreshestRollout(
   }
   for (const path of fileCache.keys())
     if (!keep.has(path)) fileCache.delete(path);
+  for (const path of retryPaths) if (!keep.has(path)) retryPaths.delete(path);
   if (!best) return null;
 
   const rl = best.rateLimits;
