@@ -33,6 +33,11 @@ interface CacheEntry {
    *  append-only, so a grown file is scanned from here on, not from 0 — an
    *  active 500MB session costs its new turns per poll, not 500MB. */
   scannedTo: number;
+  /** The file this entry describes (a session id can resolve to another
+   *  project dir) and its inode (a replaced file is a new one): resuming at
+   *  `scannedTo` is only valid for the same file, appended to. */
+  path: string;
+  ino: number;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -138,8 +143,8 @@ async function resolveProjectDir(cwd: string): Promise<string | null> {
   }
 }
 
-const CHUNK = 256 * 1024;
-const TAIL_SIZE = 256 * 1024; // covers most renames
+const SCAN_CHUNK_BYTES = 256 * 1024;
+const TAIL_BYTES = 256 * 1024; // covers most renames
 const MARKER_BYTES = TITLE_MARKERS.map((m) => Buffer.from(m));
 
 /**
@@ -161,33 +166,49 @@ async function scanRange(
   // Pieces of the line whose END we haven't reached (kept as parts so a line
   // spanning many chunks is concatenated once, not once per chunk).
   let pending: Buffer[] = [];
-  let pendingLen = 0;
   while (offset < to) {
-    const len = Math.min(CHUNK, to - offset);
+    const len = Math.min(SCAN_CHUNK_BYTES, to - offset);
     const buf = Buffer.allocUnsafe(len);
     const { bytesRead } = await fh.read(buf, 0, len, offset);
     if (bytesRead === 0) break;
     const data = buf.subarray(0, bytesRead);
+    const chunkStart = offset;
     offset += bytesRead;
     const nl = data.lastIndexOf(0x0a);
     if (nl === -1) {
       pending.push(data);
-      pendingLen += data.length;
       continue;
     }
     const complete =
-      pendingLen > 0
+      pending.length > 0
         ? Buffer.concat([...pending, data.subarray(0, nl + 1)])
         : data.subarray(0, nl + 1);
     if (MARKER_BYTES.some((m) => complete.indexOf(m) !== -1)) {
       const t = scanForTitle(complete.toString("utf8"));
       if (t) title = t;
     }
-    end = offset - bytesRead + nl + 1;
-    pending = [data.subarray(nl + 1)];
-    pendingLen = data.length - nl - 1;
+    end = chunkStart + nl + 1;
+    pending = nl + 1 < data.length ? [data.subarray(nl + 1)] : [];
   }
   return { title, end };
+}
+
+/**
+ * Whether the open file is `prev`'s file with bytes appended: it grew (same
+ * size with a new mtime is a rewrite), and the byte before `scannedTo` is
+ * still the newline that ended the last line scanned. `prev` is only offered
+ * for the same path + inode (see getCachedTitle).
+ */
+async function appendedTo(
+  fh: import("node:fs/promises").FileHandle,
+  size: number,
+  prev: CacheEntry,
+): Promise<boolean> {
+  if (size <= prev.size) return false;
+  if (prev.scannedTo === 0) return true;
+  const b = Buffer.alloc(1);
+  const { bytesRead } = await fh.read(b, 0, 1, prev.scannedTo - 1);
+  return bytesRead === 1 && b[0] === 0x0a;
 }
 
 /**
@@ -201,12 +222,11 @@ async function extractTitle(
   prev: CacheEntry | undefined,
 ): Promise<{ title: string | null; scannedTo: number }> {
   if (size === 0) return { title: null, scannedTo: 0 };
-  // Grown = appended to; same size with a new mtime = rewritten → rescan.
-  if (prev && size > prev.size) {
+  if (prev && (await appendedTo(fh, size, prev))) {
     const r = await scanRange(fh, prev.scannedTo, size);
     return { title: r.title ?? prev.title, scannedTo: r.end };
   }
-  const tailFrom = Math.max(0, size - TAIL_SIZE);
+  const tailFrom = Math.max(0, size - TAIL_BYTES);
   if (tailFrom > 0) {
     const tail = await scanRange(fh, tailFrom, size);
     if (tail.title) return { title: tail.title, scannedTo: tail.end };
@@ -261,20 +281,32 @@ async function getCachedTitle(
   try {
     fh = await open(filePath, "r");
     const stats = await fh.stat();
-    const { mtimeMs, size } = stats;
+    const { mtimeMs, size, ino } = stats;
 
-    // Check cache — if mtime matches, return cached title
-    const cached = cache.get(sessionId);
+    // Only an entry for this very file counts (same path, same inode).
+    const entry = cache.get(sessionId);
+    const cached =
+      entry && entry.path === filePath && entry.ino === ino ? entry : undefined;
     if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
       return cached.title;
     }
 
-    // Parse the file (only its new bytes, if it just grew)
+    // Parse the file (only its new bytes, if it was just appended to)
     const { title, scannedTo } = await extractTitle(fh, size, cached);
-    cache.set(sessionId, { title, mtimeMs, size, scannedTo });
+    cache.set(sessionId, {
+      title,
+      mtimeMs,
+      size,
+      scannedTo,
+      path: filePath,
+      ino,
+    });
     return title;
-  } catch {
-    return null;
+  } catch (err) {
+    // An absent file has no title; a transient failure (EMFILE, a torn read)
+    // keeps the one we knew.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return cache.get(sessionId)?.title ?? null;
   } finally {
     await fh?.close();
   }

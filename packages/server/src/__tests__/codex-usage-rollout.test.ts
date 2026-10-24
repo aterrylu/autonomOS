@@ -135,6 +135,34 @@ function tcLine(timestamp: string, used: number, pad = ""): string {
   });
 }
 
+describe("codex rolloutScanner — discovery", () => {
+  beforeEach(() => {
+    mkdirSync(SESSIONS, { recursive: true });
+    clearRolloutCache();
+  });
+  afterEach(() => rmSync(TEST_DIR, { recursive: true, force: true }));
+
+  it("finds a long-lived thread's rollout in an OLD day behind many newer-day files (cold start)", async () => {
+    // A resumed thread keeps writing into its CREATION day's bucket.
+    writeRollout("2026/01/05/rollout-long-lived.jsonl", {
+      timestamp: "2026-07-20T12:00:00.000Z",
+      primaryPercent: 93,
+      mtimeSec: 9000,
+    });
+    for (let d = 1; d <= 20; d++) {
+      const day = String(d).padStart(2, "0");
+      writeRollout(`2026/07/${day}/rollout-short-${day}.jsonl`, {
+        timestamp: `2026-07-${day}T00:00:00.000Z`,
+        primaryPercent: d,
+        mtimeSec: 1000 + d,
+      });
+    }
+    const snap = await readFreshestRollout();
+    assert.equal(snap?.primary?.usedPercent, 93);
+    assert.equal(snap?.snapshotAt, "2026-07-20T12:00:00.000Z");
+  });
+});
+
 describe("codex rolloutScanner — backward tail read", () => {
   const FILE = join(TEST_DIR, "tail.jsonl");
   beforeEach(() => mkdirSync(TEST_DIR, { recursive: true }));

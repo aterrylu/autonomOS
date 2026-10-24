@@ -15,7 +15,9 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  renameSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -114,5 +116,33 @@ describe("titleCache incremental scan", () => {
     assert.equal(await title(id), undefined);
     writeFileSync(file, `${titleLine("Rewritten")}${turn(10)}`);
     assert.equal(await title(id), "Rewritten");
+  });
+
+  it("a file REPLACED by a larger one (new inode) is rescanned from the start", async () => {
+    const id = sid();
+    const file = join(dir, `${id}.jsonl`);
+    writeFileSync(file, turn(500).repeat(4));
+    assert.equal(await title(id), undefined);
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, `${titleLine("Replaced")}${turn(500).repeat(8)}`);
+    const before = statSync(file).ino;
+    renameSync(tmp, file);
+    assert.notEqual(statSync(file).ino, before); // precondition: a new inode
+    assert.equal(await title(id), "Replaced");
+  });
+
+  it("an in-place rewrite to a LARGER size is rescanned (the resume point no longer ends a line)", async () => {
+    const id = sid();
+    const file = join(dir, `${id}.jsonl`);
+    writeFileSync(file, turn(500).repeat(4));
+    assert.equal(await title(id), undefined);
+    const ino = statSync(file).ino;
+    // Same inode, different layout: the old resume offset lands mid-line.
+    writeFileSync(
+      file,
+      `${titleLine("Rewritten bigger")}${turn(777).repeat(8)}`,
+    );
+    assert.equal(statSync(file).ino, ino); // precondition: same inode
+    assert.equal(await title(id), "Rewritten bigger");
   });
 });

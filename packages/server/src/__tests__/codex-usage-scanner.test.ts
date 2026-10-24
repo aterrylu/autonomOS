@@ -224,28 +224,53 @@ describe("codex scanner — live failure reason + fallback backoff", () => {
     assert.match(net.error ?? "", /\(ECONNREFUSED\)/);
   });
 
-  it("re-reads rollouts on a doubling interval while live keeps failing; live success resets it", async () => {
+  it("a known file's new turns show every poll; a NEW file waits for a discovery walk, whose interval doubles until live answers", async () => {
     writeAuth(Math.floor(1_800_000_000_000 / 1000) + 86_400);
     const pct = async () =>
       (await getCodexUsage(status503)).primary?.usedPercent;
-    writeRollout(10);
-    assert.equal(await pct(), 10); // read #1 → next disk read in 60s
+    const newRollout = (day: string, used: number) => {
+      const dir = join(SESSIONS, "2026/07", day);
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `rollout-2026-07-${day}T00-00-00-x.jsonl`);
+      writeFileSync(
+        file,
+        `${JSON.stringify({ timestamp: `2026-07-${day}T00:00:00.000Z`, type: "event_msg", payload: { type: "token_count", rate_limits: { primary: { used_percent: used, window_minutes: 300 } } } })}\n`,
+      );
+      rolloutMtime += 1;
+      utimesSync(file, rolloutMtime, rolloutMtime);
+    };
+    writeRollout(10); // 2026-06-28, the known file
+    assert.equal(await pct(), 10); // t=0: full walk
 
-    writeRollout(20);
-    mock.timers.tick(61_000); // live cache AND the 60s fallback memo expired
-    assert.equal(await pct(), 20); // read #2 → next in 120s
+    newRollout("01", 20);
+    mock.timers.tick(61_000); // recent walk due (60s) → found; next in 120s
+    assert.equal(await pct(), 20);
 
-    writeRollout(30);
-    mock.timers.tick(61_000); // live retried, but the fallback memo holds
-    assert.equal(await pct(), 20, "disk scan backed off to 120s");
-    mock.timers.tick(61_000); // 122s since read #2
-    assert.equal(await pct(), 30); // read #3 → next in 240s
+    newRollout("02", 30);
+    mock.timers.tick(61_000); // t=122: no walk due (next at 181)
+    assert.equal(await pct(), 20, "a new file waits for the next walk");
+    mock.timers.tick(61_000); // t=183: walk → found; next in 240s
+    assert.equal(await pct(), 30);
 
-    // Live answers once: the backoff starts over at 60s.
+    newRollout("03", 40);
+    mock.timers.tick(61_000); // t=244: not due (next at 423)
+    assert.equal(await pct(), 30);
+    // Live answers once (t=305): discovery starts over, so the next outage
+    // walks at once — without the reset the next walk is due only at t=423.
     mock.timers.tick(61_000);
     assert.equal((await getCodexUsage(liveOk(77))).source, "live");
-    writeRollout(50);
-    mock.timers.tick(61_000);
-    assert.equal(await pct(), 50, "fresh outage reads disk immediately");
+    mock.timers.tick(61_000); // t=366
+    assert.equal(await pct(), 40, "a new outage discovers immediately");
+  });
+
+  it("an already-known file's new events are served on the next poll, walk or not", async () => {
+    writeAuth(Math.floor(1_800_000_000_000 / 1000) + 86_400);
+    writeRollout(10);
+    assert.equal((await getCodexUsage(status503)).primary?.usedPercent, 10);
+    for (const [i, used] of [11, 12, 13].entries()) {
+      writeRollout(used); // same file, a new turn
+      mock.timers.tick(61_000 * (i + 1));
+      assert.equal((await getCodexUsage(status503)).primary?.usedPercent, used);
+    }
   });
 });

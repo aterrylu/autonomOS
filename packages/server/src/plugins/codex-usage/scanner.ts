@@ -25,6 +25,7 @@ import {
   clearRolloutCache,
   type RolloutSnapshot,
   readFreshestRollout,
+  resetRolloutDiscovery,
 } from "./rolloutScanner.js";
 import type {
   CodexAccountInfo,
@@ -45,29 +46,23 @@ const CACHE_TTL_429 = 5 * 60_000;
 let cached: { data: CodexUsageData; expiresAt: number; fp: string } | null =
   null;
 
-/** The on-disk fallback snapshot, memoized with a TTL that DOUBLES on each
- *  consecutive read (60s → 10min) and resets when the live endpoint answers.
- *  The live endpoint is still retried every {@link CACHE_TTL}; only the disk
- *  scan backs off — a fallback that's needed for hours (expired token, no
- *  login, a blocked endpoint) re-reads rollouts a few times an hour, not 60. */
-const FALLBACK_TTL_MAX = 10 * 60_000;
-let fallback: {
-  snap: RolloutSnapshot | null;
-  expiresAt: number;
-  ttl: number;
-} | null = null;
+let lastGood: { data: CodexUsageData; fp: string } | null = null;
+
+/** The on-disk fallback snapshot, shared for {@link CACHE_TTL} by every path
+ *  that needs it (no login, expired token, live failed) and every tab. The
+ *  backoff for a long outage lives in rolloutScanner's file DISCOVERY; a read
+ *  itself is a few stats plus the tail of whichever file changed, so the
+ *  numbers stay a poll fresh for the usage queue. */
+let fallback: { snap: RolloutSnapshot | null; expiresAt: number } | null = null;
 let fallbackFlight: Promise<RolloutSnapshot | null> | null = null;
 
 async function fallbackSnapshot(): Promise<RolloutSnapshot | null> {
   if (fallback && fallback.expiresAt > Date.now()) return fallback.snap;
-  // One disk scan at a time, whichever path asked (no-auth, expired, live-failed).
+  // One disk read at a time, whichever path asked.
   fallbackFlight ??= (async () => {
     try {
-      const ttl = fallback
-        ? Math.min(fallback.ttl * 2, FALLBACK_TTL_MAX)
-        : CACHE_TTL;
       const snap = await readFreshestRollout();
-      fallback = { snap, expiresAt: Date.now() + ttl, ttl };
+      fallback = { snap, expiresAt: Date.now() + CACHE_TTL };
       return snap;
     } finally {
       fallbackFlight = null;
@@ -75,7 +70,6 @@ async function fallbackSnapshot(): Promise<RolloutSnapshot | null> {
   })();
   return fallbackFlight;
 }
-let lastGood: { data: CodexUsageData; fp: string } | null = null;
 
 /** Consecutive polls on which auth.json was unreadable/absent — see the
  * confirm-before-stamping debounce in {@link getCodexUsage}. */
@@ -264,7 +258,7 @@ async function fetchCodexUsageSnapshot(
     };
     lastGood = { data, fp };
     cached = { data, expiresAt: now + CACHE_TTL, fp };
-    fallback = null; // live is back: the next outage starts the backoff over
+    resetRolloutDiscovery(); // live is back: a new outage starts fresh
     return data;
   }
 
