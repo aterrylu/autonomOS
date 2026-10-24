@@ -137,3 +137,29 @@ describe("renderSystemdUserUnit: values reach the daemon literally", () => {
     }
   });
 });
+
+// An agent's runaway build must not stop the whole unit (ADR: OOM kills only
+// the agent). The CI job scripts/oom-isolation-ci.sh runs this unit for real.
+describe("renderSystemdUserUnit: OOM containment", () => {
+  const unit = renderSystemdUserUnit(opts);
+
+  it("OOMPolicy=continue: an OOM kill of one process doesn't stop the unit", () => {
+    assert.match(unit, /^OOMPolicy=continue$/m);
+  });
+
+  it("Delegate=yes, and the marker that tells the server it may use it", () => {
+    assert.match(unit, /^Delegate=yes$/m);
+    assert.match(unit, /^Environment="AUTONOMOS_CGROUP_DELEGATED=1"$/m);
+  });
+
+  it("no OOMScoreAdjust: a user unit can't lower it, and the server keeps its base", () => {
+    assert.doesNotMatch(unit, /OOMScoreAdjust/);
+  });
+});
+
+describe("renderLaunchAgentPlist: no OOM directives (macOS has none)", () => {
+  it("is unchanged by the OOM work", () => {
+    const plist = renderLaunchAgentPlist(opts);
+    assert.doesNotMatch(plist, /OOM|Delegate|AUTONOMOS_CGROUP_DELEGATED/);
+  });
+});

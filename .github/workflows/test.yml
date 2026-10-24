@@ -78,3 +78,21 @@ jobs:
         run: |
           bun --filter @autonomos/dashboard build
           packages/server/node_modules/.bin/tsx scripts/check-bundle-budget.ts
+
+      # An agent's runaway process must kill only that agent, never the server
+      # or the other agents: the REAL rendered unit and the REAL OomGuard under
+      # real user systemd, with the unit's memory capped so the OOM stays in
+      # it. It also proves it can fail: the pre-fix unit must be stopped
+      # whole, and without the guard the server must be the victim
+      # (scripts/oom-isolation-ci.sh). GitHub's runners don't start a user
+      # manager on their own; linger starts one.
+      - name: OOM isolation (real systemd)
+        timeout-minutes: 10
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          for _ in $(seq 1 30); do
+            systemctl --user show-environment >/dev/null 2>&1 && break
+            sleep 1
+          done
+          bash scripts/oom-isolation-ci.sh

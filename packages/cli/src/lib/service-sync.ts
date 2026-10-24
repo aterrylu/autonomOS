@@ -81,7 +81,13 @@ export type RecoveredUnitParams = {
 };
 
 /** Env keys the template itself renders (never "dropped"). */
-const TEMPLATE_ENV_KEYS = new Set(["HOME", "PATH", "AUTONOMOS_SERVICE_LABEL"]);
+const TEMPLATE_ENV_KEYS = new Set([
+  "HOME",
+  "PATH",
+  "AUTONOMOS_SERVICE_LABEL",
+  // The template's marker for Delegate=yes (ADR-156): ours, never "dropped".
+  "AUTONOMOS_CGROUP_DELEGATED",
+]);
 const IDENTITY = new Set<string>(IDENTITY_ENV_KEYS);
 
 /** Split a unit's env into what the template needs, carries, and drops. */
