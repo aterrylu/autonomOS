@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, mock } from "node:test";
 
 const TEST_DIR = join(tmpdir(), `autonomos-codex-scanner-${randomUUID()}`);
 process.env.CODEX_HOME = TEST_DIR;
@@ -38,6 +38,7 @@ function writeAuth(exp: number): void {
   );
 }
 
+let rolloutMtime = 1_000;
 function writeRollout(primaryPercent: number): void {
   const dir = join(SESSIONS, "2026/06/28");
   mkdirSync(dir, { recursive: true });
@@ -57,7 +58,11 @@ function writeRollout(primaryPercent: number): void {
       },
     },
   };
-  writeFileSync(join(dir, "rollout.jsonl"), `${JSON.stringify(event)}\n`);
+  const file = join(dir, "rollout-2026-06-28T00-00-00-test.jsonl");
+  writeFileSync(file, `${JSON.stringify(event)}\n`);
+  // A distinct mtime per write, so a rewrite is always a CHANGED file.
+  rolloutMtime += 1;
+  utimesSync(file, rolloutMtime, rolloutMtime);
 }
 
 const liveOk =
@@ -183,5 +188,64 @@ describe("codex scanner — getCodexUsage (two-tier, read-only)", () => {
     const data = await getCodexUsage();
     assert.equal(data.needsData, true);
     assert.equal(data.primary, null);
+  });
+});
+
+describe("codex scanner — live failure reason + fallback backoff", () => {
+  const status503: Fetcher = async () => ({
+    ok: false,
+    status: 503,
+    json: async () => ({}),
+  });
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    invalidateCodexUsageCache();
+    mock.timers.enable({ apis: ["Date"], now: 1_800_000_000_000 });
+  });
+  afterEach(() => {
+    mock.timers.reset();
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("names the cause: HTTP status, or the network error code", async () => {
+    writeAuth(Math.floor(1_800_000_000_000 / 1000) + 86_400);
+    writeRollout(40);
+    const http = await getCodexUsage(status503);
+    assert.equal(http.errorKind, "unavailable");
+    assert.match(http.error ?? "", /Live Codex usage is failing \(HTTP 503\)/);
+
+    invalidateCodexUsageCache();
+    const refused: Fetcher = async () => {
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: { code: "ECONNREFUSED" },
+      });
+    };
+    const net = await getCodexUsage(refused);
+    assert.match(net.error ?? "", /\(ECONNREFUSED\)/);
+  });
+
+  it("re-reads rollouts on a doubling interval while live keeps failing; live success resets it", async () => {
+    writeAuth(Math.floor(1_800_000_000_000 / 1000) + 86_400);
+    const pct = async () =>
+      (await getCodexUsage(status503)).primary?.usedPercent;
+    writeRollout(10);
+    assert.equal(await pct(), 10); // read #1 → next disk read in 60s
+
+    writeRollout(20);
+    mock.timers.tick(61_000); // live cache AND the 60s fallback memo expired
+    assert.equal(await pct(), 20); // read #2 → next in 120s
+
+    writeRollout(30);
+    mock.timers.tick(61_000); // live retried, but the fallback memo holds
+    assert.equal(await pct(), 20, "disk scan backed off to 120s");
+    mock.timers.tick(61_000); // 122s since read #2
+    assert.equal(await pct(), 30); // read #3 → next in 240s
+
+    // Live answers once: the backoff starts over at 60s.
+    mock.timers.tick(61_000);
+    assert.equal((await getCodexUsage(liveOk(77))).source, "live");
+    writeRollout(50);
+    mock.timers.tick(61_000);
+    assert.equal(await pct(), 50, "fresh outage reads disk immediately");
   });
 });

@@ -12,13 +12,19 @@
  * the newest `token_count` event across the most-recently-written rollouts. We
  * scan the top-N files by mtime and pick the event with the newest timestamp.
  *
+ * Everything here is bounded and async: rollouts reach hundreds of MB, and a
+ * whole-file sync read of the top files froze the server for seconds on every
+ * fallback poll. Only recent day directories are listed, only each file's
+ * tail is read (≤ MAX_TAIL_BYTES), and an unchanged file is not read again.
+ *
  * NOTE the rollout uses different field names than the live API
  * (`window_minutes` + `resets_at` vs `limit_window_seconds` + `reset_at`), so it
  * has its own window mapper here.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
+import { newestFiles, recentCodexRolloutPaths } from "../../sessionScanners.js";
 import { codexHome } from "./codexHome.js";
 import type { CodexCredits, CodexUsageWindow } from "./types.js";
 import { mapCredits, parseNumber } from "./usageApi.js";
@@ -27,6 +33,16 @@ import { mapCredits, parseNumber } from "./usageApi.js";
  *  limits are account-global, so a handful of the most-recent threads is plenty
  *  to find the latest event without walking the entire history. */
 const MAX_FILES_SCANNED = 8;
+
+/** Backward tail read: chunk size, and the most bytes read from one file.
+ *  Codex appends a token_count every turn, so the freshest one sits within the
+ *  last turn's worth of output; a file whose last 8MB holds none is treated as
+ *  having no event rather than read further (single rollouts reach 500MB). */
+export const TAIL_CHUNK_BYTES = 256 * 1024;
+export const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+
+/** Lines without this byte sequence are skipped before they are decoded. */
+const RATE_LIMITS = Buffer.from("rate_limits");
 
 /** Raw rollout window shape (snake_case, epoch-seconds reset). Numeric fields
  *  may arrive as numeric STRINGS, same as the live endpoint (see usageApi.ts
@@ -75,86 +91,138 @@ export function mapRolloutWindow(
   };
 }
 
-/** Recursively collect `*.jsonl` files under a dir with their mtimes. Bounded
- *  by the filesystem; errors on individual entries are skipped, not fatal. */
-function collectRolloutFiles(dir: string): { path: string; mtimeMs: number }[] {
-  const out: { path: string; mtimeMs: number }[] = [];
-  let entries: import("node:fs").Dirent[];
+type Found = { rateLimits: RolloutRateLimits; timestamp: string };
+
+/** The newest `token_count` carrying `rate_limits` in one complete JSONL line,
+ *  or null. The byte check runs before any decoding. */
+function parseRateLimitsLine(line: Buffer): Found | null {
+  if (line.indexOf(RATE_LIMITS) === -1) return null;
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    try {
-      if (entry.isDirectory()) {
-        out.push(...collectRolloutFiles(full));
-      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-        out.push({ path: full, mtimeMs: statSync(full).mtimeMs });
-      }
-    } catch {
-      /* transient stat/read race — skip this entry */
+    const parsed = JSON.parse(line.toString("utf8")) as {
+      timestamp?: string;
+      payload?: { type?: string; rate_limits?: RolloutRateLimits | null };
+    };
+    const payload = parsed.payload;
+    // Require a real timestamp — the freshest-event selection compares them,
+    // and a timestamp-less event would otherwise render as a "1970" age.
+    if (
+      payload?.type === "token_count" &&
+      payload.rate_limits &&
+      typeof parsed.timestamp === "string"
+    ) {
+      return { rateLimits: payload.rate_limits, timestamp: parsed.timestamp };
     }
+  } catch {
+    /* not JSON (or a line still being written) — keep scanning backwards */
   }
-  return out;
+  return null;
 }
 
 /**
- * Find the last `token_count` event carrying `rate_limits` in one rollout file.
- * Scans lines from the END (the freshest event is last) and returns the first
- * match with its timestamp, or null. Malformed lines are skipped.
+ * Find the last `token_count` event carrying `rate_limits` in one rollout file,
+ * reading BACKWARD from EOF in {@link TAIL_CHUNK_BYTES} chunks and giving up
+ * after {@link MAX_TAIL_BYTES}. Lines are split on the raw `\n` byte, so a
+ * chunk boundary inside a multi-byte character can't corrupt a line, and a
+ * line longer than a chunk is assembled from its pieces only once complete.
  */
-function lastRateLimitsInFile(
+export async function lastRateLimitsInFile(
   path: string,
-): { rateLimits: RolloutRateLimits; timestamp: string } | null {
-  let content: string;
+  size: number,
+): Promise<Found | null> {
+  const fh = await open(path, "r");
   try {
-    content = readFileSync(path, "utf-8");
-  } catch {
-    return null;
-  }
-  const lines = content.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line || !line.includes("rate_limits")) continue;
-    try {
-      const parsed = JSON.parse(line) as {
-        timestamp?: string;
-        payload?: { type?: string; rate_limits?: RolloutRateLimits | null };
-      };
-      const payload = parsed.payload;
-      // Require a real timestamp — the freshest-event selection compares them,
-      // and a timestamp-less event would otherwise render as a "1970" age.
-      if (
-        payload?.type === "token_count" &&
-        payload.rate_limits &&
-        typeof parsed.timestamp === "string"
-      ) {
-        return { rateLimits: payload.rate_limits, timestamp: parsed.timestamp };
+    let pos = size;
+    // The pieces (in file order) of the line whose START we haven't reached.
+    let partial: Buffer[] = [];
+    while (pos > 0 && size - pos < MAX_TAIL_BYTES) {
+      const len = Math.min(
+        TAIL_CHUNK_BYTES,
+        pos,
+        MAX_TAIL_BYTES - (size - pos),
+      );
+      pos -= len;
+      const chunk = Buffer.allocUnsafe(len);
+      const { bytesRead } = await fh.read(chunk, 0, len, pos);
+      if (bytesRead < len) return null; // truncated under us — next poll retries
+      const last = chunk.lastIndexOf(0x0a);
+      if (last === -1) {
+        partial.unshift(chunk);
+        continue;
       }
-    } catch {
-      /* not JSON / not the shape we want — keep scanning backwards */
+      // The line after this chunk's last newline completes the partial one.
+      const found = parseRateLimitsLine(
+        Buffer.concat([chunk.subarray(last + 1), ...partial]),
+      );
+      if (found) return found;
+      let end = last;
+      // NB: lastIndexOf with a negative offset counts from the END — guard it.
+      while (end > 0) {
+        const nl = chunk.lastIndexOf(0x0a, end - 1);
+        if (nl === -1) break;
+        const hit = parseRateLimitsLine(chunk.subarray(nl + 1, end));
+        if (hit) return hit;
+        end = nl;
+      }
+      partial = [chunk.subarray(0, end)];
     }
+    // Reached the start of the file: what's left is its first line.
+    return pos === 0 ? parseRateLimitsLine(Buffer.concat(partial)) : null;
+  } finally {
+    await fh.close();
   }
-  return null;
+}
+
+/** Per-file result, valid while size and mtime are unchanged — an idle
+ *  rollout is read once, not once per poll. Pruned to the current top files. */
+const fileCache = new Map<
+  string,
+  { size: number; mtimeMs: number; found: Found | null }
+>();
+
+/** Forget every cached per-file result (tests; usage-cache invalidation). */
+export function clearRolloutCache(): void {
+  fileCache.clear();
 }
 
 /**
  * Read the freshest account-global rate-limit snapshot from disk, or null when
  * no rollout with rate limits exists yet. Read-only; touches only rollout files.
  */
-export function readFreshestRollout(
+export async function readFreshestRollout(
   env: NodeJS.ProcessEnv = process.env,
-): RolloutSnapshot | null {
-  const dir = join(codexHome(env), "sessions");
-  const files = collectRolloutFiles(dir)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, MAX_FILES_SCANNED);
+): Promise<RolloutSnapshot | null> {
+  let candidates: string[];
+  try {
+    // 2× headroom: a thread's day bucket is its CREATION date, so a long-lived
+    // thread can be newer by mtime than files in a newer day.
+    candidates = await recentCodexRolloutPaths(
+      join(codexHome(env), "sessions"),
+      MAX_FILES_SCANNED * 2,
+    );
+  } catch {
+    return null; // sessions dir unreadable: no fallback, same as "none yet"
+  }
+  // Re-check files that were in the top set last time, wherever they live.
+  for (const path of fileCache.keys())
+    if (!candidates.includes(path)) candidates.push(path);
+  const files = await newestFiles(candidates, MAX_FILES_SCANNED);
 
-  let best: { rateLimits: RolloutRateLimits; timestamp: string } | null = null;
-  for (const { path } of files) {
-    const found = lastRateLimitsInFile(path);
+  let best: Found | null = null;
+  const keep = new Set<string>();
+  for (const { path, size, mtimeMs } of files) {
+    keep.add(path);
+    const hit = fileCache.get(path);
+    let found: Found | null;
+    if (hit && hit.size === size && hit.mtimeMs === mtimeMs) {
+      found = hit.found;
+    } else {
+      try {
+        found = await lastRateLimitsInFile(path, size);
+      } catch {
+        continue; // vanished / unreadable: not cached, retried next poll
+      }
+      fileCache.set(path, { size, mtimeMs, found });
+    }
     // Compare parsed instants, not raw strings — robust to any timestamp format
     // drift (a lexical compare only works while every event is same-format UTC).
     if (
@@ -164,6 +232,8 @@ export function readFreshestRollout(
       best = found;
     }
   }
+  for (const path of fileCache.keys())
+    if (!keep.has(path)) fileCache.delete(path);
   if (!best) return null;
 
   const rl = best.rateLimits;

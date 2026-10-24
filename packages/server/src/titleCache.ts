@@ -29,9 +29,16 @@ interface CacheEntry {
   /** Matched with mtime: on a coarse-timestamp filesystem an append can land
    *  within the same mtime tick, but never without growing the file. */
   size: number;
+  /** Offset just past the last COMPLETE line scanned. Session files are
+   *  append-only, so a grown file is scanned from here on, not from 0 — an
+   *  active 500MB session costs its new turns per poll, not 500MB. */
+  scannedTo: number;
 }
 
 const cache = new Map<string, CacheEntry>();
+
+/** Session files read at once by {@link batchGetTitles}. */
+const TITLE_READ_CONCURRENCY = 8;
 
 /** Cache for resolveProjectDir — avoids repeated stat() for the same cwd.
  *  Negative results (null) expire after 5 minutes so new projects are discovered. */
@@ -131,52 +138,81 @@ async function resolveProjectDir(cwd: string): Promise<string | null> {
   }
 }
 
-/**
- * Extract the last custom-title from a JSONL file.
- *
- * Strategy: read tail first (most renames are recent), then head,
- * then stream the middle gap for very large files. Uses a pre-opened
- * file handle and known size to avoid redundant stat() calls.
- */
-const TAIL_SIZE = 256 * 1024; // 256KB — covers most renames
+const CHUNK = 256 * 1024;
+const TAIL_SIZE = 256 * 1024; // covers most renames
+const MARKER_BYTES = TITLE_MARKERS.map((m) => Buffer.from(m));
 
-function containsTitleMarker(s: string): boolean {
-  return TITLE_MARKERS.some((m) => s.includes(m));
+/**
+ * Scan the complete lines of [from, to) forward for the LAST custom title,
+ * returning it and the offset just past the last newline seen (`end`; equals
+ * `from` when no line completed). A chunk is decoded only if it holds a title
+ * marker — most sessions are untitled, and decoding every byte of a large
+ * file was the cost. A trailing partial line (still being written) is left
+ * for the next scan, which resumes at `end`.
+ */
+async function scanRange(
+  fh: import("node:fs/promises").FileHandle,
+  from: number,
+  to: number,
+): Promise<{ title: string | null; end: number }> {
+  let title: string | null = null;
+  let end = from;
+  let offset = from;
+  // Pieces of the line whose END we haven't reached (kept as parts so a line
+  // spanning many chunks is concatenated once, not once per chunk).
+  let pending: Buffer[] = [];
+  let pendingLen = 0;
+  while (offset < to) {
+    const len = Math.min(CHUNK, to - offset);
+    const buf = Buffer.allocUnsafe(len);
+    const { bytesRead } = await fh.read(buf, 0, len, offset);
+    if (bytesRead === 0) break;
+    const data = buf.subarray(0, bytesRead);
+    offset += bytesRead;
+    const nl = data.lastIndexOf(0x0a);
+    if (nl === -1) {
+      pending.push(data);
+      pendingLen += data.length;
+      continue;
+    }
+    const complete =
+      pendingLen > 0
+        ? Buffer.concat([...pending, data.subarray(0, nl + 1)])
+        : data.subarray(0, nl + 1);
+    if (MARKER_BYTES.some((m) => complete.indexOf(m) !== -1)) {
+      const t = scanForTitle(complete.toString("utf8"));
+      if (t) title = t;
+    }
+    end = offset - bytesRead + nl + 1;
+    pending = [data.subarray(nl + 1)];
+    pendingLen = data.length - nl - 1;
+  }
+  return { title, end };
 }
 
+/**
+ * The last custom title in a session file, reusing `prev` when the file only
+ * grew since it was scanned. Cold: the tail first (a recent rename ends the
+ * search), else the whole file once — chunked, async, marker-gated.
+ */
 async function extractTitle(
   fh: import("node:fs/promises").FileHandle,
   size: number,
-): Promise<string | null> {
-  if (size === 0) return null;
-
-  // Phase 1: scan tail (fast path — covers recent renames)
-  const tailOffset = Math.max(0, size - TAIL_SIZE);
-  const readSize = Math.min(size, TAIL_SIZE);
-  const buf = Buffer.allocUnsafe(readSize);
-  const { bytesRead } = await fh.read(buf, 0, readSize, tailOffset);
-  const tail = buf.toString("utf8", 0, bytesRead);
-
-  const tailTitle = scanForTitle(tail);
-  if (tailTitle) return tailTitle;
-
-  // Phase 2: if file is larger than tail, scan head
-  if (tailOffset > 0) {
-    const headSize = Math.min(size, TAIL_SIZE);
-    const headBuf = Buffer.allocUnsafe(headSize);
-    const headResult = await fh.read(headBuf, 0, headSize, 0);
-    const head = headBuf.toString("utf8", 0, headResult.bytesRead);
-    const headTitle = scanForTitle(head);
-    if (headTitle) return headTitle;
+  prev: CacheEntry | undefined,
+): Promise<{ title: string | null; scannedTo: number }> {
+  if (size === 0) return { title: null, scannedTo: 0 };
+  // Grown = appended to; same size with a new mtime = rewritten → rescan.
+  if (prev && size > prev.size) {
+    const r = await scanRange(fh, prev.scannedTo, size);
+    return { title: r.title ?? prev.title, scannedTo: r.end };
   }
-
-  // Phase 3: for files > 512KB, head+tail leave a gap in the middle.
-  // Stream only the unscanned region [TAIL_SIZE, size - TAIL_SIZE].
-  if (size > TAIL_SIZE * 2) {
-    return await streamScanForTitle(fh, TAIL_SIZE, size - TAIL_SIZE);
+  const tailFrom = Math.max(0, size - TAIL_SIZE);
+  if (tailFrom > 0) {
+    const tail = await scanRange(fh, tailFrom, size);
+    if (tail.title) return { title: tail.title, scannedTo: tail.end };
   }
-
-  return null;
+  const all = await scanRange(fh, 0, size);
+  return { title: all.title, scannedTo: all.end };
 }
 
 /**
@@ -212,42 +248,6 @@ function scanForTitle(content: string): string | null {
 }
 
 /**
- * Streaming scan for the middle gap of very large files.
- * Reads in chunks, only parses chunks containing title markers.
- * Forward iteration + per-chunk backward scan = globally last title.
- */
-async function streamScanForTitle(
-  fh: import("node:fs/promises").FileHandle,
-  startOffset: number,
-  endOffset: number,
-): Promise<string | null> {
-  const CHUNK = 256 * 1024;
-  let lastTitle: string | null = null;
-  let offset = startOffset;
-  let leftover = "";
-
-  while (offset < endOffset) {
-    const readSize = Math.min(CHUNK, endOffset - offset);
-    const buf = Buffer.allocUnsafe(readSize);
-    const { bytesRead } = await fh.read(buf, 0, readSize, offset);
-    if (bytesRead === 0) break;
-
-    const chunk = leftover + buf.toString("utf8", 0, bytesRead);
-
-    if (containsTitleMarker(chunk)) {
-      const title = scanForTitle(chunk);
-      if (title) lastTitle = title;
-    }
-
-    const lastNewline = chunk.lastIndexOf("\n");
-    leftover = lastNewline >= 0 ? chunk.slice(lastNewline + 1) : chunk;
-    offset += bytesRead;
-  }
-
-  return lastTitle;
-}
-
-/**
  * Look up the custom title for a session, using mtime-based caching.
  * Uses a single file handle for both stat and read to avoid redundant syscalls.
  */
@@ -269,9 +269,9 @@ async function getCachedTitle(
       return cached.title;
     }
 
-    // Parse the file using the already-open handle
-    const title = await extractTitle(fh, size);
-    cache.set(sessionId, { title, mtimeMs, size });
+    // Parse the file (only its new bytes, if it just grew)
+    const { title, scannedTo } = await extractTitle(fh, size, cached);
+    cache.set(sessionId, { title, mtimeMs, size, scannedTo });
     return title;
   } catch {
     return null;
@@ -302,22 +302,29 @@ export async function batchGetTitles(
     list.push(sessionId);
   }
 
-  // Resolve each unique cwd once, then look up sessions concurrently
-  const lookups: Promise<void>[] = [];
-  for (const [cwd, sessionIds] of byCwd) {
-    lookups.push(
-      (async () => {
-        const projectDir = await resolveProjectDir(cwd);
-        if (!projectDir) return;
-        await Promise.all(
-          sessionIds.map(async (sessionId) => {
-            const title = await getCachedTitle(sessionId, projectDir);
-            if (title) results.set(sessionId, title);
-          }),
-        );
-      })(),
-    );
-  }
+  // Resolve each unique cwd once, then read session files through a small
+  // pool: an unbounded Promise.all opened every session file at once on a
+  // cold start (thousands of handles + a 256KB buffer each).
+  const jobs: Array<{ sessionId: string; projectDir: string }> = [];
+  await Promise.all(
+    [...byCwd].map(async ([cwd, sessionIds]) => {
+      const projectDir = await resolveProjectDir(cwd);
+      if (projectDir)
+        for (const sessionId of sessionIds)
+          jobs.push({ sessionId, projectDir });
+    }),
+  );
+  let next = 0;
+  const lookups = Array.from(
+    { length: Math.min(TITLE_READ_CONCURRENCY, jobs.length) },
+    async () => {
+      while (next < jobs.length) {
+        const { sessionId, projectDir } = jobs[next++];
+        const title = await getCachedTitle(sessionId, projectDir);
+        if (title) results.set(sessionId, title);
+      }
+    },
+  );
   await Promise.all(lookups);
 
   // Prune cache entries for sessions no longer in the batch
