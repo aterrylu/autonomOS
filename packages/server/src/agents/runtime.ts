@@ -1914,7 +1914,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // Best-effort and never throws. The daemon is the server's child, not the
   // PTY's, and runs the agent's commands: it's the agent's too.
   oomGuard.attach(persisted.id, pty.pid, { leader: true });
-  if (sidecar) oomGuard.attach(persisted.id, sidecar.proc.pid);
+  if (sidecar) {
+    oomGuard.attach(persisted.id, sidecar.proc.pid, { essential: true });
+  }
 
   // Codex agents have no hook relay — drive their dashboard status from the
   // app-server daemon's event stream instead (busy/idle). Eager from spawn so

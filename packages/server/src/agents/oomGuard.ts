@@ -85,10 +85,13 @@ export type OomVerdict =
 type AgentEntry = {
   dir: string | null;
   seenKills: number;
-  /** The agent's main process (its PTY child). The poll leaves an agent
-   *  whose leader is gone to the exit verdict, so one kill isn't reported
-   *  twice, differently (the exit handler runs after the timer under load). */
-  leader: number | null;
+  /** Processes the agent can't survive losing: its main process (the PTY
+   *  child) and, for Codex, the app-server daemon its TUI depends on. The
+   *  poll leaves an agent with any of them gone to the exit verdict, so one
+   *  kill isn't reported twice, differently ("still running", then a plain
+   *  crash): the exit handler can run after the timer, and a TUI can take
+   *  more than a poll cycle to notice its daemon died (nox, #534). */
+  essential: number[];
 };
 
 export type PollResult = {
@@ -191,7 +194,7 @@ export class OomGuard {
   attach(
     agentId: string,
     pid: number | undefined,
-    opts: { leader?: boolean } = {},
+    opts: { leader?: boolean; essential?: boolean } = {},
   ): void {
     if (!this.initialized || this.platform !== "linux" || !pid || pid <= 0) {
       return;
@@ -216,10 +219,14 @@ export class OomGuard {
     }
     let entry = this.agents.get(agentId);
     if (!entry) {
-      entry = { dir: null, seenKills: 0, leader: null };
+      entry = { dir: null, seenKills: 0, essential: [] };
       this.agents.set(agentId, entry);
     }
-    if (opts.leader) entry.leader = pid;
+    // A new leader is a new life: its essential set starts over.
+    if (opts.leader) entry.essential = [pid];
+    else if (opts.essential && !entry.essential.includes(pid)) {
+      entry.essential.push(pid);
+    }
     if (!this.unitDir) return;
 
     const dir = join(this.unitDir, `agent-${safeId(agentId)}`);
@@ -302,7 +309,7 @@ export class OomGuard {
         if (!entry.dir || !isLive(agentId)) continue;
         // Its main process is gone (the exit handler hasn't run yet): the
         // exit verdict reports it, once.
-        if (entry.leader !== null && !this.processAlive(entry.leader)) continue;
+        if (entry.essential.some((p) => !this.processAlive(p))) continue;
         const kills = this.takeNewKills(entry);
         if (kills > 0) perAgent.push({ agentId, kills });
       }

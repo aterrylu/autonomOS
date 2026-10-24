@@ -296,6 +296,25 @@ describe("OomGuard: telling the operator which agent", () => {
     assert.equal(g.exitVerdict("a", 9), "oom");
   });
 
+  it("a Codex daemon killed while its TUI lives on: the poll leaves it to the exit verdict, which says 'oom' (nox, #534)", () => {
+    const { g, bump } = attached(); // leader 500 = the TUI
+    addProc(501, SELF); // the daemon: the server's child, not the TUI's
+    g.attach("a", 501, { essential: true });
+    bump(1);
+    // The kernel killed the daemon; the TUI hasn't noticed yet (alive).
+    writeFileSync(
+      join(proc, "501", "stat"),
+      `501 (codex) Z ${SELF} 501 501 0 -1`,
+    );
+    assert.deepEqual(
+      g.pollKills(() => true).perAgent,
+      [],
+      "not 'still running'",
+    );
+    // Later the TUI exits 1 (lost its daemon): the kill is still there to claim.
+    assert.equal(g.exitVerdict("a", undefined, 1), "oom");
+  });
+
   it("a build an agent survives is reported once, for that agent only", () => {
     const { g } = guard();
     g.init();
