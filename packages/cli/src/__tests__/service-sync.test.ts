@@ -680,3 +680,37 @@ describe("sync side effects the review asked to pin", () => {
     assert.equal(readFileSync(second.backupFile ?? "", "utf-8"), again);
   });
 });
+
+describe("migration: an existing pre-OOM-fix unit heals on update", () => {
+  it("is drift, and the healed unit has the OOM directives with params kept", () => {
+    // The template as it was before the fix: no OOM comment block, no
+    // OOMPolicy/Delegate, no delegation marker.
+    const preFix = renderSystemdUserUnit(params)
+      .replace(/^# An agent's runaway[\s\S]*?^Delegate=yes\n/m, "")
+      .replace(/^Environment="AUTONOMOS_CGROUP_DELEGATED=1"\n/m, "");
+    assert.doesNotMatch(preFix, /OOMPolicy/);
+    const plan = planUnitSync("linux", preFix);
+    assert.ok(plan.kind === "drift", plan.kind);
+    assert.match(plan.fresh, /^OOMPolicy=continue$/m);
+    assert.match(plan.fresh, /^Delegate=yes$/m);
+    assert.deepEqual(plan.params.programArgs, params.programArgs);
+    assert.equal(plan.fresh, renderSystemdUserUnit(params));
+  });
+});
+
+describe("the template's own delegation marker is never a 'dropped' setting", () => {
+  it("a re-render of a hand-edited unit names only the operator's keys", () => {
+    const unit = renderSystemdUserUnit(params).replace(
+      /^(StandardError=.*)$/m,
+      "$1\nEnvironment=HTTP_PROXY=http://p:3128",
+    );
+    assert.match(
+      unit,
+      /AUTONOMOS_CGROUP_DELEGATED/,
+      "precondition: the marker is rendered",
+    );
+    const plan = planUnitSync("linux", unit);
+    assert.ok(plan.kind === "drift");
+    assert.deepEqual(plan.params.droppedEnvKeys, ["HTTP_PROXY"]);
+  });
+});

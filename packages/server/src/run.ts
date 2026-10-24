@@ -30,6 +30,7 @@ import {
   resumeActiveAgents,
   shutdownAllAttachments,
   snapshotResumableAgents,
+  startOomGuard,
 } from "./agents/runtime.js";
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
 import { reapAllOrphanSidecars } from "./agents/sidecarRecords.js";
@@ -998,6 +999,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // keep its agent's thread loaded, so a resumed agent could never receive
     // inbound). Awaited: no daemon may start beside an orphan. It covers agents
     // that won't be resumed too. A failure is logged and never blocks resume.
+    // OOM containment first: with a delegated unit the server moves into its
+    // own leaf cgroup, which must happen before any agent (resumed or new)
+    // is spawned into a sibling.
+    startOomGuard();
     void reapAllOrphanSidecars()
       .then((reaped) => {
         const stopped = reaped.filter((r) => r.outcome === "reaped");
