@@ -4,27 +4,23 @@
 - **Decided by:** Performance@autonomOS (agent, performance owner), on a bugfix brief from TeamLead@autonomOS
 - **Context:** On a Linux server with large session dirs, the whole server froze for ~10s about once a minute: dashboard sockets dropped, CPU went from ~6% to ~190%, and RSS from ~0.6GB to ~2.8GB. The cause was the Codex usage FALLBACK (used when the live usage endpoint fails). It `readFileSync`'d and split the 8 newest rollout files WHOLE on the event loop, after a sync walk and stat of every file under `~/.codex/sessions`. Single rollouts there are 400-540MB. Two of its three call paths (no login, expired token) weren't cached at all, so every poll repeated the scan. An audit of the other periodic scanners found one more unbounded cost: the Projects title lookup re-streamed an active untitled Claude Code session from byte 0 on every poll (its mtime+size cache misses on every append), with one open file per session at once.
 - **Decision:** Every periodic scan of a runtime's session storage is bounded in what it lists, reads and holds, and is async. Concretely:
-  - **Codex fallback:**
-    - Lists only recent day directories (whole days until 2× the files it needs; files that were in the top set last time are re-checked wherever they live).
-    - Reads each file BACKWARD from EOF in 256KB chunks, capped at 8MB. Past the cap, the file counts as having no event.
-    - Splits on the raw `\n` byte and skips lines without `rate_limits` before decoding them.
-    - Caches each file's result by size and mtime.
-    - The disk snapshot is memoized with a TTL that doubles while the fallback stays in use (60s up to 10min) and resets when live answers. Live is still retried every 60s.
-    - A failing live call names its cause ("Live Codex usage is failing (HTTP 503)").
-  - **Title lookup:**
-    - Incremental over append-only files: a grown file is scanned from the last complete line seen; a rewrite (same or smaller size) is rescanned.
-    - Gated on the marker bytes before decoding.
+  - **Codex fallback, freshness.** Every read re-stats the current top 8 rollouts. Each is read BACKWARD from EOF in 256KB chunks, capped at 8MB (past the cap = no event, logged once). Lines are split on the raw `\n` byte, and lines without `rate_limits` are skipped before decoding. A per-file size+mtime cache means only changed files are read.
+  - **Codex fallback, discovery.** Finding the top files backs off. A full walk (readdir + stat, no reads) runs on the first read and every 30 min, because a thread's day bucket is its CREATION date and a resumed agent writes into an old day. In between, only recent day dirs are listed, on an interval doubling from 60s to 10min while the fallback stays in use, reset when live answers.
+  - **Codex fallback, shared state.** All fallback paths share one 60s memo and one in-flight read. A failing live call names its cause.
+  - **Title lookup.**
+    - Incremental over append-only files: resume at the last complete line seen, only for the same path + inode with the newline at the resume point intact.
+    - Marker-gated decoding.
     - At most 8 files read at once.
-  - **Guard:** `large-session-dirs-scan.test.ts` builds ~150MB generated rollouts and a ~150MB session. It runs the real usage poll and the real Projects route, and asserts event-loop delay (worst and p99) and peak RSS growth. It runs per-PR: about 1s and under 200MB locally. It goes RED on the whole-file reader.
+  - **Guard.** `large-session-dirs-scan.test.ts` builds ~150MB generated rollouts and a ~150MB session. It runs the real usage poll and the real Projects route, and asserts event-loop delay (worst and p99) and peak RSS growth. It runs per-PR (about 1s) and goes RED on the whole-file reader.
 - **Rationale:**
   - The fallback only needs the newest event, which Codex appends at the tail every turn, so a tail read is complete for its purpose. 8MB is far more than a turn's output, and treating "nothing in the last 8MB" as "no event" costs at most a missing last-known number, which the panel already handles.
-  - The backoff targets the disk scan, not the live retry. A fallback needed for hours (expired login, a blocked endpoint) then costs a few scans an hour, while live recovery is still noticed within a minute.
+  - The backoff targets DISCOVERY, the walk whose cost grows with history size. It does not apply to freshness, which costs a few stats plus one tail chunk. The usage queue acts on these numbers, so they must stay a poll fresh. It does not apply to the live retry either, so recovery is noticed within a minute.
   - The title lookup must stay COMPLETE: a rename can sit anywhere in a long session, and the SDK's 64KB windows are why this cache exists. So it is made incremental rather than capped.
   - A guard on real-sized fixtures is the only test that reproduces the failure: small fixtures pass on any reader.
 - **Alternatives considered:**
   - (1) Only make the reads async (`fs/promises.readFile`). Rejected: it moves the stall to libuv but still allocates and decodes the whole file, so the RSS spike (the ~2GB jump) and the CPU stay.
   - (2) Cap the title scan at head + tail windows. Rejected: it silently loses titles from mid-session renames.
-  - (3) Back off the live endpoint too. Rejected: it would hold stale numbers for up to 10 minutes after the endpoint recovers, while the live call itself is cheap.
+  - (3) Back off the live endpoint, or the whole disk snapshot. Rejected: either holds numbers up to 10 minutes stale (the first draft of this PR did the latter; review caught it), while a fresh read is cheap once files are cached.
   - (4) A nightly-only guard. Unnecessary: the fixture costs about a second.
   - (5) Fix the SDK's `listSessions()` walk (64KB head + tail per file, unbounded concurrency). Out of scope for a vendored dependency; tracked as follow-up.
 - **Source:** Performance@autonomOS session, urgent bugfix brief from TeamLead@autonomOS (agent channel, 2026-10-24); PR "fix(perf): bound the Codex usage fallback and the Projects title scan on large session dirs".
