@@ -5,7 +5,7 @@
 // unit, so the server and every agent die together. The unit template now
 // says OOMPolicy=continue (service-templates.ts); this module is the
 // per-process half, so the right process is the one that dies and the
-// operator is told which agent it belonged to (ADR-155).
+// operator is told which agent it belonged to (ADR-156).
 //
 // Two layers on Linux, each measured on systemd 255 / cgroup v2:
 //

@@ -500,7 +500,7 @@ export function resumeSafetyNetArmed(opts: {
  * whose crash behavior is unchanged). Pure + exported so the decision is
  * unit-tested without driving a real PTY onExit.
  */
-// ── OOM kills (oomGuard.ts, ADR-155) ────────────────────────────────────
+// ── OOM kills (oomGuard.ts, ADR-156) ────────────────────────────────────
 
 /** At most one automatic resume per agent in this window: a box that keeps
  *  running out of memory must not loop an agent through kill → resume. */

@@ -1,4 +1,4 @@
-## ADR-155: An agent's out-of-memory kill stays in that agent
+## ADR-156: An agent's out-of-memory kill stays in that agent
 
 - **Date:** 2026-10-24
 - **Decided by:** The release engineer agent (ReleaseRollout), as an urgent bugfix TeamLead assigned with the goal and the options to weigh. Merges on the bugfix rule (nox + CI + a mutation-proven guard).
@@ -20,6 +20,6 @@
   - `OOMPolicy=continue` alone. It's what an operator would try first by hand, and it doesn't stop the kernel picking the server (measured) or oomd taking the whole unit.
   - Each agent in its own transient scope (`systemd-run --user --scope`). Scopes are siblings of the unit, not children, so stopping or restarting the service would leave agents running; ADR-105 measured that a transient unit survives a service restart. That breaks restart, update and the resume sweep.
   - `memory.oom.group=1` on agent cgroups. It would kill the whole agent, Claude included, when only its build needed to go; without it the kernel kills the biggest process, usually the build, and the agent carries on.
-  - Marking the server's leaf `user.oomd_omit`. systemd-oomd honors that xattr on a user-owned cgroup (v255 `oomd-util.c`), but Node has no xattr API and `setfattr` isn't installed by default (measured). Left as a residual: oomd could still pick the server leaf if the server is the top consumer.
+  - Marking the server's leaf `user.oomd_omit`. systemd-oomd honors that xattr on a user-owned cgroup (v255 `oomd-util.c`), but Node has no xattr API and `setfattr` isn't installed by default (measured). Left as a residual: oomd could still pick the server leaf if the server is the top consumer. That is made unlikely by bounding the server's own memory: #533 (bounded session scans) removes the roughly 2.5 GB scanner spikes that could make the server the top consumer.
   - `OOMScoreAdjust=` in the unit to lower the server. A user unit can't go below its inherited score without privilege.
 - **Source:** TeamLead's bugfix assignment on the agent channel (2026-10-24). Measured in a ReleaseRollout Claude Code session on a Linux test machine (systemd 255, cgroup v2) with throwaway user units, never the live service. The CI guard `scripts/oom-isolation-ci.sh` runs the real rendered unit under real user systemd on every `check` run, and also proves that the pre-fix unit is stopped whole and that without the guard the server is the victim.

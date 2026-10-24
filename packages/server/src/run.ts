@@ -929,7 +929,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     //      the window is closed — the loop cannot run a handler between them.
     sweepAgentTokenFiles();
     sweepStaleStatuslineCaches();
-    // OOM containment (ADR-155), here for the same reason: with a delegated
+    // OOM containment (ADR-156), here for the same reason: with a delegated
     // unit the server moves into its own leaf cgroup, and an agent spawned
     // before that (POST /api/agents is live from the bind) would be moved
     // into the server's leaf with it. Synchronous; no await before it.

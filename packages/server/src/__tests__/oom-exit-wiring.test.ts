@@ -1,5 +1,5 @@
 /**
- * Runtime wiring of the OOM work (agents/oomGuard.ts + runtime.ts, ADR-155):
+ * Runtime wiring of the OOM work (agents/oomGuard.ts + runtime.ts, ADR-156):
  *  - an agent SIGKILLed from OUTSIDE autonomOS (the OOM killer, systemd-oomd,
  *    macOS jetsam) is named in the bell and resumed once, in the same record;
  *    a second kill inside the window is reported and left down;
