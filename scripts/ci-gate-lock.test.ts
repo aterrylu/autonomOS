@@ -33,6 +33,12 @@ const hasLsof = (() => {
   }
 })();
 
+// Per test, not just per file: a hang must FAIL that test by name. A file-level
+// timeout kills the file before it reports, so CI said only "ci-gate-lock.test.ts
+// timed out after 300000ms" with no hint which test hung (twice, 10-08).
+// Generous: the slowest real test (hung holder) needs ~2s bound + ≤10s grace.
+const PER_TEST_MS = 60_000;
+
 /** Every gate still running, so after() can reap stragglers (a failed or
  *  mutated run must not leak lock holders). */
 const live = new Set<number>();
@@ -113,21 +119,21 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("passes the command's output and exit code through", async () => {
+  it("passes the command's output and exit code through", { timeout: PER_TEST_MS }, async () => {
     const r = await runGate(join(dir, "a.lock"), "echo hello; exit 3").done;
     assert.equal(r.code, 3);
     assert.equal(r.stdout.trim(), "hello");
     assert.doesNotMatch(r.stderr, /waiting/, "no contention → no waiting notice");
   });
 
-  it("the command runs knowing which lock it holds", async () => {
+  it("the command runs knowing which lock it holds", { timeout: PER_TEST_MS }, async () => {
     const lock = join(dir, "held.lock");
     const r = await runGate(lock, 'echo "$AUTONOMOS_GATE_LOCK_HELD"').done;
     assert.equal(r.code, 0);
     assert.equal(r.stdout.trim(), lock);
   });
 
-  it("re-entrant: a nested call for the SAME lock runs at once (the gate's make check)", async () => {
+  it("re-entrant: a nested call for the SAME lock runs at once (the gate's make check)", { timeout: PER_TEST_MS }, async () => {
     const lock = join(dir, "nested.lock");
     // Inner gate with a 2s timeout: without re-entrancy it would wait on its
     // own holder, give up (75) and fail.
@@ -142,6 +148,7 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
   });
 
   it("a held-marker only passes through for OUR holder, not someone else's", {
+    timeout: PER_TEST_MS,
     skip: !hasLsof && "no lsof: the script trusts the marker by design",
   }, async () => {
     const lock = join(dir, "stale.lock");
@@ -163,7 +170,7 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.ok(ra.endedAt >= rh.endedAt, "A ran only after H released");
   });
 
-  it("a HUNG holder is stopped at the run bound and the next gate proceeds", async () => {
+  it("a HUNG holder is stopped at the run bound and the next gate proceeds", { timeout: PER_TEST_MS }, async () => {
     const lock = join(dir, "hung.lock");
     // The holder never finishes (a runner kept alive by a leaked handle).
     const h = runGate(lock, "sleep 600", {
@@ -179,7 +186,7 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.ok(rb.endedAt >= rh.endedAt, "B ran once the hung holder was stopped");
   });
 
-  it("an unusable lock exports an 'unlocked' marker (fleet tests refuse on it)", async () => {
+  it("an unusable lock exports an 'unlocked' marker (fleet tests refuse on it)", { timeout: PER_TEST_MS }, async () => {
     const r = await runGate(
       join(dir, "no-such-dir", "y.lock"),
       'echo "held=$AUTONOMOS_GATE_LOCK_HELD"',
@@ -187,7 +194,7 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.equal(r.stdout.trim(), "held=unlocked");
   });
 
-  it("an unusable lock file never blocks the push: it runs unlocked, with a warning", async () => {
+  it("an unusable lock file never blocks the push: it runs unlocked, with a warning", { timeout: PER_TEST_MS }, async () => {
     const r = await runGate(
       join(dir, "no-such-dir", "x.lock"),
       "echo gate-ran; exit 4",
@@ -197,7 +204,7 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.match(r.stderr, /cannot use the lock file .*running WITHOUT/);
   });
 
-  it("concurrent gates QUEUE: the second runs only after the first releases", async () => {
+  it("concurrent gates QUEUE: the second runs only after the first releases", { timeout: PER_TEST_MS }, async () => {
     const lock = join(dir, "b.lock");
     const release = join(dir, "b.release");
     const a = runGate(lock, holdUntil(release, "A"));
@@ -218,7 +225,7 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.match(rb.stdout, /B-ran/);
   });
 
-  it("a killed holder frees the lock at once (no wedged pushes)", async () => {
+  it("a killed holder frees the lock at once (no wedged pushes)", { timeout: PER_TEST_MS }, async () => {
     const lock = join(dir, "c.lock");
     const a = runGate(lock, holdUntil(join(dir, "c.never"), "A"));
     await waitUntilHeld(lock);
@@ -231,7 +238,7 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.equal(b.stdout.trim(), "acquired");
   });
 
-  it("gives up with a clear message after the timeout instead of hanging", async () => {
+  it("gives up with a clear message after the timeout instead of hanging", { timeout: PER_TEST_MS }, async () => {
     const lock = join(dir, "d.lock");
     const release = join(dir, "d.release");
     const a = runGate(lock, holdUntil(release, "A"));
