@@ -138,6 +138,7 @@ export function useUpdateFlow(enabled: boolean) {
                     updatedTo: rec.to,
                     interruptedNames: interrupted.current,
                     provenance: rec.provenance,
+                    unitNotice: rec.unitNotice,
                     startedAt: rec.startedAt,
                   },
             );

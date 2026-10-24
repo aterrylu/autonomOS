@@ -344,6 +344,9 @@ export interface UpdatedFlag {
   /** Upgrade only: the release's signed build record, as the job reported it
    *  (carried across the reload so the banner can say so straight away). */
   provenance?: UpgradeStatusRecord["provenance"];
+  /** Upgrade only: settings the unit re-render didn't carry (the record's
+   *  `unitNotice`), so the banner says so straight away after the reload. */
+  unitNotice?: string;
   /** The run it describes, so a dismiss can be acknowledged even before
    *  the agent check has reported. */
   startedAt?: string;
@@ -390,6 +393,7 @@ export function takeUpdatedFlag(): UpdatedFlag | null {
         ? v.interruptedNames.filter((n): n is string => typeof n === "string")
         : [],
       provenance: parseProvenance(v.provenance),
+      unitNotice: typeof v.unitNotice === "string" ? v.unitNotice : undefined,
       startedAt: typeof v.startedAt === "string" ? v.startedAt : undefined,
     };
   } catch {
@@ -456,7 +460,7 @@ export function resurfacedFlag(
   const problems = !!r.verification && r.verification.problems.length > 0;
   const provenanceWarning =
     !!r.provenance && r.provenance.status !== "verified";
-  if (!problems && !provenanceWarning) return null;
+  if (!problems && !provenanceWarning && !r.unitNotice) return null;
   if (ackedStartedAt === r.startedAt) return null;
   return {
     kind: "upgrade",
@@ -464,5 +468,6 @@ export function resurfacedFlag(
     interruptedNames: [],
     startedAt: r.startedAt,
     ...(provenanceWarning && { provenance: r.provenance }),
+    ...(r.unitNotice && { unitNotice: r.unitNotice }),
   };
 }

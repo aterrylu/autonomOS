@@ -217,6 +217,26 @@ describe("the post-update flag and its resurfacing (ADR-126)", () => {
     ).toBeNull();
   });
 
+  it("resurfaces for settings the unit re-render dropped, even with no other problem", () => {
+    const f = resurfacedFlag(
+      done({
+        verification: { checkedAt: "x", checked: 1, problems: [] },
+        provenance: { status: "verified" },
+        unitNotice:
+          "The service unit's HTTP_PROXY setting(s) weren't carried over.",
+      }),
+      null,
+    );
+    expect(f?.unitNotice).toMatch(/HTTP_PROXY/);
+    // Acknowledged for this run: quiet.
+    expect(
+      resurfacedFlag(
+        done({ unitNotice: "x", provenance: { status: "verified" } }),
+        "s1",
+      ),
+    ).toBeNull();
+  });
+
   // This suite runs in vitest's node environment. Node 25 has a global
   // sessionStorage and CI's node 22 doesn't — stub one so both agree.
   afterEach(() => vi.unstubAllGlobals());

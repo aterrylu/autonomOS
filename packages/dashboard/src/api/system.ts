@@ -97,6 +97,10 @@ export interface UpgradeStatusRecord {
    *  confirmed, so nothing was installed (ADR-126 D). `lasting`: retrying
    *  can't change it. */
   postponed?: { lasting: boolean; reason: string };
+  /** Set on "done" when the supervisor unit was re-rendered without some
+   *  settings the operator had added (names only) — the job's console goes to
+   *  a log file, so this is how a dashboard-started update says so. */
+  unitNotice?: string;
 }
 
 export interface BusyAgent {

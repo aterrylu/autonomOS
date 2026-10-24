@@ -184,8 +184,18 @@ export function UpdatedBanner() {
     (provenance.status === "skipped"
       ? `Its signed build record wasn't checked (${provenance.reason ?? "skipped"}).`
       : `Its signed build record couldn't be checked (${provenance.reason ?? "unknown reason"}); the checksum matched.`);
+  // Settings the service-unit re-render didn't carry (names only): an
+  // operator override is never dropped silently (ADR-089).
+  const unitNotice =
+    flag?.kind !== "rollback"
+      ? ((verify.kind === "done" ? verify.record.unitNotice : undefined) ??
+        flag?.unitNotice)
+      : undefined;
   const attention =
-    problems.length > 0 || verify.kind === "timeout" || !!provenanceWarning;
+    problems.length > 0 ||
+    verify.kind === "timeout" ||
+    !!provenanceWarning ||
+    !!unitNotice;
   const tone = attention ? AMBER : GREEN;
 
   let headline: string;
@@ -229,7 +239,9 @@ export function UpdatedBanner() {
       interruptedClause,
     ];
   }
-  const detailText = [provenanceWarning, ...details].filter(Boolean).join(" ");
+  const detailText = [provenanceWarning, unitNotice, ...details]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div
@@ -288,7 +300,10 @@ export function UpdatedBanner() {
                 verify.kind === "done"
                   ? verify.record.startedAt
                   : flag?.startedAt;
-              if (runId && (problems.length > 0 || !!provenanceWarning)) {
+              if (
+                runId &&
+                (problems.length > 0 || !!provenanceWarning || !!unitNotice)
+              ) {
                 writeUpdateAck(runId);
               }
               setFlag(null);

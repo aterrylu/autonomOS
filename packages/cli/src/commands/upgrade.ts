@@ -93,6 +93,18 @@ function takeSnapshot(
 }
 
 /** "a", "a and b", "a, b and c" — the same list style as the dashboard. */
+/** A dropped-env (or skipped-sync) notice from the unit sync, appended to
+ *  a record's message where the dashboard shows it (rolled back, up to date).
+ *  "done" carries it as `unitNotice` instead: the page reloads there, and
+ *  the post-update banner reads it from the record. */
+function withUnitNotice(
+  message: string | undefined,
+  notice: string | undefined,
+): string | undefined {
+  if (!notice) return message;
+  return message ? `${message} ${notice}` : notice;
+}
+
 function joinNames(names: string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -229,11 +241,11 @@ async function runSourceUpgradeFlow(
   });
 
   if (result.status === "up-to-date") {
-    report("up_to_date");
     console.log(`✓ Already on the latest version (${result.version}).`);
     // Still self-heal unit-template drift — an install can be current on
     // code but running under an install-day unit. No restart follows here.
-    syncSupervisorUnit({ restartFollows: false });
+    const { notice } = syncSupervisorUnit({ restartFollows: false });
+    report("up_to_date", notice ? { message: notice } : {});
     return 0;
   }
   if (result.status === "error") {
@@ -290,7 +302,9 @@ async function runSourceUpgradeFlow(
   // never alters programArgs, so if the health gate below fails, rollback's
   // previousRef checkout restores code at the very path the (possibly
   // freshly-healed) unit points at.
-  const { reloadUnit } = syncSupervisorUnit({ restartFollows: true });
+  const { reloadUnit, notice: unitNotice } = syncSupervisorUnit({
+    restartFollows: true,
+  });
   const outcome = await restartDaemonAfterSwap(result.to, undefined, {
     reloadUnit,
     onRestarted: () => report("health_check"),
@@ -315,6 +329,7 @@ async function runSourceUpgradeFlow(
         outcome.kind === "verified"
           ? undefined
           : "Installed; no supervised daemon was restarted — start it with `autonomos start`.",
+      ...(unitNotice && { unitNotice }),
     });
     return 0;
   }
@@ -359,10 +374,12 @@ async function runSourceUpgradeFlow(
   );
   const recovery = await restartDaemonAfterSwap(rollback.to);
   report("rolled_back", {
-    message:
+    message: withUnitNotice(
       recovery.kind === "verified"
         ? `v${result.to} didn't become healthy within the health check, so v${rollback.to}${state.restored ? " and your agents' pre-update state were" : " was"} restored and it is serving again.${state.restored ? "" : ` (Agent state not restored: ${state.reason}.)`}`
         : `v${result.to} didn't become healthy; v${rollback.to} was restored but could not be verified serving — check \`autonomos status\`.`,
+      unitNotice,
+    ),
   });
   if (recovery.kind === "verified") {
     console.error(
@@ -467,10 +484,10 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
   });
 
   if (result.status === "up-to-date") {
-    report("up_to_date");
     console.log(`✓ Already on the latest version (${result.version}).`);
     // Same self-heal as the source flow: current code, install-day unit.
-    syncSupervisorUnit({ restartFollows: false });
+    const { notice } = syncSupervisorUnit({ restartFollows: false });
+    report("up_to_date", notice ? { message: notice } : {});
     return 0;
   }
   if (result.status === "error") {
@@ -520,7 +537,9 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
   // already happens applies any healed unit; sync preserves the program path
   // so a health-gate rollback (in-place .previous swap) stays consistent
   // with whatever unit is now installed.
-  const { reloadUnit } = syncSupervisorUnit({ restartFollows: true });
+  const { reloadUnit, notice: unitNotice } = syncSupervisorUnit({
+    restartFollows: true,
+  });
   const outcome = await restartDaemonAfterSwap(
     expectedVersionAfterSwap(install.bundleDir, result.to),
     undefined,
@@ -547,6 +566,7 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
         outcome.kind === "verified"
           ? undefined
           : "Installed; no supervised daemon was restarted — start it with `autonomos start`.",
+      ...(unitNotice && { unitNotice }),
     });
     return 0;
   }
@@ -577,10 +597,12 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
   );
   const recovery = await restartDaemonAfterSwap(rollback.to);
   report("rolled_back", {
-    message:
+    message: withUnitNotice(
       recovery.kind === "verified"
         ? `v${result.to} didn't become healthy within the health check, so v${rollback.to}${state.restored ? " and your agents' pre-update state were" : " was"} restored and it is serving again.${state.restored ? "" : ` (Agent state not restored: ${state.reason}.)`}`
         : `v${result.to} didn't become healthy; v${rollback.to} was restored but could not be verified serving — check \`autonomos status\`.`,
+      unitNotice,
+    ),
   });
   if (recovery.kind === "verified") {
     console.error(
