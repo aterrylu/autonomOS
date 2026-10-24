@@ -21,7 +21,12 @@ import {
   readCodexAuth,
   readCodexIdentity,
 } from "./auth.js";
-import { type RolloutSnapshot, readFreshestRollout } from "./rolloutScanner.js";
+import {
+  clearRolloutCache,
+  type RolloutSnapshot,
+  readFreshestRollout,
+  resetRolloutDiscovery,
+} from "./rolloutScanner.js";
 import type {
   CodexAccountInfo,
   CodexErrorKind,
@@ -40,7 +45,31 @@ const CACHE_TTL_429 = 5 * 60_000;
 
 let cached: { data: CodexUsageData; expiresAt: number; fp: string } | null =
   null;
+
 let lastGood: { data: CodexUsageData; fp: string } | null = null;
+
+/** The on-disk fallback snapshot, shared for {@link CACHE_TTL} by every path
+ *  that needs it (no login, expired token, live failed) and every tab. The
+ *  backoff for a long outage lives in rolloutScanner's file DISCOVERY; a read
+ *  itself is a few stats plus the tail of whichever file changed, so the
+ *  numbers stay a poll fresh for the usage queue. */
+let fallback: { snap: RolloutSnapshot | null; expiresAt: number } | null = null;
+let fallbackFlight: Promise<RolloutSnapshot | null> | null = null;
+
+async function fallbackSnapshot(): Promise<RolloutSnapshot | null> {
+  if (fallback && fallback.expiresAt > Date.now()) return fallback.snap;
+  // One disk read at a time, whichever path asked.
+  fallbackFlight ??= (async () => {
+    try {
+      const snap = await readFreshestRollout();
+      fallback = { snap, expiresAt: Date.now() + CACHE_TTL };
+      return snap;
+    } finally {
+      fallbackFlight = null;
+    }
+  })();
+  return fallbackFlight;
+}
 
 /** Consecutive polls on which auth.json was unreadable/absent — see the
  * confirm-before-stamping debounce in {@link getCodexUsage}. */
@@ -157,7 +186,7 @@ export async function getCodexUsage(
   // genuinely no Codex signal → hide the UI (needsData).
   if (!auth) {
     authMissingStreak += 1;
-    const snap = readFreshestRollout();
+    const snap = await fallbackSnapshot();
     if (snap) {
       return fromRollout(
         snap,
@@ -201,7 +230,7 @@ async function fetchCodexUsageSnapshot(
       error: "Your Codex login has expired. Run `codex` to re-authenticate.",
       errorKind: "stale_token" as const,
     };
-    const snap = readFreshestRollout();
+    const snap = await fallbackSnapshot();
     if (snap) return fromRollout(snap, account, staleFailure);
     return errorResult(staleFailure.error, staleFailure.errorKind, account);
   }
@@ -229,6 +258,7 @@ async function fetchCodexUsageSnapshot(
     };
     lastGood = { data, fp };
     cached = { data, expiresAt: now + CACHE_TTL, fp };
+    resetRolloutDiscovery(); // live is back: a new outage starts fresh
     return data;
   }
 
@@ -249,11 +279,10 @@ async function fetchCodexUsageSnapshot(
             errorKind: "rate_limited" as const,
           }
         : {
-            error:
-              "The Codex usage API is unreachable — showing last-known usage.",
+            error: `Live Codex usage is failing (${result.reason}) — showing last-known usage.`,
             errorKind: "unavailable" as const,
           };
-  const snap = readFreshestRollout();
+  const snap = await fallbackSnapshot();
   if (snap) {
     const data = fromRollout(snap, account, liveFailure);
     // Cache the fallback briefly so a shared-endpoint 429 isn't re-hit every
@@ -301,7 +330,7 @@ async function fetchCodexUsageSnapshot(
     return errored;
   }
   return errorResult(
-    "The Codex usage API is temporarily unavailable. Your login is fine — retry in a moment.",
+    `Live Codex usage is failing (${result.reason}). Your login is fine — retrying every minute.`,
     "unavailable",
     account,
   );
@@ -311,5 +340,7 @@ async function fetchCodexUsageSnapshot(
 export function invalidateCodexUsageCache(): void {
   cached = null;
   lastGood = null;
+  fallback = null;
+  clearRolloutCache();
   authMissingStreak = 0;
 }

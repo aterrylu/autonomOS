@@ -122,7 +122,7 @@ function stripInjectedContext(text: string): string {
 
 /** Warned-about paths, so a persistent problem logs once, not every poll. */
 const warned = new Set<string>();
-function warnOnce(key: string, message: string): void {
+export function warnOnce(key: string, message: string): void {
   if (warned.has(key)) return;
   warned.add(key);
   console.warn(`[session-scan] ${message}`);
@@ -190,7 +190,7 @@ async function cachedRow(
 
 /** Newest-first by mtime, capped — stat is the only per-file cost for the
  *  files the cap keeps OUT, and names already sort by date for Codex. */
-async function newestFiles(
+export async function newestFiles(
   paths: string[],
   max: number,
 ): Promise<Array<{ path: string; mtimeMs: number; size: number }>> {
@@ -283,17 +283,20 @@ export function parseCodexHead(head: Head): ScannedSession | null {
 }
 
 /**
- * The newest ≤MAX_FILES Codex sessions. Walks the date-bucketed tree newest
- * day first and stops collecting once it has enough candidates, so a huge
- * history costs directory listings of recent days, not a stat of every file.
+ * Rollout paths under a Codex `sessions/` root (`YYYY/MM/DD/rollout-*.jsonl`),
+ * newest day first, stopping after the first whole day that brings the count
+ * to `minPaths`. A
+ * huge history costs directory listings of recent days — never a stat (or a
+ * read) of every file. Whole days only, so a caller's newest-by-mtime sort
+ * sees every file of the last day taken.
  */
-export async function listCodexSessions(
-  env: Env = process.env,
-): Promise<ScannedSession[]> {
-  const root = join(codexHome(env), "sessions");
+export async function recentCodexRolloutPaths(
+  root: string,
+  minPaths: number,
+): Promise<string[]> {
   const candidates: string[] = [];
   const desc = (a: Dirent, b: Dirent) => (a.name < b.name ? 1 : -1);
-  outer: for (const y of (await listDir(root, { root: true }))
+  for (const y of (await listDir(root, { root: true }))
     .filter((d) => d.isDirectory())
     .sort(desc)) {
     for (const m of (await listDir(join(root, y.name)))
@@ -311,12 +314,24 @@ export async function listCodexSessions(
           )
             candidates.push(join(dir, f.name));
         }
-        // Whole days only, so the newest-by-mtime sort below sees every file
-        // of the last day it takes; 2× headroom for mtime-vs-name ordering.
-        if (candidates.length >= MAX_FILES * 2) break outer;
+        if (candidates.length >= minPaths) return candidates;
       }
     }
   }
+  return candidates;
+}
+
+/**
+ * The newest ≤MAX_FILES Codex sessions (2× candidate headroom for
+ * mtime-vs-name ordering).
+ */
+export async function listCodexSessions(
+  env: Env = process.env,
+): Promise<ScannedSession[]> {
+  const candidates = await recentCodexRolloutPaths(
+    join(codexHome(env), "sessions"),
+    MAX_FILES * 2,
+  );
   const rows: ScannedSession[] = [];
   for (const f of await newestFiles(candidates, MAX_FILES)) {
     const row = await cachedRow(

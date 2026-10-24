@@ -77,7 +77,11 @@ describe("titleCache negative results", () => {
 
   it("a grown file re-scans even within the same mtime tick", async () => {
     const pinned = statSync(file).mtime;
-    writeFileSync(file, `${titled}${head}`); // appended, mtime pinned back
+    // A rename APPENDS (session files are append-only); mtime pinned back.
+    writeFileSync(
+      file,
+      `${untitled}${JSON.stringify({ type: "custom-title", customTitle: "Named" })}\n`,
+    );
     utimesSync(file, pinned, pinned);
     const grown = await batchGetTitles([{ sessionId: SID, cwd }]);
     assert.equal(grown.get(SID), "Named");
