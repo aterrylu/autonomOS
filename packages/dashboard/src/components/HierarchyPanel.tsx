@@ -1116,13 +1116,14 @@ const LAYOUT_MODES: Array<{
 
 const LAYOUT_KEY = "autonomos.orgchart.layout";
 
-/** Layout direction (Top-down / Left-right), remembered per browser. */
+/** Layout direction, remembered per browser. Left-right unless the browser
+ * saved Top-down (Terry's pick). */
 function useLayoutDirection(): [OrgDirection, (d: OrgDirection) => void] {
   const [dir, setDir] = useState<OrgDirection>(() => {
     try {
-      return localStorage.getItem(LAYOUT_KEY) === "lr" ? "lr" : "td";
+      return localStorage.getItem(LAYOUT_KEY) === "td" ? "td" : "lr";
     } catch {
-      return "td";
+      return "lr";
     }
   });
   const set = useCallback((d: OrgDirection) => {

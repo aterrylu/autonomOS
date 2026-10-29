@@ -52,6 +52,9 @@ beforeEach(() => {
       }) as unknown as MediaQueryList,
   );
   localStorage.clear();
+  // These tests measure Top-down geometry; Left-right (the default) is pinned
+  // by its own describe.
+  localStorage.setItem("autonomos.orgchart.layout", "td");
 });
 afterEach(() => {
   if (origW) Object.defineProperty(proto, "clientWidth", origW);
@@ -412,10 +415,14 @@ describe("the map and following the selection", () => {
 });
 
 describe("two top-level teams: both stay in view as agents come and go (Terry's bug)", () => {
+  // Each report leads one agent of its own, so the team spreads sideways
+  // (leaf reports would stack into one narrow column).
   const team = (lead: string, n: number) =>
     node(
       lead,
-      Array.from({ length: n }, (_, i) => node(`${lead}-${i}`)),
+      Array.from({ length: n }, (_, i) =>
+        node(`${lead}-${i}`, [node(`${lead}-${i}r`)]),
+      ),
     );
   const ids = (roots: AgentTreeNode[]): string[] =>
     roots.flatMap((r) => [r.id, ...ids(r.children)]);
@@ -459,6 +466,20 @@ describe("two top-level teams: both stay in view as agents come and go (Terry's 
     // Precondition: the view it opened with would strand the new team.
     expect(fullyOnScreenUnder(opened, "Other")).toBe(false);
     expect(fullyOnScreen("Lead")).toBe(true);
+    expect(fullyOnScreen("Other")).toBe(true);
+    expect(fullyOnScreen("Other-0")).toBe(true);
+  });
+
+  // Left-right (the default) stacks the teams top to bottom, so the second
+  // team lands BELOW the first: the same fix has to hold on that axis. (A
+  // removal needs no Left-right twin: the next team reflows up into view.)
+  it("Left-right: a second team that arrives below the first is shown", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    await mount(() => setFleet([team("Lead", 6)]));
+    const opened = view();
+    await swap([team("Lead", 6), team("Other", 1)]);
+    await waitFor(() => expect(card("Other")).not.toBeNull());
+    expect(fullyOnScreenUnder(opened, "Other")).toBe(false);
     expect(fullyOnScreen("Other")).toBe(true);
     expect(fullyOnScreen("Other-0")).toBe(true);
   });

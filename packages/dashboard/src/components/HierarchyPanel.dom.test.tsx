@@ -85,6 +85,9 @@ const card = (id: string) =>
 beforeEach(() => {
   lastTreeUrl = "";
   localStorage.clear();
+  // These tests measure Top-down geometry; Left-right (the default) is pinned
+  // by its own describe.
+  localStorage.setItem("autonomos.orgchart.layout", "td");
   useStore.setState({
     theme: "void",
     sessions: [],
@@ -942,28 +945,41 @@ describe("Layout: Top-down / Left-right (Terry: 'an org chart from LEFT TO RIGHT
   const inspector = () =>
     document.querySelector("[data-org-inspector]") as HTMLElement | null;
 
-  it("switching to Left-right puts managers to the LEFT of their reports, and the choice is remembered", async () => {
+  const pressed = (v: string) =>
+    document
+      .querySelector(`[data-org-layout="${v}"]`)
+      ?.getAttribute("aria-pressed");
+
+  it("opens Left-right by default (Terry's pick): managers to the LEFT of their reports", async () => {
+    localStorage.removeItem("autonomos.orgchart.layout");
     fleet();
-    const { unmount } = render(<HierarchyPanel />);
+    render(<HierarchyPanel />);
     await waitFor(() => expect(card("R1")).not.toBeNull());
-    // Default: top-down (reports below their manager).
-    expect(at("Mgr").y).toBeLessThan(at("R1").y);
-    fireEvent.click(
-      document.querySelector('[data-org-layout="lr"]') as HTMLElement,
-    );
-    expect(
-      document
-        .querySelector('[data-org-layout="lr"]')
-        ?.getAttribute("aria-pressed"),
-    ).toBe("true");
+    expect(pressed("lr")).toBe("true");
     expect(at("Root").x).toBeLessThan(at("Mgr").x);
     expect(at("Mgr").x).toBeLessThan(at("R1").x);
     expect(at("R1").x).toBe(at("R2").x); // one column
     expect(at("R1").y).toBeLessThan(at("R2").y); // stacked top to bottom
+  });
+
+  it("switching to Top-down puts reports below their manager, and the choice is remembered", async () => {
+    localStorage.removeItem("autonomos.orgchart.layout");
+    fleet();
+    const { unmount } = render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    fireEvent.click(
+      document.querySelector('[data-org-layout="td"]') as HTMLElement,
+    );
+    expect(pressed("td")).toBe("true");
+    expect(at("Mgr").y).toBeLessThan(at("R1").y);
     unmount();
-    // A fresh mount keeps Left-right.
+    // A fresh mount keeps Top-down.
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("R1")).not.toBeNull());
+    expect(at("Mgr").y).toBeLessThan(at("R1").y);
+    fireEvent.click(
+      document.querySelector('[data-org-layout="lr"]') as HTMLElement,
+    );
     expect(at("Mgr").x).toBeLessThan(at("R1").x);
   });
 
