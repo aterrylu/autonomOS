@@ -26,11 +26,11 @@
      - a real-server test sends those headers from loopback TCP and checks they never become an identity;
      - tests cover the refusals.
 - **Rationale:**
-  - **The direct bind already gives per-device identity with nothing to forge:** the address comes from the network, not a header. That's the setup in use.
+  - **The direct bind already gives per-device identity with nothing to forge**: the address comes from the network, not a header. That's the setup in use.
   - **Removing an unshipped feature is cheaper and safer than keeping a second identity path** that only one configuration needs. The socket version was sound but adds surface (a socket, per-platform paths, a fail-closed rule) for a setup nobody runs.
   - **Refusing a leftover setting loudly matches the failure it prevents**, and install.sh's drop keeps updates working.
 - **Alternatives considered:**
-  - **Merge ADR-153's socket version (#530):** sound and signed off, but it keeps code and docs for a mode Terry doesn't use. It can come back from #530 if serve is ever wanted.
-  - **Ship #488 marked experimental:** ships the any-local-uid forge knowingly.
-  - **Ignore a leftover flag with a warning:** with serve still pointed at the port, every visitor silently counts as this machine.
+  - **Merge ADR-153's socket version (#530)**: sound and signed off, but it keeps code and docs for a mode Terry doesn't use. It can come back from #530 if serve is ever wanted.
+  - **Ship #488 marked experimental**: ships the any-local-uid forge knowingly.
+  - **Ignore a leftover flag with a warning**: with serve still pointed at the port, every visitor silently counts as this machine.
 - **Source:** Terry's decision relayed by TeamLead@autonomOS on the agent channel (2026-10-29); SecurityAudit-Claude's #488 finding; the #530 thread.
