@@ -95,6 +95,9 @@ fi
 # Is `tailscale serve` still forwarding to this machine's PORT? (ADR-158)
 # autonomOS no longer runs behind serve: with serve still forwarding, every
 # tailnet visitor would arrive as loopback (exempt from the new-device lock).
+# Returns 0 = forwarding, 1 = not forwarding (or no Tailscale installed),
+# 2 = couldn't tell (e.g. tailscaled stopped: its serve config comes back
+# with the daemon, so the caller treats "can't tell" like "forwarding", #549).
 serve_forwards_port() {
   local port="$1" ts
   ts=$(command -v tailscale 2>/dev/null || true)
@@ -106,7 +109,7 @@ serve_forwards_port() {
   # when grep exits early on a match, which would read as "not forwarding",
   # the one answer that must never be wrong here (nox, #548).
   local out
-  out=$("$ts" serve status 2>/dev/null) || return 1
+  out=$("$ts" serve status 2>/dev/null) || return 2
   grep -Eq "proxy (https?://)?(127\.0\.0\.1|localhost|\[::1\])?:?${port}([^0-9]|$)" <<<"$out"
 }
 
@@ -463,12 +466,19 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     if grep -q -- '--trust-proxy' "$SERVICE_FILE"; then
       TS_PORT="${KEPT_PORT#--port=}"
       TS_PORT="${TS_PORT:-3000}"
-      if serve_forwards_port "$TS_PORT"; then
-        # Re-rendering without the flag while serve still forwards would make
-        # every tailnet visitor "this machine". Stop; the old version keeps
-        # running until the operator chooses.
-        echo "[install] ✖ Not updating the service: it ran behind tailscale serve (--trust-proxy), which autonomOS no longer supports (ADR-158), and tailscale serve still forwards to port $TS_PORT." >&2
-        echo "[install]   The current version keeps running. To switch to the supported setup, run:" >&2
+      SERVE_RC=0
+      serve_forwards_port "$TS_PORT" || SERVE_RC=$?
+      if [[ "$SERVE_RC" != "1" ]]; then
+        # Re-rendering without the flag while serve still forwards (or may,
+        # once tailscaled is back) would make every tailnet visitor "this
+        # machine". Stop and let the operator choose.
+        if [[ "$SERVE_RC" == "2" ]]; then
+          WHY="tailscale serve's status couldn't be read (is tailscaled running?), so it may still forward to port $TS_PORT"
+        else
+          WHY="tailscale serve still forwards to port $TS_PORT"
+        fi
+        echo "[install] ✖ Not updating the service: it ran behind tailscale serve (--trust-proxy), which autonomOS no longer supports (ADR-158), and $WHY." >&2
+        echo "[install]   The current version keeps running until its next restart; after that it refuses to start (--trust-proxy was removed) until you switch. To switch to the supported setup, run:" >&2
         echo "[install]     tailscale serve reset" >&2
         echo "[install]     autonomos install-service --force --port=$TS_PORT --host=127.0.0.1,\$(tailscale ip -4)" >&2
         echo "[install]   then re-run this installer." >&2
