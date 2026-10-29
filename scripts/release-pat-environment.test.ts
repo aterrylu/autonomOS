@@ -66,6 +66,13 @@ describe("RELEASE_PAT is only read inside the protected release environment (aud
     }
   });
 
+  it("version.yml says so when RELEASE_PAT isn't reachable (the step-4 verification signal)", () => {
+    assert.match(
+      readFileSync(join(WORKFLOWS, "version.yml"), "utf8"),
+      /::warning::RELEASE_PAT is not set/,
+    );
+  });
+
   for (const u of users) {
     it(`${u.file} job "${u.name}" declares environment: release`, () => {
       assert.match(

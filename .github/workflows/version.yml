@@ -71,6 +71,20 @@ jobs:
     env:
       LEFTHOOK: "0"
     steps:
+      # Say so when the PAT isn't reachable (missing, or this run isn't in the
+      # protected `release` environment): every use below then silently falls
+      # back to GITHUB_TOKEN, and the Version PR's checks never start. The
+      # absence of this warning on a run is how the environment is verified.
+      - name: Check RELEASE_PAT is available
+        env:
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
+        run: |
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::RELEASE_PAT is not set for this run (not in the protected release environment?): falling back to GITHUB_TOKEN, so the Version PR's checks won't start and the tag push won't trigger release.yml."
+          else
+            echo "RELEASE_PAT is available (environment: release)."
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
