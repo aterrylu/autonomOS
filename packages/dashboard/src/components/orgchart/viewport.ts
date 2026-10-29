@@ -78,6 +78,28 @@ export function openView(
   return { x: viewport.w / 2 - anchorX * k, y: pad, k };
 }
 
+/**
+ * Is any of `rects` (world px, e.g. the cards) at least partly on screen under
+ * view `v`? A chart can still overlap the viewport by its padding alone while
+ * every card is off-screen, so this checks the cards, not the chart's box.
+ */
+export function anyRectVisible(
+  v: View,
+  rects: readonly Rect[],
+  viewport: Size,
+): boolean {
+  return rects.some((r) => {
+    const left = v.x + r.x * v.k;
+    const top = v.y + r.y * v.k;
+    return (
+      left + r.w * v.k > 0 &&
+      left < viewport.w &&
+      top + r.h * v.k > 0 &&
+      top < viewport.h
+    );
+  });
+}
+
 /** Does all of `content` sit inside the viewport under view `v`? */
 export function fitsInView(v: View, content: Size, viewport: Size): boolean {
   const eps = 1;

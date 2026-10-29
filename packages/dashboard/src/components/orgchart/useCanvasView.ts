@@ -33,6 +33,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  anyRectVisible,
   centerOn,
   clampZoom,
   fitView,
@@ -87,6 +88,7 @@ export function useCanvasView({
   panRef,
   stageRef,
   content,
+  cards,
   anchorX,
   onGestureStart,
 }: {
@@ -97,6 +99,9 @@ export function useCanvasView({
   stageRef: RefObject<HTMLDivElement | null>;
   /** The laid-out chart size, in px at 100%. */
   content: Size;
+  /** Every drawn card's box (world px). A new array when the chart changes:
+   *  that is what re-checks the view (see "the chart changed" below). */
+  cards: readonly Rect[];
   /** World x to center when opening at the floor (the top root's center). */
   anchorX: number;
   /** A pan/zoom began — e.g. close a context menu so it doesn't float away. */
@@ -109,9 +114,12 @@ export function useCanvasView({
   const listeners = useRef(new Set<() => void>());
   const snapshot = useRef(state.current);
   const opened = useRef(false);
+  // Has the user put the view somewhere (pan, zoom, map, reveal) since it
+  // opened or since the last Fit? An untouched view follows the fleet.
+  const moved = useRef(false);
   const anim = useRef(0);
-  const live = useRef({ content, anchorX, onGestureStart });
-  live.current = { content, anchorX, onGestureStart };
+  const live = useRef({ content, cards, anchorX, onGestureStart });
+  live.current = { content, cards, anchorX, onGestureStart };
 
   const commit = useCallback(
     (view: View) => {
@@ -166,22 +174,31 @@ export function useCanvasView({
     return {
       zoomBy: (f) => {
         const [cx, cy] = center();
+        moved.current = true;
         live.current.onGestureStart?.();
         glide(zoomAt(state.current.view, f, cx, cy));
       },
       reset: () => {
         const [cx, cy] = center();
+        moved.current = true;
         glide(zoomAt(state.current.view, 1 / state.current.view.k, cx, cy));
       },
       fit: () => {
+        // Fit means "frame everyone": later fleet changes keep framing.
+        moved.current = false;
         live.current.onGestureStart?.();
         glide(fitView(live.current.content, state.current.viewport));
       },
-      reveal: (r) =>
-        glide(revealRect(state.current.view, r, state.current.viewport)),
-      centerOn: (wx, wy) =>
-        glide(centerOn(state.current.view, wx, wy, state.current.viewport)),
+      reveal: (r) => {
+        moved.current = true;
+        glide(revealRect(state.current.view, r, state.current.viewport));
+      },
+      centerOn: (wx, wy) => {
+        moved.current = true;
+        glide(centerOn(state.current.view, wx, wy, state.current.viewport));
+      },
       set: (v) => {
+        moved.current = true;
         cancelFrame(anim.current);
         commit({ ...v, k: clampZoom(v.k) });
       },
@@ -214,12 +231,29 @@ export function useCanvasView({
     return () => ro.disconnect();
   }, [viewportRef, commit]);
 
-  // The chart changed size (agents came or went): re-publish so the map and
-  // its "doesn't fit" rule see the new bounds — but never move the view.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the chart size is the trigger
+  // The chart changed (agents came or went). A view the user placed stays
+  // put while any card is still on screen. Otherwise it re-opens on the
+  // fleet as it is now: an untouched view follows the fleet (a second team
+  // arriving isn't left off-screen), and a view left showing no card at all
+  // (its team was removed) never reads as an empty chart. ADR-120 refined.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the drawn cards are the trigger
   useEffect(() => {
-    if (opened.current) commit(state.current.view);
-  }, [content.w, content.h, commit]);
+    if (!opened.current) return;
+    const { view, viewport } = state.current;
+    if (viewport.w === 0 || viewport.h === 0) return;
+    if (moved.current && anyRectVisible(view, live.current.cards, viewport)) {
+      commit(view);
+      return;
+    }
+    cancelFrame(anim.current);
+    moved.current = false;
+    commit(
+      openView(live.current.content, viewport, {
+        floor: OPEN_FLOOR,
+        anchorX: live.current.anchorX,
+      }),
+    );
+  }, [cards, commit]);
 
   // Pointer / wheel / key gestures, as native listeners (wheel must be
   // non-passive to preventDefault the page scroll).
@@ -282,6 +316,7 @@ export function useCanvasView({
         pan.moved = true;
         el.setPointerCapture?.(e.pointerId);
         el.dataset.orgPanning = "";
+        moved.current = true;
         live.current.onGestureStart?.();
       }
       commit({ ...pan.from, x: pan.from.x + dx, y: pan.from.y + dy });
@@ -310,6 +345,7 @@ export function useCanvasView({
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
       cancelFrame(anim.current);
+      moved.current = true;
       live.current.onGestureStart?.();
       const a = interpretWheel(e, "pan"); // pick 1A
       const v = state.current.view;

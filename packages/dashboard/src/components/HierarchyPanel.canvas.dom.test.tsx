@@ -406,3 +406,67 @@ describe("the map and following the selection", () => {
     expect(v).not.toEqual(before);
   }, 15_000);
 });
+
+describe("two top-level teams: both stay in view as agents come and go (Terry's bug)", () => {
+  const team = (lead: string, n: number) =>
+    node(
+      lead,
+      Array.from({ length: n }, (_, i) => node(`${lead}-${i}`)),
+    );
+  const ids = (roots: AgentTreeNode[]): string[] =>
+    roots.flatMap((r) => [r.id, ...ids(r.children)]);
+  const setFleet = (roots: AgentTreeNode[]) => {
+    stubTree(roots);
+    useStore.setState({
+      theme: "void",
+      sessions: ids(roots).map(session),
+      exitedSessions: [],
+      agentStatuses: {},
+      notificationCounts: {},
+    });
+  };
+  const swap = async (roots: AgentTreeNode[]) => {
+    setFleet(roots);
+    await act(async () => {
+      await orgTreePoll.refresh();
+    });
+  };
+  const fullyOnScreen = (id: string) => {
+    const { x, y, k } = view();
+    const c = card(id) as HTMLElement;
+    const left = x + Number.parseFloat(c.style.left) * k;
+    const top = y + Number.parseFloat(c.style.top) * k;
+    return (
+      left >= 0 && top >= 0 && left + 200 * k <= VP.w && top + 60 * k <= VP.h
+    );
+  };
+
+  it("a second team that arrives after the chart opened is shown beside the first", async () => {
+    await mount(() => setFleet([team("Lead", 3)]));
+    await swap([team("Lead", 3), team("Other", 1)]);
+    await waitFor(() => expect(card("Other")).not.toBeNull());
+    expect(fullyOnScreen("Lead")).toBe(true);
+    expect(fullyOnScreen("Other")).toBe(true);
+    expect(fullyOnScreen("Other-0")).toBe(true);
+  });
+
+  it("removing the team on screen leaves the other team on screen, not an empty chart", async () => {
+    // Too wide for the 60% floor: the chart opens on the first team, and
+    // the second starts off-screen (asserted, so this can't pass vacuously).
+    await mount(() => setFleet([team("Lead", 10), team("Other", 1)]));
+    expect(fullyOnScreen("Other")).toBe(false);
+    await swap([team("Other", 1)]);
+    await waitFor(() => expect(card("Lead")).toBeNull());
+    expect(fullyOnScreen("Other")).toBe(true);
+    expect(fullyOnScreen("Other-0")).toBe(true);
+  });
+
+  it("a view you moved stays put while any card is still on screen (ADR-120's intent)", async () => {
+    await mount(() => setFleet([team("Lead", 3), team("Other", 1)]));
+    drag(stage(), -40, 0);
+    const before = view();
+    await swap([team("Lead", 3), team("Other", 2)]);
+    await waitFor(() => expect(card("Other-1")).not.toBeNull());
+    expect(view()).toEqual(before);
+  });
+});

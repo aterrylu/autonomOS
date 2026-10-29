@@ -506,12 +506,30 @@ function OrgCanvas({
     () => ({ w: layout.width, h: layout.height }),
     [layout.width, layout.height],
   );
+  // Every card's box, for the canvas's "is anything still on screen?" check.
+  // Keyed by the positions themselves, so a status frame that doesn't move a
+  // card doesn't hand the canvas a new array (and doesn't re-check the view).
+  const cardsKey = [...layout.pos]
+    .map(([id, p]) => `${id}@${p.x},${p.y}`)
+    .join("|");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cardsKey captures layout.pos
+  const cards = useMemo(
+    () =>
+      [...layout.pos.values()].map((p) => ({
+        x: p.x,
+        y: p.y,
+        w: CARD_W,
+        h: CARD_H,
+      })),
+    [cardsKey],
+  );
   const firstRoot = roots[0] ? layout.pos.get(roots[0].id) : undefined;
   const { api: view, store: viewStore } = useCanvasView({
     viewportRef,
     panRef,
     stageRef,
     content,
+    cards,
     anchorX: firstRoot ? firstRoot.x + CARD_W / 2 : layout.width / 2,
     onGestureStart: onViewGesture,
   });
