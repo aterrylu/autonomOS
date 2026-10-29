@@ -555,6 +555,7 @@ export function AgentContextMenu({
   const switchPane = useStore((s) => s.switchPane);
   const killSession = useStore((s) => s.killSession);
   const restartSession = useStore((s) => s.restartSession);
+  const openPermissionDialog = useStore((s) => s.openPermissionDialog);
   const renameSession = useStore((s) => s.renameSession);
   const resumeSession = useStore((s) => s.resumeSession);
   const removeSession = useStore((s) => s.removeSession);
@@ -740,6 +741,19 @@ export function AgentContextMenu({
         disabledReason: "No autonomOS record for this session",
         onSelect: () => {
           if (target.id) restartSession(target.id);
+          onClose();
+        },
+      },
+      {
+        key: "permission",
+        label: "Permission…",
+        icon: "⚿",
+        group: "process",
+        disabled: !canAct,
+        disabledReason: "No autonomOS record for this session",
+        // Opens the Permission… dialog (restarts with a chosen value).
+        onSelect: () => {
+          if (target.id) openPermissionDialog(target.id);
           onClose();
         },
       },

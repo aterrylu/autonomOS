@@ -9,6 +9,12 @@ import type {
 } from "@autonomos/core";
 import { request } from "./core";
 
+export interface RestartBody {
+  permission?: Readonly<Record<string, string>>;
+  freshConversation?: boolean;
+  confirmNeverAsks?: boolean;
+}
+
 export interface SpawnAgentBody {
   workingDirectory: string;
   name?: string;
@@ -59,8 +65,12 @@ export const agentsApi = {
   /** Restart one agent server-side: stop it, wait for it to exit, respawn it
    *  in the same conversation. `POST /api/agents/:id/restart`; failures carry
    *  the reason (409 already restarting, 404, 503 while the server stops). */
-  restart: (id: string) =>
-    request<Agent>(`/api/agents/${id}/restart`, { method: "POST", body: {} }),
+  /** Restart in the same conversation. With a body (the Permission… action):
+   *  a new permission in the runtime's own values, a fresh conversation, the
+   *  never-asks confirm. Refusals come back as ApiError codes
+   *  CONFIRM_NEVER_ASKS (400) / PERMISSION_NEEDS_FRESH_CONVERSATION (409). */
+  restart: (id: string, body: RestartBody = {}) =>
+    request<Agent>(`/api/agents/${id}/restart`, { method: "POST", body }),
   /** Reparent in the org chart. `manager` (name) or `managerId` (uuid); a null
    *  `managerId` clears. `POST /api/agents/:id/manager`. */
   manager: (

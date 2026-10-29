@@ -79,6 +79,7 @@ describe("AgentContextMenu — item sets per status", () => {
       "Open",
       "Rename…",
       "Restart",
+      "Permission…",
       "Kill",
       "Set manager",
       "Delete…",
@@ -165,6 +166,15 @@ describe("AgentContextMenu — actions wire to the store", () => {
     const { onClose } = renderMenu(RUNNING);
     fireEvent.click(screen.getByRole("menuitem", { name: "Kill" }));
     expect(useStore.getState().killSession).toHaveBeenCalledWith("agent-1");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("Permission… opens the Permission dialog for this agent and closes the menu", () => {
+    const onClose = vi.fn();
+    useStore.setState({ permissionDialogFor: null });
+    renderMenu(RUNNING, onClose);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Permission…" }));
+    expect(useStore.getState().permissionDialogFor).toBe("agent-1");
     expect(onClose).toHaveBeenCalled();
   });
 

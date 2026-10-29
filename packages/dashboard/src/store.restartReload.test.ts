@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "./api/agents";
+import { ApiError } from "./api/core";
 import {
   applyAgentsSnapshot,
   RESTART_PANE_GUARD_MS,
@@ -45,7 +46,8 @@ describe("reloadTerminal", () => {
 describe("restartSession — terminal reconnect", () => {
   it("bumps the reload nonce after a successful restart (so the pane reconnects)", async () => {
     await useStore.getState().restartSession("a1");
-    expect(agentsApi.restart).toHaveBeenCalledWith("a1");
+    // A plain restart sends an empty body: respawn exactly as recorded.
+    expect(agentsApi.restart).toHaveBeenCalledWith("a1", {});
     expect(useStore.getState().terminalReloadNonce.a1).toBe(1);
     // And it re-opened the pane (the #353 refocus).
     expect(useStore.getState().switchPane).toHaveBeenCalledWith({
@@ -62,6 +64,59 @@ describe("restartSession — terminal reconnect", () => {
     expect(useStore.getState().terminalReloadNonce.a1 ?? 0).toBe(0);
     // Nor does it re-open a pane onto a stopped agent.
     expect(useStore.getState().switchPane).not.toHaveBeenCalled();
+  });
+});
+
+// The Permission… dialog waits on restartWithPermission: every failure goes
+// back to it (it shows the reason in place and keeps the pick), never a toast.
+describe("restartWithPermission — failures go back to the dialog", () => {
+  beforeEach(() => {
+    // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    useStore.setState({ showActionToast: vi.fn() } as any);
+  });
+
+  it("a refusal is rethrown without a refetch (nothing was stopped)", async () => {
+    const refusal = new ApiError("confirm", 400, {
+      code: "CONFIRM_NEVER_ASKS",
+    });
+    (agentsApi.restart as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      refusal,
+    );
+    await expect(
+      useStore.getState().restartWithPermission("a1", {
+        permission: { "permission-mode": "bypassPermissions" },
+      }),
+    ).rejects.toBe(refusal);
+    expect(useStore.getState().fetchSessions).not.toHaveBeenCalled();
+    expect(useStore.getState().showActionToast).not.toHaveBeenCalled();
+    expect(restartingIds.has("a1")).toBe(false);
+  });
+
+  it("any other failure is rethrown too, after a refetch (it may have stopped the agent), with no toast", async () => {
+    const failure = new ApiError("Agent is already restarting", 409, {
+      code: "RESTARTING",
+    });
+    (agentsApi.restart as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      failure,
+    );
+    await expect(
+      useStore.getState().restartWithPermission("a1", {
+        permission: { "permission-mode": "acceptEdits" },
+      }),
+    ).rejects.toBe(failure);
+    expect(useStore.getState().fetchSessions).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().showActionToast).not.toHaveBeenCalled();
+  });
+
+  it("a plain restart still toasts its failure (no dialog is waiting)", async () => {
+    (agentsApi.restart as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError("Agent is already restarting", 409, { code: "RESTARTING" }),
+    );
+    await useStore.getState().restartSession("a1");
+    expect(useStore.getState().showActionToast).toHaveBeenCalledWith(
+      expect.stringContaining("Restart of"),
+      false,
+    );
   });
 });
 
