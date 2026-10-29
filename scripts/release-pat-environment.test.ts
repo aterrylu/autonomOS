@@ -1,0 +1,85 @@
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Security audit H-1 (ADR-151 follow-up): RELEASE_PAT can push to this repo
+ * and open PRs as its owner. As a repository secret, any workflow run could
+ * read it, including one started from a pushed non-main branch with an edited
+ * workflow. It now lives in the protected `release` environment (deployment
+ * branches: main only), and a job can only read an environment secret if it
+ * declares that environment. This keeps every job that uses the PAT inside it.
+ */
+
+const WORKFLOWS = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  ".github",
+  "workflows",
+);
+
+/** Each job in a workflow file: its name and its text (2-space job keys). */
+function jobs(text: string): { name: string; body: string }[] {
+  const start = text.search(/^jobs:\s*$/m);
+  if (start === -1) return [];
+  const lines = text.slice(start).split("\n").slice(1);
+  const out: { name: string; body: string }[] = [];
+  for (const line of lines) {
+    const m = /^ {2}([\w-]+):\s*$/.exec(line);
+    if (m) out.push({ name: m[1], body: "" });
+    else if (/^\S/.test(line) && line.trim()) break;
+    else if (out.length) out[out.length - 1].body += `${line}\n`;
+  }
+  return out;
+}
+
+const users = readdirSync(WORKFLOWS)
+  .filter((f) => /\.ya?ml$/.test(f))
+  .flatMap((f) =>
+    jobs(readFileSync(join(WORKFLOWS, f), "utf8"))
+      .filter((j) => /secrets\.RELEASE_PAT\b/.test(j.body))
+      .map((j) => ({ file: f, ...j })),
+  );
+
+describe("RELEASE_PAT is only read inside the protected release environment (audit H-1)", () => {
+  it("finds the jobs that use it (precondition)", () => {
+    const names = users.map((u) => `${u.file}:${u.name}`);
+    // version.yml's job is the one that must exist; others (decisions-index,
+    // being removed) are covered by the per-job rule below while they exist.
+    assert.ok(
+      names.includes("version.yml:version"),
+      `version.yml:version not found among ${names.join(", ")}`,
+    );
+  });
+
+  it("no workflow passes every secret to a reusable workflow (`secrets: inherit`)", () => {
+    // A called workflow that inherits every secret could read RELEASE_PAT
+    // without declaring the environment itself (SecurityAudit-Claude).
+    for (const f of readdirSync(WORKFLOWS).filter((x) => /\.ya?ml$/.test(x))) {
+      assert.doesNotMatch(
+        readFileSync(join(WORKFLOWS, f), "utf8"),
+        /^\s*secrets:\s*inherit\b/m,
+        `${f} passes every secret to a reusable workflow; pass only what it needs`,
+      );
+    }
+  });
+
+  it("version.yml says so when RELEASE_PAT isn't reachable (the step-4 verification signal)", () => {
+    assert.match(
+      readFileSync(join(WORKFLOWS, "version.yml"), "utf8"),
+      /::warning::RELEASE_PAT is not set/,
+    );
+  });
+
+  for (const u of users) {
+    it(`${u.file} job "${u.name}" declares environment: release`, () => {
+      assert.match(
+        u.body,
+        /^ {4}environment:\s*(release|\{?\s*name:\s*release)/m,
+        `${u.file} job "${u.name}" reads RELEASE_PAT outside the protected release environment`,
+      );
+    });
+  }
+});
