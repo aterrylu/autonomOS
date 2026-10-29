@@ -1,3 +1,6 @@
+// First: isolates HOME before any server module captures it (default provider
+// is claude-code, whose pre-trust writes .claude.json).
+import "./helpers/isolated-home-first.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,6 +44,12 @@ import { spawnErrorStatus } from "../routes/agents.js";
  * real-terminal QA. (Mirrors resume-after-self-exit.test.ts, which tests the
  * store invariant rather than the PTY.)
  */
+
+it("runs under the throwaway HOME (precondition for every spawn below)", () => {
+  // The side-effect import above must stay FIRST; a sorted-away import
+  // would isolate only after shared.ts captured the real HOME.
+  assert.match(process.env.HOME ?? "", /aos-isolated-home-/);
+});
 
 let isolatedDir: string;
 
