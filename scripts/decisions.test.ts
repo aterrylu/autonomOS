@@ -380,6 +380,20 @@ describe("check", () => {
     });
   }
 
+  it("rejects a guide overwritten with the generated table (make adr-index > README.md)", () => {
+    scratch();
+    writeFileSync(
+      join(dir, "README.md"),
+      renderIndex(loadEntries(dir, manifest)),
+    );
+    const [err, ...rest] = errorsMatching(/holds the generated index table/);
+    assert.equal(rest.length, 0);
+    assert.match(
+      err!,
+      /git checkout origin\/main -- docs\/decisions\/README\.md/,
+    );
+  });
+
   it("rejects a deleted docs/DECISIONS.md stub", () => {
     scratch();
     rmSync(join(root, LEGACY_LOG));
@@ -804,6 +818,11 @@ describe("a duplicate number names the commits that added each file", () => {
     );
     assert.match(err!, /make adr-renumber FILE=docs\/decisions\/ADR-900-/);
     assert.match(err!, /whoever merged later runs it in a follow-up PR/);
+    assert.doesNotMatch(
+      err!,
+      /Which merged later\?/,
+      "with history the notes already answer it",
+    );
   });
 
   it("names no commit in a shallow clone (git would blame the one grafted commit)", () => {
@@ -823,6 +842,11 @@ describe("a duplicate number names the commits that added each file", () => {
         "still RED in a shallow clone (CI's checkout)",
       );
       assert.doesNotMatch(errs[0]!, /added in/);
+      // …so it says how to find out which merged later, instead of leaving a coin flip.
+      assert.match(
+        errs[0]!,
+        /Which merged later\? git log --diff-filter=A .*ADR-900-merged-first\.md .*ADR-900-merged-second\.md/,
+      );
     } finally {
       rmSync(shallow, { recursive: true, force: true });
     }

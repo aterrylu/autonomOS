@@ -46,7 +46,8 @@ export const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const DECISIONS_DIR = "docs/decisions";
 export const LEGACY_LOG = "docs/DECISIONS.md";
 export const MANIFEST_FILE = "legacy-manifest.json";
-export const INDEX_FILE = "README.md";
+/** The static guide to this directory (not an index: that is printed, never committed). */
+const GUIDE_FILE = "README.md";
 
 /**
  * docs/DECISIONS.md after the split: a pointer, pinned byte for byte by `check`, so no
@@ -55,7 +56,7 @@ export const INDEX_FILE = "README.md";
 export const LEGACY_STUB = `# Architectural Decision Records → [\`docs/decisions/\`](decisions/)
 
 This log moved: **every decision is now its own file** in
-[\`docs/decisions/\`](decisions/), named \`ADR-NNN-<slug>.md\`, with a generated index in
+[\`docs/decisions/\`](decisions/), named \`ADR-NNN-<slug>.md\`, with a guide in
 [\`docs/decisions/README.md\`](decisions/README.md). ADR numbers did not change, so
 existing "ADR-NNN" references (code comments, PRs, notes) still point at the same
 decision: open \`docs/decisions/ADR-NNN-*.md\`.
@@ -334,6 +335,7 @@ export function checkDecisions(root: string): string[] {
     ...checkLegacyFrozen(dir, manifest),
     ...checkLegacyLogIsStub(root),
     ...checkDirectoryContents(dir),
+    ...checkGuideIsNotTheIndex(dir),
     ...checkNewEntries(dir, manifest),
     ...checkNumbersUnique(root, dir, manifest),
   ];
@@ -378,22 +380,35 @@ function checkLegacyLogIsStub(root: string): string[] {
   ];
 }
 
-/** Only ADR files, the index and the manifest live in docs/decisions/ (so nothing escapes check). */
+/** Only ADR files, the guide and the manifest live in docs/decisions/ (so nothing escapes check). */
 function checkDirectoryContents(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true })
     .filter(
       (d) =>
         !d.isFile() ||
         !(
-          d.name === INDEX_FILE ||
+          d.name === GUIDE_FILE ||
           d.name === MANIFEST_FILE ||
           ANY_ADR_FILE_RE.test(d.name)
         ),
     )
     .map(
       (d) =>
-        `${relPath(d.name)}: unexpected ${d.isFile() ? "file" : "entry"}. ${DECISIONS_DIR}/ holds only ADR-NNN-slug.md files, ${INDEX_FILE} and ${MANIFEST_FILE}.`,
+        `${relPath(d.name)}: unexpected ${d.isFile() ? "file" : "entry"}. ${DECISIONS_DIR}/ holds only ADR-NNN-slug.md files, ${GUIDE_FILE} and ${MANIFEST_FILE}.`,
     );
+}
+
+/** docs/decisions/README.md is the hand-written guide, never the generated table (ADR-157). */
+function checkGuideIsNotTheIndex(dir: string): string[] {
+  const path = join(dir, GUIDE_FILE);
+  if (
+    !existsSync(path) ||
+    !readFileSync(path, "utf8").startsWith(INDEX_HEADING)
+  )
+    return [];
+  return [
+    `${relPath(GUIDE_FILE)} holds the generated index table. It is the hand-written guide; the table is never committed (ADR-157). Restore it: git checkout origin/main -- ${relPath(GUIDE_FILE)}`,
+  ];
 }
 
 /** New entries: filename ↔ header, required fields. */
@@ -454,15 +469,29 @@ function checkNumbersUnique(
 ): string[] {
   const entries = loadEntries(dir, manifest);
   const next = pad(Math.max(...entries.map((e) => e.num)) + 1);
+  const byNum = new Map<number, Entry[]>();
+  for (const e of entries) {
+    const group = byNum.get(e.num);
+    if (group) group.push(e);
+    else byNum.set(e.num, [e]);
+  }
   const errors: string[] = [];
-  for (const group of collidingGroups(entries)) {
+  for (const group of byNum.values()) {
+    if (group.length < 2 || group.every((e) => e.legacy)) continue;
     const newcomers = group.filter((e) => !e.legacy);
+    // Without history (CI checks out shallow) the notes are empty, so say how to find out
+    // which file merged later: renumbering the earlier one would strand its references.
+    const notes = group.map((e) => addedInNote(root, e.file));
+    const whoIsLater = notes.every((n) => n !== "")
+      ? ""
+      : `\n  Which merged later? git log --diff-filter=A --format='%h %ad %s' --date=short -- ${group.map((e) => relPath(e.file)).join(" ")}`;
     errors.push(
-      `ADR-${pad(group[0]!.num)} is used by ${group.length} files: ${group.map((e) => relPath(e.file) + addedInNote(root, e.file)).join(", ")}.\n` +
+      `ADR-${pad(group[0]!.num)} is used by ${group.length} files: ${group.map((e, k) => relPath(e.file) + notes[k]).join(", ")}.\n` +
         "  Parallel PRs picked the same number; whoever merges LATER renumbers (one file, nothing else changes).\n" +
         `  Fix: ${newcomers.map((e) => `make adr-renumber FILE=${relPath(e.file)}`).join("  or  ")}` +
         `  (next free on this branch: ADR-${next}; the script also checks open PRs).` +
-        " If both PRs already merged, whoever merged later runs it in a follow-up PR.",
+        " If both PRs already merged, whoever merged later runs it in a follow-up PR." +
+        whoIsLater,
     );
   }
   return errors;
@@ -470,73 +499,34 @@ function checkNumbersUnique(
 
 // ── who added a file (for collision messages) ──────────────────────────────
 
-export interface AddCommit {
-  sha: string;
-  subject: string;
-  /** Position in main's first-parent history. Larger = later. Never a timestamp. */
-  order: number;
-}
-
 function isShallow(root: string): boolean {
   return git(root, ["rev-parse", "--is-shallow-repository"]).trim() === "true";
 }
 
-function isTracked(root: string, file: string): boolean {
-  try {
-    git(root, ["ls-files", "--error-unmatch", relPath(file)]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** The first-parent commit that added `docs/decisions/<file>` at that path (a rename counts). */
-export function addedIn(root: string, file: string): AddCommit | undefined {
-  const line = git(root, [
-    "log",
-    "--first-parent",
-    "--no-renames",
-    "--diff-filter=A",
-    "--format=%H%x09%s",
-    "-1",
-    "--",
-    relPath(file),
-  ]).trim();
-  if (!line) return undefined;
-  const [sha, ...subject] = line.split("\t");
-  const order = Number(
-    git(root, ["rev-list", "--first-parent", "--count", sha!]).trim(),
-  );
-  return { sha: sha!, subject: subject.join("\t"), order };
-}
-
-/** `addedIn` for messages: never throws, and says nothing in a shallow clone (where git would
- *  blame the one grafted commit for every file). */
+/**
+ * ` (added in <sha> "<subject>")`: the first-parent commit that added `docs/decisions/<file>`
+ * at that path (a rename counts). Never throws, and says nothing for an uncommitted file or in
+ * a shallow clone (where git would blame the one grafted commit for every file).
+ */
 function addedInNote(root: string, file: string): string {
   try {
     if (isShallow(root)) return "";
-    const c = addedIn(root, file);
-    return c ? ` (added in ${commitRef(c)})` : "";
+    const line = git(root, [
+      "log",
+      "--first-parent",
+      "--no-renames",
+      "--diff-filter=A",
+      "--format=%H%x09%s",
+      "-1",
+      "--",
+      relPath(file),
+    ]).trim();
+    if (!line) return "";
+    const [sha, ...subject] = line.split("\t");
+    return ` (added in ${sha!.slice(0, 7)} "${subject.join("\t")}")`;
   } catch {
     return "";
   }
-}
-
-/** Groups of entries sharing a number, except groups made only of grandfathered legacy files. */
-function collidingGroups(entries: Entry[]): Entry[][] {
-  const byNum = new Map<number, Entry[]>();
-  for (const e of entries) {
-    const group = byNum.get(e.num);
-    if (group) group.push(e);
-    else byNum.set(e.num, [e]);
-  }
-  return [...byNum.values()].filter(
-    (g) => g.length > 1 && !g.every((e) => e.legacy),
-  );
-}
-
-function commitRef(c?: AddCommit): string {
-  return c ? `${c.sha.slice(0, 7)} "${c.subject}"` : "an uncommitted change";
 }
 
 // ── index ───────────────────────────────────────────────────────────────────
@@ -737,7 +727,8 @@ ${rows.join("\n")}
 `;
 }
 
-const INDEX_PREAMBLE = `# Architectural Decision Records: index
+const INDEX_HEADING = "# Architectural Decision Records: index";
+const INDEX_PREAMBLE = `${INDEX_HEADING}
 
 Generated by \`make adr-index\` from docs/decisions/ADR-*.md. Status and supersession are
 derived where parseable; read the entry for anything subtler.
@@ -799,26 +790,22 @@ const GH_FILES_CAP = 100;
  * Every number already claimed: this checkout, origin/main, and open PRs (new files, plus
  * legacy `+## ADR-NNN` appends to docs/DECISIONS.md during the transition). A source that is
  * unavailable (offline, no gh) is skipped with a warning saying why, never fatal: CI's
- * duplicate check is the backstop. ADR_OFFLINE=1 skips the network sources (tests).
+ * duplicate check is the backstop; each warning goes to stderr. ADR_OFFLINE=1 skips the
+ * network sources (tests).
  */
-export function claimedNumbers(
-  root: string,
-  opts: { excludeFile?: string } = {},
-): { nums: number[]; warnings: string[] } {
-  const warnings: string[] = [];
+function claimedNumbers(root: string, excludeFile?: string): number[] {
+  const warn = (w: string) => console.warn(`warning: ${w}`);
   const nums = adrFiles(join(root, DECISIONS_DIR))
-    .filter((f) => f !== opts.excludeFile)
+    .filter((f) => f !== excludeFile)
     .flatMap((f) => numbersIn(f));
   if (process.env.ADR_OFFLINE === "1") {
-    return {
-      nums,
-      warnings: ["ADR_OFFLINE=1: origin/main and open PRs not checked"],
-    };
+    warn("ADR_OFFLINE=1: origin/main and open PRs not checked");
+    return nums;
   }
   try {
     git(root, ["fetch", "--quiet", "origin", "main"]);
   } catch (err) {
-    warnings.push(
+    warn(
       `could not fetch origin/main (${why(err)}); using the local origin/main ref`,
     );
   }
@@ -835,18 +822,17 @@ export function claimedNumbers(
       ),
     );
   } catch (err) {
-    warnings.push(`origin/main's ${DECISIONS_DIR}/ not read (${why(err)})`);
+    warn(`origin/main's ${DECISIONS_DIR}/ not read (${why(err)})`);
   }
   try {
     // Count main's legacy-log headers as if they were `+## ADR-NNN` diff lines.
     const mainLog = git(root, ["show", `origin/main:${LEGACY_LOG}`]);
     nums.push(...numbersIn(mainLog.replace(/^## /gm, "+## ")));
   } catch (err) {
-    warnings.push(`origin/main's ${LEGACY_LOG} not read (${why(err)})`);
+    warn(`origin/main's ${LEGACY_LOG} not read (${why(err)})`);
   }
   let prs: {
     number: number;
-    headRefName: string;
     changedFiles: number;
     files: { path: string }[];
   }[];
@@ -860,17 +846,15 @@ export function claimedNumbers(
         "--limit",
         String(PR_LIST_LIMIT),
         "--json",
-        "number,headRefName,changedFiles,files",
+        "number,changedFiles,files",
       ]),
     );
   } catch (err) {
-    warnings.push(
-      `open PRs NOT checked (${why(err)}); CI still catches a collision`,
-    );
-    return { nums, warnings };
+    warn(`open PRs NOT checked (${why(err)}); CI still catches a collision`);
+    return nums;
   }
   if (prs.length >= PR_LIST_LIMIT) {
-    warnings.push(
+    warn(
       `${prs.length} open PRs: only the newest ${PR_LIST_LIMIT} were checked`,
     );
   }
@@ -885,7 +869,7 @@ export function claimedNumbers(
           "--name-only",
         ]).split("\n");
       } catch (err) {
-        warnings.push(
+        warn(
           `PR #${pr.number} has ${pr.changedFiles} files; only ${GH_FILES_CAP} checked (${why(err)})`,
         );
       }
@@ -902,25 +886,13 @@ export function claimedNumbers(
       });
       nums.push(...numbersIn(diff));
     } catch (err) {
-      warnings.push(
-        `could not read the diff of PR #${pr.number} (${why(err)})`,
-      );
+      warn(`could not read the diff of PR #${pr.number} (${why(err)})`);
     }
   }
-  return { nums, warnings };
-}
-
-/** claimedNumbers, printing each warning to stderr. */
-function claimedNumbersLogged(
-  root: string,
-  opts: { excludeFile?: string } = {},
-): number[] {
-  const { nums, warnings } = claimedNumbers(root, opts);
-  for (const w of warnings) console.warn(`warning: ${w}`);
   return nums;
 }
 
-export function nextNumber(nums: number[]): number {
+function nextNumber(nums: number[]): number {
   return (nums.length ? Math.max(...nums) : 0) + 1;
 }
 
@@ -939,27 +911,25 @@ export function template(num: number, title: string, today: string): string {
 
 // ── commands ────────────────────────────────────────────────────────────────
 
-export function renumber(root: string, fileArg: string): string {
-  const file = fileArg.split("/").pop()!;
-  if (!NEW_FILE_RE.test(file)) {
-    throw new Error(`${fileArg}: not a new-style ADR file (ADR-NNN-slug.md)`);
+function isTracked(root: string, file: string): boolean {
+  try {
+    git(root, ["ls-files", "--error-unmatch", relPath(file)]);
+    return true;
+  } catch {
+    return false;
   }
-  return renumberTo(
-    root,
-    file,
-    nextNumber(claimedNumbersLogged(root, { excludeFile: file })),
-  );
 }
 
-/** Move `docs/decisions/<file>` to number `n`: rewrite its header, then git mv (staged). */
-export function renumberTo(root: string, file: string, n: number): string {
+/** Move a colliding ADR to the next free number: rewrite its header, then git mv (staged). */
+export function renumber(root: string, fileArg: string): string {
   const dir = join(root, DECISIONS_DIR);
+  const file = fileArg.split("/").pop()!;
   const m = NEW_FILE_RE.exec(file);
-  if (!m)
-    throw new Error(
-      `${relPath(file)}: not a new-style ADR file (ADR-NNN-slug.md)`,
-    );
-  const target = `ADR-${pad(n)}-${m[2]}.md`;
+  if (!m) {
+    throw new Error(`${fileArg}: not a new-style ADR file (ADR-NNN-slug.md)`);
+  }
+  const n = pad(nextNumber(claimedNumbers(root, file)));
+  const target = `ADR-${n}-${m[2]}.md`;
   const before = readFileSync(join(dir, file), "utf8");
   const header = new RegExp(`^## ADR-${m[1]}: `);
   if (!header.test(before)) {
@@ -967,7 +937,7 @@ export function renumberTo(root: string, file: string, n: number): string {
       `${relPath(file)}: its first line isn't "## ADR-${m[1]}: …", so the header can't be renumbered. Fix the header first.`,
     );
   }
-  writeFileSync(join(dir, file), before.replace(header, `## ADR-${pad(n)}: `));
+  writeFileSync(join(dir, file), before.replace(header, `## ADR-${n}: `));
   // A tracked file must move in the index too, or the commit would lose it; surface git's error.
   if (isTracked(root, file)) {
     git(root, ["mv", relPath(file), relPath(target)]);
@@ -1058,7 +1028,7 @@ export function importFrom(
     const taken = adrFiles(dir).flatMap((f) => numbersIn(f));
     let num = numberOf(entry.id);
     if (taken.includes(num) || !/^\d+$/.test(entry.id)) {
-      num = nextNumber([...claimedNumbersLogged(root), ...taken]);
+      num = nextNumber([...claimedNumbers(root), ...taken]);
       notes.push(
         `ADR-${entry.id} is taken; imported as ADR-${pad(num)}. Update references to ADR-${entry.id} in your PR.`,
       );
@@ -1100,7 +1070,7 @@ function main(argv: string[]): number {
         console.error('usage: make adr NEW="Short decision title"');
         return 2;
       }
-      const num = nextNumber(claimedNumbersLogged(root));
+      const num = nextNumber(claimedNumbers(root));
       const file = join(DECISIONS_DIR, `ADR-${pad(num)}-${slugify(title)}.md`);
       writeFileSync(
         join(root, file),
@@ -1174,7 +1144,7 @@ function main(argv: string[]): number {
       writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       writeFileSync(join(root, LEGACY_LOG), LEGACY_STUB);
       console.log(
-        `migrated ${files.size} ADRs into ${DECISIONS_DIR}/ (source ${commit.slice(0, 7)}); run make adr-index`,
+        `migrated ${files.size} ADRs into ${DECISIONS_DIR}/ (source ${commit.slice(0, 7)})`,
       );
       return 0;
     }

@@ -260,7 +260,7 @@ adr-check:
 	$(TSX) scripts/decisions.ts check
 
 adr-index:
-	$(TSX) scripts/decisions.ts index
+	@$(TSX) scripts/decisions.ts index
 
 adr-renumber:
 	@test -n "$$FILE" || { echo 'usage: make adr-renumber FILE=docs/decisions/ADR-NNN-slug.md'; exit 2; }
