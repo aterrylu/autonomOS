@@ -23,6 +23,7 @@ import {
 import {
   OOM_RESUME_WINDOW_MS,
   oomAutoResumeAllowed,
+  oomBootNotices,
   oomExitNotice,
 } from "../agents/runtime.js";
 import { detectSupervisor } from "../upgradeJob.js";
@@ -153,6 +154,29 @@ describe("OomGuard: per-agent cgroups (delegated unit)", () => {
       readFileSync(join(unitDir, "cgroup.subtree_control"), "utf-8"),
       "",
     );
+  });
+
+  it("a unit without the marker (written before ADR-156) is flagged; a marked unit and a terminal's scope aren't", () => {
+    const unmarked = guard({});
+    unmarked.g.init();
+    assert.equal(unmarked.g.unitPredatesIsolation, true);
+
+    const marked = guard();
+    marked.g.init();
+    assert.equal(
+      marked.g.isolated,
+      true,
+      "precondition: the marked unit isolated",
+    );
+    assert.equal(marked.g.unitPredatesIsolation, false);
+
+    const scope =
+      "/user.slice/user-1000.slice/user@1000.service/app.slice/vte-spawn-x.scope";
+    writeFileSync(join(proc, String(SELF), "cgroup"), `0::${scope}\n`);
+    mkdirSync(join(cg, scope), { recursive: true });
+    const terminal = guard({});
+    terminal.g.init();
+    assert.equal(terminal.g.unitPredatesIsolation, false);
   });
 
   it("moves EVERY unit process into the server leaf, then enables memory+pids for children", () => {
@@ -446,6 +470,45 @@ describe("runtime: what the operator is told", () => {
       /Not resuming it automatically/,
     );
     assert.equal(oomAutoResumeAllowed("never-killed"), true);
+  });
+
+  it("an upgraded install whose unit predates isolation is told the exact command, once", () => {
+    const { g } = guard({});
+    g.init();
+    const notices = oomBootNotices(
+      g,
+      ["start", "--port=4796", "--host", "127.0.0.1,100.64.0.2"],
+      { AUTONOMOS_CONFIG_DIR: "/tmp/aos-cfg" },
+    );
+    assert.equal(notices.length, 1);
+    assert.match(
+      notices[0],
+      /Per-agent out-of-memory isolation is off for this install/,
+    );
+    assert.ok(
+      notices[0].includes(
+        "`AUTONOMOS_CONFIG_DIR=/tmp/aos-cfg autonomos install-service --force --port=4796 --host=127.0.0.1,100.64.0.2`",
+      ),
+      notices[0],
+    );
+    assert.match(notices[0], /the token and agents are kept/);
+    assert.match(
+      notices[0],
+      /Environment= lines you added to the unit by hand are not/,
+    );
+    assert.ok(
+      oomBootNotices(g, [], {})[0].includes(
+        "`autonomos install-service --force`",
+      ),
+      "default config dir and no baked flags: the bare command",
+    );
+  });
+
+  it("a marked, isolated unit gets no boot notice", () => {
+    const { g } = guard();
+    g.init();
+    assert.equal(g.isolated, true, "precondition: isolated");
+    assert.deepEqual(oomBootNotices(g, ["start", "--port=3100"], {}), []);
   });
 
   it("the resume window is 10 minutes", () => {

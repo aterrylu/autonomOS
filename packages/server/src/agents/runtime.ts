@@ -74,7 +74,7 @@ import {
 } from "./codexSocket.js";
 import { enrichAgent } from "./enrich.js";
 import { noteFreshStart } from "./freshStarts.js";
-import { type OomVerdict, oomGuard } from "./oomGuard.js";
+import { type OomGuard, type OomVerdict, oomGuard } from "./oomGuard.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -522,6 +522,54 @@ export function oomAutoResumeAllowed(
   return last === undefined || now - last >= OOM_RESUME_WINDOW_MS;
 }
 
+/** The bell text for a service whose unit predates OOM isolation, with the
+ *  command that turns it on. The re-render writes the unit from the CALLER's
+ *  shell, so the port/host baked into this server's argv and a custom config
+ *  dir are spelled out; anything else hand-added to the unit is not carried. */
+export function unitPredatesIsolationNotice(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const flags: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (/^--(port|host)=/.test(a)) flags.push(a);
+    else if ((a === "--port" || a === "--host") && argv[i + 1]) {
+      flags.push(`${a}=${argv[++i]}`);
+    }
+  }
+  const prefix = env.AUTONOMOS_CONFIG_DIR
+    ? `AUTONOMOS_CONFIG_DIR=${env.AUTONOMOS_CONFIG_DIR} `
+    : "";
+  const cmd = `${prefix}autonomos install-service --force${flags.map((f) => ` ${f}`).join("")}`;
+  return `Per-agent out-of-memory isolation is off for this install: its service unit predates it. Run \`${cmd}\` once to turn it on (the token and agents are kept; Environment= lines you added to the unit by hand are not, so add those back).`;
+}
+
+/** What to tell the operator at boot about OOM isolation being off: the unit
+ *  predates it (re-render to turn it on), or it asked for it and setup failed. */
+export function oomBootNotices(
+  guard: Pick<
+    OomGuard,
+    | "unitPredatesIsolation"
+    | "delegationRequested"
+    | "isolated"
+    | "degradedReason"
+  >,
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const notices: string[] = [];
+  if (guard.unitPredatesIsolation) {
+    notices.push(unitPredatesIsolationNotice(argv, env));
+  }
+  if (guard.delegationRequested && !guard.isolated) {
+    notices.push(
+      `Per-agent memory isolation is off (${guard.degradedReason ?? "not available"}). An agent that runs out of memory still can't stop the server, but systemd-oomd may take all agents together, and kills can't be attributed to an agent.`,
+    );
+  }
+  return notices;
+}
+
 /** The bell text for an agent memory (or an outside SIGKILL) took down. */
 export function oomExitNotice(
   name: string,
@@ -594,12 +642,11 @@ let oomPoll: ReturnType<typeof setInterval> | null = null;
 export function startOomGuard(pollMs = 5_000): void {
   oomGuard.init();
   if (oomPoll || oomGuard.platform !== "linux") return;
-  if (oomGuard.delegationRequested && !oomGuard.isolated) {
-    // The unit asked for per-agent isolation and it couldn't be set up:
-    // say so where the operator looks, not only in the log.
-    pushServerNotification(
-      `Per-agent memory isolation is off (${oomGuard.degradedReason ?? "not available"}). An agent that runs out of memory still can't stop the server, but systemd-oomd may take all agents together, and kills can't be attributed to an agent.`,
-    );
+  // Said where the operator looks, not only in the log. Once per boot: the
+  // poll guard above makes a second call a no-op.
+  for (const notice of oomBootNotices(oomGuard, process.argv.slice(2))) {
+    console.warn(`[oom] ${notice}`);
+    pushServerNotification(notice);
   }
   oomPoll = setInterval(() => {
     const { perAgent, unattributed } = oomGuard.pollKills(

@@ -182,12 +182,14 @@ if [[ -f "$r" ]]; then
 fi
 [[ "$state" == active && "$nr" == 0 && "$pid0" == "$pid1" && "$alive" == 1 ]]; check "the unit stayed up: active, no restart, same MainPID, server alive" $?
 [[ "$oomk" -ge 1 ]]; check "an OOM kill really happened in the unit (oom_kill=$oomk)" $?
+[[ "$(json "$WORK/A/pids.json" predatesIsolation)" == "False" ]]; check "the marked unit gets no 'turn isolation on' notice" $?
 
 # ── B: without OOMPolicy (the bug) ──
 run_variant B; ran B
 read_outcome; read -r state res nr pid0 pid1 alive oomk <"$WORK/B/unit"
 echo "B — the bug reproduces with the pre-fix unit:"
 [[ "$oomk" -ge 1 && ( "$res" == oom-kill || "$nr" != 0 || "$pid0" != "$pid1" ) ]]; check "an OOM kill happened AND systemd stopped the whole unit (result=$res restarts=$nr oom_kill=$oomk)" $?
+[[ -f "$WORK/B/pids.json" && "$(json "$WORK/B/pids.json" predatesIsolation)" == "True" ]]; check "the pre-fix unit is detected, so the server tells the operator how to turn isolation on" $?
 
 # ── C: guard off ──
 run_variant C; ran C
