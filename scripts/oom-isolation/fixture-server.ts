@@ -44,7 +44,14 @@ if (guardOn) guard.attach("agent-a", agentA.pid);
 
 writeFileSync(
   join(out, "pids.json"),
-  JSON.stringify({ server: process.pid, agentA: agentA.pid, agentB: agentB.pid }),
+  JSON.stringify({
+    server: process.pid,
+    agentA: agentA.pid,
+    agentB: agentB.pid,
+    // What the boot notice keys on (runtime.ts oomBootNotices), read under
+    // the real unit: true only for a unit without the template's marker.
+    predatesIsolation: guard.unitPredatesIsolation,
+  }),
 );
 
 // Heartbeat: proves the server process is the SAME one, still running.

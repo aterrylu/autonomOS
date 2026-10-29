@@ -58,6 +58,11 @@ import {
 import { getSettings, runtimeDefaultPermission } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
+import {
+  detectSupervisor,
+  expectedServiceNames,
+  type Supervisor,
+} from "../upgradeJob.js";
 import { observeExitCode, observeStart } from "./analytics.js";
 import {
   cancelAllChannelServerChecks,
@@ -74,7 +79,7 @@ import {
 } from "./codexSocket.js";
 import { enrichAgent } from "./enrich.js";
 import { noteFreshStart } from "./freshStarts.js";
-import { type OomVerdict, oomGuard } from "./oomGuard.js";
+import { type OomGuard, type OomVerdict, oomGuard } from "./oomGuard.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -522,6 +527,55 @@ export function oomAutoResumeAllowed(
   return last === undefined || now - last >= OOM_RESUME_WINDOW_MS;
 }
 
+/** The bell text for our service unit when it predates OOM isolation. The
+ *  remedy is a drop-in, not a re-render: `install-service --force` rewrites
+ *  the unit from the caller's shell and drops what it can't see (a hand-set
+ *  AUTONOMOS_HOST widens the bind, a custom config dir loses the token and
+ *  agents), while a drop-in adds three lines and leaves the unit as it is. */
+export function unitPredatesIsolationNotice(unit: string): string {
+  const risk =
+    "An agent that runs out of memory can stop this server and every agent: this install's service unit predates per-agent memory isolation (an update from v0.7.0 keeps the old unit).";
+  if (!/^[A-Za-z0-9@._:-]+$/.test(unit)) {
+    return `${risk} Add OOMPolicy=continue, Delegate=yes and Environment=AUTONOMOS_CGROUP_DELEGATED=1 to its [Service] section in a drop-in, then restart it.`;
+  }
+  const dir = `~/.config/systemd/user/${unit}.d`;
+  return `${risk} To turn it on without changing anything else in the unit, run this while the agents are idle (it restarts autonomOS; the agents resume): mkdir -p ${dir} && printf '[Service]\\nOOMPolicy=continue\\nDelegate=yes\\nEnvironment=AUTONOMOS_CGROUP_DELEGATED=1\\n' > ${dir}/oom-isolation.conf && systemctl --user daemon-reload && systemctl --user restart ${unit}`;
+}
+
+/** What to tell the operator at boot about OOM isolation being off: our unit
+ *  predates it, or it asked for it and setup failed. "Our unit" is the
+ *  upgrader's own test (INVOCATION_ID + the exact unit name, label-aware),
+ *  and never a server an agent started: under an old undelegated unit every
+ *  agent process sits in the unit's cgroup too. */
+export function oomBootNotices(
+  guard: Pick<
+    OomGuard,
+    | "unitPredatesIsolation"
+    | "delegationRequested"
+    | "isolated"
+    | "degradedReason"
+  >,
+  env: NodeJS.ProcessEnv = process.env,
+  supervisor: () => Supervisor = () => detectSupervisor(env),
+): string[] {
+  const notices: string[] = [];
+  if (
+    guard.unitPredatesIsolation &&
+    !env.AUTONOMOS_SESSION_ID &&
+    supervisor().kind === "systemd"
+  ) {
+    notices.push(
+      unitPredatesIsolationNotice(expectedServiceNames(env).systemdUnit),
+    );
+  }
+  if (guard.delegationRequested && !guard.isolated) {
+    notices.push(
+      `Per-agent memory isolation is off (${guard.degradedReason ?? "not available"}). An agent that runs out of memory still can't stop the server, but systemd-oomd may take all agents together, and kills can't be attributed to an agent.`,
+    );
+  }
+  return notices;
+}
+
 /** The bell text for an agent memory (or an outside SIGKILL) took down. */
 export function oomExitNotice(
   name: string,
@@ -594,12 +648,16 @@ let oomPoll: ReturnType<typeof setInterval> | null = null;
 export function startOomGuard(pollMs = 5_000): void {
   oomGuard.init();
   if (oomPoll || oomGuard.platform !== "linux") return;
-  if (oomGuard.delegationRequested && !oomGuard.isolated) {
-    // The unit asked for per-agent isolation and it couldn't be set up:
-    // say so where the operator looks, not only in the log.
-    pushServerNotification(
-      `Per-agent memory isolation is off (${oomGuard.degradedReason ?? "not available"}). An agent that runs out of memory still can't stop the server, but systemd-oomd may take all agents together, and kills can't be attributed to an agent.`,
-    );
+  // Said where the operator looks, not only in the log. Once per boot: the
+  // poll guard above makes a second call a no-op.
+  try {
+    for (const notice of oomBootNotices(oomGuard)) {
+      console.warn(`[oom] ${notice}`);
+      pushServerNotification(notice);
+    }
+  } catch (err) {
+    // A notice must never be the reason the server doesn't come up.
+    console.warn(`[oom] boot notice failed: ${(err as Error).message}`);
   }
   oomPoll = setInterval(() => {
     const { perAgent, unattributed } = oomGuard.pollKills(
