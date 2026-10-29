@@ -46,9 +46,12 @@ const users = readdirSync(WORKFLOWS)
 describe("RELEASE_PAT is only read inside the protected release environment (audit H-1)", () => {
   it("finds the jobs that use it (precondition)", () => {
     const names = users.map((u) => `${u.file}:${u.name}`);
-    for (const known of ["version.yml:version", "decisions-index.yml:index"]) {
-      assert.ok(names.includes(known), `${known} not found among ${names.join(", ")}`);
-    }
+    // version.yml's job is the one that must exist; others (decisions-index,
+    // being removed) are covered by the per-job rule below while they exist.
+    assert.ok(
+      names.includes("version.yml:version"),
+      `version.yml:version not found among ${names.join(", ")}`,
+    );
   });
 
   it("no workflow passes every secret to a reusable workflow (`secrets: inherit`)", () => {
