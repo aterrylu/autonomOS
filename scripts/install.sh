@@ -92,6 +92,24 @@ EOF
   fi
 fi
 
+# Is `tailscale serve` still forwarding to this machine's PORT? (ADR-158)
+# autonomOS no longer runs behind serve: with serve still forwarding, every
+# tailnet visitor would arrive as loopback (exempt from the new-device lock).
+serve_forwards_port() {
+  local port="$1" ts
+  ts=$(command -v tailscale 2>/dev/null || true)
+  if [[ -z "$ts" && -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
+    ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+  fi
+  [[ -n "$ts" ]] || return 1
+  # Capture first: piping into `grep -q` under pipefail can fail with SIGPIPE
+  # when grep exits early on a match, which would read as "not forwarding",
+  # the one answer that must never be wrong here (nox, #548).
+  local out
+  out=$("$ts" serve status 2>/dev/null) || return 1
+  grep -Eq "proxy (https?://)?(127\.0\.0\.1|localhost|\[::1\])?:?${port}([^0-9]|$)" <<<"$out"
+}
+
 # ── claude pre-flight ─────────────────────────────────────────────────────
 # Claude Code is the daemon's REQUIRED default provider: the server refuses
 # to boot without it (run.ts provider validation, process.exit(1)), and
@@ -439,12 +457,27 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     KEEP_FLAGS=()
     KEPT_PORT=$(grep -oE -- '--port=[0-9]+' "$SERVICE_FILE" | head -1 || true)
     KEPT_HOST=$(grep -oE -- '--host=[^ <"]+' "$SERVICE_FILE" | head -1 || true)
-    # Behind `tailscale serve` (ADR-140): dropping it on an update would make
-    # every tailnet visitor look like this machine again.
-    KEPT_TRUST=$(grep -oE -- '--trust-proxy=[a-z]+' "$SERVICE_FILE" | head -1 || true)
+    # `tailscale serve` support (--trust-proxy) was removed (ADR-158). A
+    # service file that still carries it is re-rendered WITHOUT it, and said
+    # so: the server would refuse to start with it.
+    if grep -q -- '--trust-proxy' "$SERVICE_FILE"; then
+      TS_PORT="${KEPT_PORT#--port=}"
+      TS_PORT="${TS_PORT:-3000}"
+      if serve_forwards_port "$TS_PORT"; then
+        # Re-rendering without the flag while serve still forwards would make
+        # every tailnet visitor "this machine". Stop; the old version keeps
+        # running until the operator chooses.
+        echo "[install] ✖ Not updating the service: it ran behind tailscale serve (--trust-proxy), which autonomOS no longer supports (ADR-158), and tailscale serve still forwards to port $TS_PORT." >&2
+        echo "[install]   The current version keeps running. To switch to the supported setup, run:" >&2
+        echo "[install]     tailscale serve reset" >&2
+        echo "[install]     autonomos install-service --force --port=$TS_PORT --host=127.0.0.1,\$(tailscale ip -4)" >&2
+        echo "[install]   then re-run this installer." >&2
+        exit 1
+      fi
+      echo "[install] Dropping --trust-proxy from the service: tailscale serve support was removed (ADR-158), and serve isn't forwarding to port $TS_PORT. Reach autonomOS with --host=127.0.0.1,\$(tailscale ip -4)."
+    fi
     [[ -n "$KEPT_PORT" ]] && KEEP_FLAGS+=("$KEPT_PORT")
     [[ -n "$KEPT_HOST" ]] && KEEP_FLAGS+=("$KEPT_HOST")
-    [[ -n "$KEPT_TRUST" ]] && KEEP_FLAGS+=("$KEPT_TRUST")
     echo "[install] Existing service detected. Re-rendering service + restarting into the new bundle..."
     "$WRAPPER" install-service --force ${KEEP_FLAGS[@]+"${KEEP_FLAGS[@]}"} || RC=$?
     if [[ "$RC" == "0" ]]; then
