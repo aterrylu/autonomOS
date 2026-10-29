@@ -130,10 +130,11 @@ export class OomGuard {
   private readonly warnedKeys = new Set<string>();
   /** Why per-agent isolation is off although the unit asked for it. */
   degradedReason: string | null = null;
-  /** We run as a systemd service whose unit lacks the template's marker: a
+  /** We run in a systemd service whose unit lacks the template's marker: a
    *  unit written before ADR-156 (a v0.7.0 install upgraded by v0.7.0's own
    *  upgrader keeps its old unit, so service-sync can't add it until the
-   *  NEXT update). Isolation stays off until the unit is re-rendered. */
+   *  NEXT update). Says nothing about WHICH service: the boot notice also
+   *  checks that it's ours (runtime.ts oomBootNotices). */
   unitPredatesIsolation = false;
 
   constructor(opts: OomGuardOptions = {}) {
@@ -187,9 +188,7 @@ export class OomGuard {
         );
       }
     }
-    if (!this.delegationRequested && underService) {
-      this.unitPredatesIsolation = true;
-    }
+    this.unitPredatesIsolation = underService && !this.delegationRequested;
     if (!this.unitDir && underService) {
       this.ownServiceDir = unit;
       this.unitSeenKills = this.readKills(unit) ?? 0;

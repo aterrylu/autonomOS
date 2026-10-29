@@ -58,6 +58,11 @@ import {
 import { getSettings, runtimeDefaultPermission } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
+import {
+  detectSupervisor,
+  expectedServiceNames,
+  type Supervisor,
+} from "../upgradeJob.js";
 import { observeExitCode, observeStart } from "./analytics.js";
 import {
   cancelAllChannelServerChecks,
@@ -522,31 +527,26 @@ export function oomAutoResumeAllowed(
   return last === undefined || now - last >= OOM_RESUME_WINDOW_MS;
 }
 
-/** The bell text for a service whose unit predates OOM isolation, with the
- *  command that turns it on. The re-render writes the unit from the CALLER's
- *  shell, so the port/host baked into this server's argv and a custom config
- *  dir are spelled out; anything else hand-added to the unit is not carried. */
-export function unitPredatesIsolationNotice(
-  argv: readonly string[],
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const flags: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (/^--(port|host)=/.test(a)) flags.push(a);
-    else if ((a === "--port" || a === "--host") && argv[i + 1]) {
-      flags.push(`${a}=${argv[++i]}`);
-    }
+/** The bell text for our service unit when it predates OOM isolation. The
+ *  remedy is a drop-in, not a re-render: `install-service --force` rewrites
+ *  the unit from the caller's shell and drops what it can't see (a hand-set
+ *  AUTONOMOS_HOST widens the bind, a custom config dir loses the token and
+ *  agents), while a drop-in adds three lines and leaves the unit as it is. */
+export function unitPredatesIsolationNotice(unit: string): string {
+  const risk =
+    "An agent that runs out of memory can stop this server and every agent: this install's service unit predates per-agent memory isolation (an update from v0.7.0 keeps the old unit).";
+  if (!/^[A-Za-z0-9@._:-]+$/.test(unit)) {
+    return `${risk} Add OOMPolicy=continue, Delegate=yes and Environment=AUTONOMOS_CGROUP_DELEGATED=1 to its [Service] section in a drop-in, then restart it.`;
   }
-  const prefix = env.AUTONOMOS_CONFIG_DIR
-    ? `AUTONOMOS_CONFIG_DIR=${env.AUTONOMOS_CONFIG_DIR} `
-    : "";
-  const cmd = `${prefix}autonomos install-service --force${flags.map((f) => ` ${f}`).join("")}`;
-  return `Per-agent out-of-memory isolation is off for this install: its service unit predates it. Run \`${cmd}\` once to turn it on (the token and agents are kept; Environment= lines you added to the unit by hand are not, so add those back).`;
+  const dir = `~/.config/systemd/user/${unit}.d`;
+  return `${risk} To turn it on without changing anything else in the unit, run this while the agents are idle (it restarts autonomOS; the agents resume): mkdir -p ${dir} && printf '[Service]\\nOOMPolicy=continue\\nDelegate=yes\\nEnvironment=AUTONOMOS_CGROUP_DELEGATED=1\\n' > ${dir}/oom-isolation.conf && systemctl --user daemon-reload && systemctl --user restart ${unit}`;
 }
 
-/** What to tell the operator at boot about OOM isolation being off: the unit
- *  predates it (re-render to turn it on), or it asked for it and setup failed. */
+/** What to tell the operator at boot about OOM isolation being off: our unit
+ *  predates it, or it asked for it and setup failed. "Our unit" is the
+ *  upgrader's own test (INVOCATION_ID + the exact unit name, label-aware),
+ *  and never a server an agent started: under an old undelegated unit every
+ *  agent process sits in the unit's cgroup too. */
 export function oomBootNotices(
   guard: Pick<
     OomGuard,
@@ -555,12 +555,18 @@ export function oomBootNotices(
     | "isolated"
     | "degradedReason"
   >,
-  argv: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
+  supervisor: () => Supervisor = () => detectSupervisor(env),
 ): string[] {
   const notices: string[] = [];
-  if (guard.unitPredatesIsolation) {
-    notices.push(unitPredatesIsolationNotice(argv, env));
+  if (
+    guard.unitPredatesIsolation &&
+    !env.AUTONOMOS_SESSION_ID &&
+    supervisor().kind === "systemd"
+  ) {
+    notices.push(
+      unitPredatesIsolationNotice(expectedServiceNames(env).systemdUnit),
+    );
   }
   if (guard.delegationRequested && !guard.isolated) {
     notices.push(
@@ -644,9 +650,14 @@ export function startOomGuard(pollMs = 5_000): void {
   if (oomPoll || oomGuard.platform !== "linux") return;
   // Said where the operator looks, not only in the log. Once per boot: the
   // poll guard above makes a second call a no-op.
-  for (const notice of oomBootNotices(oomGuard, process.argv.slice(2))) {
-    console.warn(`[oom] ${notice}`);
-    pushServerNotification(notice);
+  try {
+    for (const notice of oomBootNotices(oomGuard)) {
+      console.warn(`[oom] ${notice}`);
+      pushServerNotification(notice);
+    }
+  } catch (err) {
+    // A notice must never be the reason the server doesn't come up.
+    console.warn(`[oom] boot notice failed: ${(err as Error).message}`);
   }
   oomPoll = setInterval(() => {
     const { perAgent, unattributed } = oomGuard.pollKills(

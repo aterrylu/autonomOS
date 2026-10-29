@@ -472,43 +472,66 @@ describe("runtime: what the operator is told", () => {
     assert.equal(oomAutoResumeAllowed("never-killed"), true);
   });
 
-  it("an upgraded install whose unit predates isolation is told the exact command, once", () => {
+  it("our upgraded unit that predates isolation is told the lossless drop-in for THAT unit", () => {
     const { g } = guard({});
     g.init();
-    const notices = oomBootNotices(
-      g,
-      ["start", "--port=4796", "--host", "127.0.0.1,100.64.0.2"],
-      { AUTONOMOS_CONFIG_DIR: "/tmp/aos-cfg" },
-    );
+    const ours = () => ({ kind: "systemd" }) as const;
+    const notices = oomBootNotices(g, {}, ours);
     assert.equal(notices.length, 1);
     assert.match(
       notices[0],
-      /Per-agent out-of-memory isolation is off for this install/,
+      /An agent that runs out of memory can stop this server and every agent/,
     );
+    assert.match(notices[0], /it restarts autonomOS; the agents resume/);
     assert.ok(
       notices[0].includes(
-        "`AUTONOMOS_CONFIG_DIR=/tmp/aos-cfg autonomos install-service --force --port=4796 --host=127.0.0.1,100.64.0.2`",
+        "mkdir -p ~/.config/systemd/user/autonomos.service.d && printf '[Service]\\nOOMPolicy=continue\\nDelegate=yes\\nEnvironment=AUTONOMOS_CGROUP_DELEGATED=1\\n' > ~/.config/systemd/user/autonomos.service.d/oom-isolation.conf && systemctl --user daemon-reload && systemctl --user restart autonomos.service",
       ),
       notices[0],
     );
-    assert.match(notices[0], /the token and agents are kept/);
+    assert.doesNotMatch(
+      notices[0],
+      /install-service --force/,
+      "the lossy re-render is never suggested",
+    );
     assert.match(
-      notices[0],
-      /Environment= lines you added to the unit by hand are not/,
-    );
-    assert.ok(
-      oomBootNotices(g, [], {})[0].includes(
-        "`autonomos install-service --force`",
-      ),
-      "default config dir and no baked flags: the bare command",
+      oomBootNotices(
+        g,
+        { AUTONOMOS_SERVICE_LABEL: "com.example.test" },
+        ours,
+      )[0],
+      /systemctl --user restart com\.example\.test\.service$/,
+      "a labelled install names its own unit, not the production one",
     );
   });
 
-  it("a marked, isolated unit gets no boot notice", () => {
-    const { g } = guard();
+  it("no notice for a server that isn't our unit's: another service, an agent's QA server, a marked unit", () => {
+    const { g } = guard({});
     g.init();
-    assert.equal(g.isolated, true, "precondition: isolated");
-    assert.deepEqual(oomBootNotices(g, ["start", "--port=3100"], {}), []);
+    assert.equal(
+      g.unitPredatesIsolation,
+      true,
+      "precondition: the cgroup check fires",
+    );
+    assert.deepEqual(
+      oomBootNotices(g, {}, () => ({ kind: "none" })),
+      [],
+      "another .service",
+    );
+    assert.deepEqual(
+      oomBootNotices(g, { AUTONOMOS_SESSION_ID: "agent-1" }, () => ({
+        kind: "systemd",
+      })),
+      [],
+      "a server an agent started inside the unit's cgroup",
+    );
+    const marked = guard();
+    marked.g.init();
+    assert.equal(marked.g.isolated, true, "precondition: isolated");
+    assert.deepEqual(
+      oomBootNotices(marked.g, {}, () => ({ kind: "systemd" })),
+      [],
+    );
   });
 
   it("the resume window is 10 minutes", () => {
