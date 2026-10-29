@@ -1279,13 +1279,15 @@ function descendantPids(rootPid: number): number[] {
  *  `ps eww` candidate set; the KILL criterion is strictly HOME === fakeHome, so
  *  the operator's real agents (HOME=<real home>) are never touched. */
 function fakeHomePids(fakeHome: string): number[] {
-  let listing: string;
-  try {
-    listing = spawnSync("ps", ["-Ao", "pid,command"], { encoding: "utf-8" }).stdout;
-  } catch (err) {
+  // /bin/ps is setuid root, which the macOS hero sandbox won't exec: that
+  // (or any failed exec) is a null stdout, not a throw. Skip the sweep; the
+  // scoped API teardown above it already stopped the agents.
+  const ps = spawnSync("ps", ["-Ao", "pid,command"], { encoding: "utf-8" });
+  const listing = ps.stdout;
+  if (ps.error || typeof listing !== "string") {
     console.warn(
       `teardown: fakeHomePids ps failed (fake-HOME PID sweep skipped — ` +
-        `leftover procs possible): ${err}`,
+        `leftover procs possible): ${ps.error ?? `exit ${ps.status}`}`,
     );
     return [];
   }

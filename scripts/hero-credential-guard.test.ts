@@ -99,3 +99,34 @@ describe("capture-hero.ts never reads or copies a real credential (#551)", () =>
     assert.match(source, /assertNoCredentials\(/);
   });
 });
+
+describe("make hero runs the capture sandboxed away from real credentials on macOS (#551)", () => {
+  const read = (rel: string): string =>
+    readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+  it("the hero target wraps the capture in the no-credentials profile", () => {
+    const mk = read("../Makefile");
+    const at = mk.search(/^hero:/m);
+    assert.ok(at >= 0, "the Makefile has a hero target");
+    // The target runs to the next line that isn't a recipe or continuation.
+    const rest = mk.slice(at);
+    const end = rest.search(/\n\S/);
+    const hero = end < 0 ? rest : rest.slice(0, end);
+    assert.match(
+      hero,
+      /sandbox-exec -D HOME="\$\$HOME" -f scripts\/hero-no-credentials\.sb \$\(BUN\) run capture-hero/,
+    );
+  });
+  it("the profile denies every real credential store and the keychain CLI", () => {
+    const sb = read("../packages/dashboard/scripts/hero-no-credentials.sb");
+    for (const store of [
+      '"/.codex"',
+      '"/.gemini"',
+      '"/.claude/.credentials.json"',
+      '"/Library/Keychains"',
+    ])
+      assert.ok(sb.includes(store), `profile denies ${store}`);
+    assert.match(sb, /\(deny file-read\* file-write\*/);
+    assert.match(sb, /\(deny process-exec \(literal "\/usr\/bin\/security"\)\)/);
+  });
+});
+

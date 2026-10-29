@@ -278,5 +278,10 @@ adr-import:
 # never :3100), stages the multi-agent scene, and captures via headless Chrome.
 # RE-RUN THIS AFTER ANY DASHBOARD UI CHANGE so the README hero stays accurate.
 # See packages/dashboard/scripts/capture-hero.ts for prerequisites + details.
+# The README hero capture uses NO real login (#551). On macOS the kernel
+# enforces it: the run is sandboxed away from ~/.codex, ~/.gemini, the Claude
+# credentials file, the keychain and the `security` CLI.
 hero:
-	cd packages/dashboard && $(BUN) run capture-hero
+	cd packages/dashboard && if [ "$$(uname -s)" = Darwin ]; then \
+	  sandbox-exec -D HOME="$$HOME" -f scripts/hero-no-credentials.sb $(BUN) run capture-hero; \
+	else $(BUN) run capture-hero; fi
