@@ -51,6 +51,18 @@ describe("RELEASE_PAT is only read inside the protected release environment (aud
     }
   });
 
+  it("no workflow passes every secret to a reusable workflow (`secrets: inherit`)", () => {
+    // A called workflow that inherits every secret could read RELEASE_PAT
+    // without declaring the environment itself (SecurityAudit-Claude).
+    for (const f of readdirSync(WORKFLOWS).filter((x) => /\.ya?ml$/.test(x))) {
+      assert.doesNotMatch(
+        readFileSync(join(WORKFLOWS, f), "utf8"),
+        /^\s*secrets:\s*inherit\b/m,
+        `${f} passes every secret to a reusable workflow; pass only what it needs`,
+      );
+    }
+  });
+
   for (const u of users) {
     it(`${u.file} job "${u.name}" declares environment: release`, () => {
       assert.match(
