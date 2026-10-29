@@ -609,52 +609,120 @@ describe("index", () => {
           "- **Supersedes:** ADR-046 (scan) and the lineage of ADR-041\n",
         ),
       ),
-      [{ target: "046", partial: false }],
+      [
+        { target: "046", partial: false },
+        { target: "041", partial: true }, // a second target is kept; "the lineage of" names a part
+      ],
     );
   });
 
-  it("a Supersedes FIELD that says it replaces only part of an ADR is partial (real entries)", () => {
-    // Verbatim from ADR-145, ADR-152 and ADR-143: the marker sits before the ref, or inside
-    // the parenthetical that explains it. All three rendered as FULLY superseded (#499).
-    const field = (text: string) =>
-      entry("200", "X", `- **Supersedes:** ${text}\n`);
+  it("reads every real Supersedes phrasing per target: partial vs full (#499)", () => {
+    // Verbatim values from docs/decisions/. Before this fix every one of these rendered wrong:
+    // partial targets as FULLY superseded, and second targets silently dropped.
+    const sup = (value: string, label = "Supersedes") =>
+      supersessions(entry("200", "X", `- **${label}:** ${value}\n`));
+    const cases: [string, string, { target: string; partial: boolean }[]][] = [
+      [
+        "ADR-145",
+        'part of ADR-049 (the "respawn fresh after a fast resume failure" net, narrowed by ADR-100)',
+        [{ target: "049", partial: true }],
+      ],
+      [
+        "ADR-152",
+        "ADR-119 (outcome 1, in part: `manual` stays flagless on fresh spawns, but is no longer unpinned)",
+        [{ target: "119", partial: true }],
+      ],
+      [
+        "ADR-143",
+        "ADR-067 (its guarantee that a preset can't run code in another agent's process; the rest of ADR-067 stands)",
+        [{ target: "067", partial: true }],
+      ],
+      [
+        "ADR-125",
+        "ADR-122 (part: decision 2, the configured origin is trusted only when labelled)",
+        [{ target: "122", partial: true }],
+      ],
+      [
+        "ADR-139",
+        "ADR-054 (part: its rejection of tailnet-IP binds as the remote-access answer)",
+        [{ target: "054", partial: true }],
+      ],
+      [
+        "ADR-144",
+        'ADR-143 (its built-in key list, and its "skip and notify" handling of other keys; the allowlist principle stands)',
+        [{ target: "143", partial: true }],
+      ],
+      [
+        "ADR-148",
+        "ADR-130 (part: the dashboard banner for a weak token) and ADR-124 (part: its refuse-to-start rule)",
+        [
+          { target: "130", partial: true },
+          { target: "124", partial: true },
+        ],
+      ],
+      [
+        "ADR-115",
+        "the shared-vocabulary part of ADR-045 (\"A2\") and ADR-061's `ask|auto|plan|bypass` spelling. ADR-061's resolution rules are kept.",
+        [
+          { target: "045", partial: true },
+          { target: "061", partial: true },
+        ],
+      ],
+      [
+        "ADR-119",
+        "ADR-115 (picks 3 and 4, in part)",
+        [{ target: "115", partial: true }],
+      ],
+      [
+        "ADR-046",
+        "ADR-041's premise that env-relayed agent harvest keeps the cookie fresh. Composes with ADR-040 (`selectUsageOrg`)",
+        [{ target: "041", partial: true }],
+      ],
+      [
+        "ADR-150",
+        "nothing. It extends ADR-114 (the per-file layout and check) and keeps ADR-147 (hourly index).",
+        [],
+      ],
+      ["ADR-147", "none. It amends ADR-114's regeneration trigger only.", []],
+    ];
+    for (const [adr, value, want] of cases)
+      assert.deepEqual(sup(value), want, `${adr}: ${value}`);
+    // Legacy labels mean "in part"; markdown emphasis around a ref doesn't hide it.
     assert.deepEqual(
-      supersessions(
-        field(
-          'part of ADR-049 (the "respawn fresh after a fast resume failure" net, narrowed by ADR-100)',
-        ),
+      sup(
+        "the idle-gate assumption in **ADR-057**. That entry recorded it",
+        "Reverses",
       ),
-      [{ target: "049", partial: true }],
+      [{ target: "057", partial: true }],
     );
     assert.deepEqual(
-      supersessions(
-        field(
-          "ADR-119 (outcome 1, in part: `manual` stays flagless on fresh spawns, but is no longer unpinned)",
-        ),
+      sup(
+        "Adds Update notes to ADR-005, ADR-028 (the Electron portions are now N/A)",
+        "Supersedes / amends",
       ),
-      [{ target: "119", partial: true }],
+      [
+        { target: "005", partial: true },
+        { target: "028", partial: true },
+      ],
     );
-    assert.deepEqual(
-      supersessions(
-        field(
-          "ADR-067 (its guarantee that a preset can't run code in another agent's process; the rest of ADR-067 stands)",
-        ),
-      ),
-      [{ target: "067", partial: true }],
-    );
-    // Controls: a field naming no part stays FULL, and an ADR mentioned only in the
-    // explanation (ADR-100 above) is never a target.
-    assert.deepEqual(supersessions(field("ADR-018")), [
-      { target: "018", partial: false },
-    ]);
-    assert.deepEqual(
-      supersessions(
-        field(
-          "ADR-046 (live-session cookie scan) and the cookie lineage of ADR-041/040 as the *primary* credential path",
-        ),
-      ),
-      [{ target: "046", partial: false }],
-    );
+  });
+
+  it("stays FULL when a partial-sounding word describes history, not scope", () => {
+    const sup = (value: string) =>
+      supersessions(entry("200", "X", `- **Supersedes:** ${value}\n`));
+    for (const value of [
+      "ADR-018",
+      "ADR-018 (part of the cleanup)",
+      "ADR-018 (the partial-write bug fix)",
+      "ADR-010 entirely (it was part of the old auth design)",
+      "ADR-046 (live-session cookie scan)",
+    ]) {
+      assert.deepEqual(
+        sup(value),
+        [{ target: value.slice(4, 7), partial: false }],
+        value,
+      );
+    }
   });
 
   it("renders status, both supersession columns, escapes pipes, and sorts numerically", () => {

@@ -778,42 +778,135 @@ export interface Supersession {
   partial: boolean;
 }
 
+/** Fields naming what an entry supersedes. The last three are legacy spellings; they mean "in part". */
+const SUPERSEDES_LABELS = [
+  "Supersedes",
+  "Supersedes / amends",
+  "Reverses",
+  "Amends",
+];
+
+/** A target's own parenthetical says only part of it is replaced: "(part: …)", "(…, in part)", "(…; the rest stands)". */
+const PARTIAL_PAREN_RE =
+  /^\s*part\s*:|\bin part\b|\bpartially\b|\bthe rest of\b|\bstands\b|\bonly\b|\b(?:outcome|pick|decision)s?\s+\d/i;
+
+interface SupersedesRef {
+  id: string;
+  possessive: boolean;
+  /** Where the ref's text starts; "ADR-041/040" yields two refs at the same spot. */
+  at: number;
+  /** End of the ref, or of the parenthetical that directly follows it. */
+  end: number;
+  paren: string;
+}
+
 /**
- * Supersession, where parseable: the title's "(supersedes ADR-X)" / "(reverses part of ADR-X)"
- * and the first clause of a `**Supersedes:**` field. `ADR-X's …`, or a field that says
- * "part of" / "in part" / "partially" / "the rest of … stands", means only part of X.
+ * The ADRs one `**Supersedes:**`-style value names, each with its own "in part" verdict.
+ *
+ * Only the first sentence counts ("…. Composes with ADR-040" is context), and a value that
+ * opens with "none" / "nothing" names no target. Every ADR ref OUTSIDE parentheses is a target
+ * (a ref inside one is explanation: "(…, narrowed by ADR-100)"). A target is partial when:
+ * it is possessive ("ADR-041's premise"); descriptive text precedes it ("part of ADR-049",
+ * "the cookie lineage of ADR-041"); or its own parenthetical says so (PARTIAL_PAREN_RE). A
+ * bare "partial", or "part of" inside a parenthetical, is NOT a marker: "(the partial-write
+ * fix)" and "(it was part of the old design)" describe history, not scope.
+ */
+export function parseSupersedesValue(
+  value: string,
+  allPartial = false,
+): Supersession[] {
+  const text = value.replace(/\*+/g, ""); // **ADR-057** → ADR-057
+  if (/^\s*(?:none|nothing)\b/i.test(text)) return [];
+  const refs: SupersedesRef[] = [];
+  let depth = 0;
+  let parenStart = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (ch === "(") {
+      if (depth++ === 0) parenStart = i + 1;
+      continue;
+    }
+    if (ch === ")") {
+      if (depth > 0 && --depth === 0) {
+        // A parenthetical right after a ref (only spaces/quotes between) belongs to it.
+        const at = refs.length ? refs[refs.length - 1]!.at : -1;
+        const mine = refs.filter((r) => r.at === at && !r.paren);
+        if (
+          mine.length &&
+          /^[\s"'`]*$/.test(text.slice(mine[0]!.end, parenStart - 1))
+        ) {
+          for (const r of mine)
+            Object.assign(r, { paren: text.slice(parenStart, i), end: i + 1 });
+        }
+      }
+      continue;
+    }
+    if (depth > 0) continue;
+    // The first top-level sentence end stops the scan.
+    if ((ch === "." && /\s/.test(text[i + 1] ?? " ")) || ch === ";") break;
+    const m = /^ADR-(\d{3,}(?:-follow-up)?)((?:\/\d{3,})*)('s)?/.exec(
+      text.slice(i),
+    );
+    if (!m || /[\w-]/.test(text[i - 1] ?? "")) continue;
+    const end = i + m[0].length;
+    for (const id of [m[1]!, ...m[2]!.split("/").filter(Boolean)]) {
+      refs.push({ id, possessive: !!m[3], at: i, end, paren: "" });
+    }
+    i = end - 1;
+  }
+  // Each distinct ref position's lead: the text since the previous target, minus list glue.
+  const starts = [...new Set(refs.map((r) => r.at))];
+  const leadIsPartial = new Map<number, boolean>();
+  starts.forEach((at, k) => {
+    const prevEnd =
+      k === 0
+        ? 0
+        : Math.max(
+            ...refs.filter((r) => r.at === starts[k - 1]).map((r) => r.end),
+          );
+    const lead = text
+      .slice(prevEnd, at)
+      .replace(/^[\s,]*(?:and|or|&)?[\s,]*/i, "");
+    leadIsPartial.set(at, /[a-z]/i.test(lead));
+  });
+  return refs.map((r) => ({
+    target: r.id,
+    partial:
+      allPartial ||
+      r.possessive ||
+      leadIsPartial.get(r.at)! ||
+      PARTIAL_PAREN_RE.test(r.paren),
+  }));
+}
+
+/**
+ * Supersession, where parseable: the title's "(supersedes ADR-X)" / "(reverses part of ADR-X)",
+ * and a `**Supersedes:**` field or a legacy spelling of one (see parseSupersedesValue).
  */
 export function supersessions(
   e: Pick<Entry, "title" | "text">,
 ): Supersession[] {
   const found = new Map<string, Supersession>();
-  const add = (clause: string, partialClause: boolean) => {
-    for (const m of clause.matchAll(/ADR-(\d{3,}(?:-follow-up)?)('s)?/g)) {
-      const partial = partialClause || !!m[2];
-      const prev = found.get(m[1]!);
-      found.set(m[1]!, {
-        target: m[1]!,
-        partial: prev ? prev.partial && partial : partial,
-      });
-    }
+  const add = (s: Supersession) => {
+    const prev = found.get(s.target);
+    found.set(s.target, {
+      target: s.target,
+      partial: prev ? prev.partial && s.partial : s.partial,
+    });
   };
   for (const m of e.title.matchAll(
-    /\b(supersedes|reverses(?: part of)?|replaces)\s+(ADR-\d{3,}(?:'s)?)/gi,
+    /\b(supersedes|reverses(?: part of)?|replaces)\s+ADR-(\d{3,}(?:-follow-up)?)('s)?/gi,
   )) {
-    add(m[2]!, /part of/i.test(m[1]!));
+    add({ target: m[2]!, partial: /part of/i.test(m[1]!) || !!m[3] });
   }
-  const field = fieldValue(e.text, "Supersedes");
-  // Targets come from the first clause only (the explanation after "(" / ";" / " and " may
-  // name other ADRs in passing). "Partial" is read from the WHOLE value: a field often says
-  // what it replaces inside that explanation ("ADR-119 (outcome 1, in part: …)").
-  if (field)
-    add(field.split(/[(;.]|\sand\s/)[0]!, PARTIAL_SUPERSEDES_RE.test(field));
+  for (const label of SUPERSEDES_LABELS) {
+    const f = field(e.text, label);
+    if (f)
+      for (const s of parseSupersedesValue(f.body, label !== "Supersedes"))
+        add(s);
+  }
   return [...found.values()];
 }
-
-/** Wording in a **Supersedes:** field that means only part of the target is replaced. */
-const PARTIAL_SUPERSEDES_RE =
-  /\b(?:part of|in part|partially|partial|the rest of)\b/i;
 
 /** Ids of the entries that supersede one ADR, fully or in part. */
 interface Inbound {
