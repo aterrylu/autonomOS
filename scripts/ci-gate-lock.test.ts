@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,11 +51,19 @@ interface Run {
   endedAt: number;
 }
 
+interface Gate {
+  done: Promise<Run>;
+  pid: number;
+  /** Resolves once the gate's stderr matches `re`; rejects if the gate exits
+   *  first (so a gate that never queues fails fast, by name). */
+  stderrMatches(re: RegExp): Promise<void>;
+}
+
 function runGate(
   lock: string,
   cmd: string,
   opts: { timeout?: number; env?: NodeJS.ProcessEnv } = {},
-): { done: Promise<Run>; pid: number } {
+): Gate {
   const startedAt = Date.now();
   const child = spawn("bash", [SCRIPT, "bash", "-c", cmd], {
     env: {
@@ -76,15 +84,52 @@ function runGate(
   child.stdout.on("data", (d) => {
     stdout += d;
   });
+  const watchers = new Set<() => void>();
   child.stderr.on("data", (d) => {
     stderr += d;
+    for (const w of watchers) w();
   });
   const done = new Promise<Run>((resolve) =>
     child.on("close", (code) =>
       resolve({ code, stdout, stderr, startedAt, endedAt: Date.now() }),
     ),
   );
-  return { done, pid: child.pid ?? -1 };
+  const stderrMatches = (re: RegExp) =>
+    new Promise<void>((resolve, reject) => {
+      const check = () => {
+        if (!re.test(stderr)) return;
+        watchers.delete(check);
+        resolve();
+      };
+      watchers.add(check);
+      check();
+      void done.then((r) =>
+        reject(new Error(`gate exited (${r.code}) before stderr matched ${re}: ${r.stderr}`)),
+      );
+    });
+  return { done, pid: child.pid ?? -1, stderrMatches };
+}
+
+const QUEUED = /waiting for another CI gate/;
+
+/** An env whose lock tool starts `secs` late: a gate on a loaded box, where
+ *  bash startup + the probe can take longer than any fixed sleep. Forces the
+ *  window a timing-based test loses (10-29: a fixed 500ms failed at load 7). */
+function slowLockTool(dir: string, secs = 1): NodeJS.ProcessEnv {
+  const shimDir = join(dir, "slow-bin");
+  mkdirSync(shimDir, { recursive: true });
+  for (const tool of ["flock", "lockf"]) {
+    let real = "";
+    try {
+      real = execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim();
+    } catch {
+      continue;
+    }
+    const shim = join(shimDir, tool);
+    writeFileSync(shim, `#!/bin/sh\nsleep ${secs}\nexec '${real}' "$@"\n`);
+    chmodSync(shim, 0o755);
+  }
+  return { PATH: `${shimDir}:${process.env.PATH ?? ""}` };
 }
 
 /** A gate command that holds the lock until `releaseFile` exists: the test
@@ -158,15 +203,16 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     await waitUntilHeld(lock);
     // A carries a marker naming this lock (inherited, stale). The lock IS
     // busy, but not by A's ancestor: A must queue, never run alongside H.
+    // A starts slow on purpose; H is released only once A has provably queued.
     const a = runGate(lock, "echo A-ran", {
-      env: { AUTONOMOS_GATE_LOCK_HELD: lock },
+      env: { AUTONOMOS_GATE_LOCK_HELD: lock, ...slowLockTool(dir) },
     });
-    await new Promise((r) => setTimeout(r, 500));
+    await a.stderrMatches(QUEUED);
     writeFileSync(releaseH, "");
     const [rh, ra] = await Promise.all([h.done, a.done]);
     assert.equal(rh.code, 0);
     assert.equal(ra.code, 0, ra.stderr);
-    assert.match(ra.stderr, /waiting for another CI gate/, "A must queue");
+    assert.match(ra.stderr, QUEUED, "A must queue");
     assert.ok(ra.endedAt >= rh.endedAt, "A ran only after H released");
   });
 
@@ -209,19 +255,19 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     const release = join(dir, "b.release");
     const a = runGate(lock, holdUntil(release, "A"));
     await waitUntilHeld(lock);
-    const b = runGate(lock, "echo B-ran");
+    const b = runGate(lock, "echo B-ran", { env: slowLockTool(dir) });
     let bDone = false;
     void b.done.then(() => {
       bDone = true;
     });
-    await new Promise((r) => setTimeout(r, 300));
+    await b.stderrMatches(QUEUED);
     assert.equal(bDone, false, "B cannot finish while A holds the lock");
     writeFileSync(release, "");
     const [ra, rb] = await Promise.all([a.done, b.done]);
     assert.equal(ra.code, 0);
     assert.equal(rb.code, 0);
     assert.ok(rb.endedAt >= ra.endedAt, "B finished no earlier than A");
-    assert.match(rb.stderr, /waiting for another CI gate/);
+    assert.match(rb.stderr, QUEUED);
     assert.match(rb.stdout, /B-ran/);
   });
 
