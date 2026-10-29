@@ -15,13 +15,25 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { AgentProvider } from "@autonomos/core";
+import { isolateHome } from "./helpers/isolate-home.js";
 
 process.env.AUTONOMOS_CONFIG_DIR = `/tmp/aos-oom-wiring-${randomUUID()}`;
+// The stand-in provider inherits claude-code's prepareSpawn, which pre-trusts
+// the cwd in `.claude.json`. Under the operator's HOME every run wrote a
+// `projects[<tmp cwd>]` key into the REAL ~/.claude.json (#413 pattern).
+// Before any server import: shared.ts captures HOME at import.
+const isolated = isolateHome("aos-oom-wiring");
 
 const { setServerPort, setAuthToken, setInternalSocketPath } = await import(
   "../serverState.js"
@@ -86,6 +98,8 @@ after(async () => {
   await awaitPtyExits(5_000);
   _setProviderForTesting("fakeoom", null);
   _resetCacheForTesting();
+  isolated.restore();
+  rmSync(cwd, { recursive: true, force: true });
 });
 
 const notices = (id: string) =>
@@ -123,6 +137,25 @@ async function newAgent(prefix: string) {
   const leader = () => getAgentProcessRoots(agent.id)[0];
   return { agent, name, isLive, leader };
 }
+
+describe("isolation from the operator's real Claude Code state", () => {
+  it("spawns under the throwaway HOME and pre-trusts there, NEVER in the real ~/.claude.json", async () => {
+    assert.equal(process.env.HOME, isolated.home, "HOME is the fake one");
+    const { agent } = await newAgent("isolated");
+    const key = realpathSync(cwd);
+    // Precondition: the pre-trust ran and landed in the fake file; without it
+    // "absent from the real file" would pass because nothing was written.
+    assert.ok(
+      isolated.fakeTrustKeys().has(key),
+      "spawn pre-trusted its cwd in the isolated .claude.json",
+    );
+    assert.ok(
+      !isolated.realTrustKeys().has(key),
+      `leaked a trust entry for ${key} into the real .claude.json`,
+    );
+    killAttachment(agent.id);
+  });
+});
 
 describe("an agent killed from outside autonomOS", { timeout: 90_000 }, () => {
   it("is named in the bell, resumed once in the same record, and left down on a second kill", async () => {
