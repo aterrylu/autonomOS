@@ -613,6 +613,50 @@ describe("index", () => {
     );
   });
 
+  it("a Supersedes FIELD that says it replaces only part of an ADR is partial (real entries)", () => {
+    // Verbatim from ADR-145, ADR-152 and ADR-143: the marker sits before the ref, or inside
+    // the parenthetical that explains it. All three rendered as FULLY superseded (#499).
+    const field = (text: string) =>
+      entry("200", "X", `- **Supersedes:** ${text}\n`);
+    assert.deepEqual(
+      supersessions(
+        field(
+          'part of ADR-049 (the "respawn fresh after a fast resume failure" net, narrowed by ADR-100)',
+        ),
+      ),
+      [{ target: "049", partial: true }],
+    );
+    assert.deepEqual(
+      supersessions(
+        field(
+          "ADR-119 (outcome 1, in part: `manual` stays flagless on fresh spawns, but is no longer unpinned)",
+        ),
+      ),
+      [{ target: "119", partial: true }],
+    );
+    assert.deepEqual(
+      supersessions(
+        field(
+          "ADR-067 (its guarantee that a preset can't run code in another agent's process; the rest of ADR-067 stands)",
+        ),
+      ),
+      [{ target: "067", partial: true }],
+    );
+    // Controls: a field naming no part stays FULL, and an ADR mentioned only in the
+    // explanation (ADR-100 above) is never a target.
+    assert.deepEqual(supersessions(field("ADR-018")), [
+      { target: "018", partial: false },
+    ]);
+    assert.deepEqual(
+      supersessions(
+        field(
+          "ADR-046 (live-session cookie scan) and the cookie lineage of ADR-041/040 as the *primary* credential path",
+        ),
+      ),
+      [{ target: "046", partial: false }],
+    );
+  });
+
   it("renders status, both supersession columns, escapes pipes, and sorts numerically", () => {
     const out = renderIndex([
       entry("120", "Newer (supersedes ADR-018)"),

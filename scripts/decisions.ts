@@ -780,7 +780,8 @@ export interface Supersession {
 
 /**
  * Supersession, where parseable: the title's "(supersedes ADR-X)" / "(reverses part of ADR-X)"
- * and the first clause of a `**Supersedes:**` field. `ADR-X's …` means only part of X.
+ * and the first clause of a `**Supersedes:**` field. `ADR-X's …`, or a field that says
+ * "part of" / "in part" / "partially" / "the rest of … stands", means only part of X.
  */
 export function supersessions(
   e: Pick<Entry, "title" | "text">,
@@ -802,9 +803,17 @@ export function supersessions(
     add(m[2]!, /part of/i.test(m[1]!));
   }
   const field = fieldValue(e.text, "Supersedes");
-  if (field) add(field.split(/[(;.]|\sand\s/)[0]!, false);
+  // Targets come from the first clause only (the explanation after "(" / ";" / " and " may
+  // name other ADRs in passing). "Partial" is read from the WHOLE value: a field often says
+  // what it replaces inside that explanation ("ADR-119 (outcome 1, in part: …)").
+  if (field)
+    add(field.split(/[(;.]|\sand\s/)[0]!, PARTIAL_SUPERSEDES_RE.test(field));
   return [...found.values()];
 }
+
+/** Wording in a **Supersedes:** field that means only part of the target is replaced. */
+const PARTIAL_SUPERSEDES_RE =
+  /\b(?:part of|in part|partially|partial|the rest of)\b/i;
 
 /** Ids of the entries that supersede one ADR, fully or in part. */
 interface Inbound {
