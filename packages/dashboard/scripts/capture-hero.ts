@@ -180,11 +180,19 @@ const DISPATCHER_MOCK_REPLY = [
 // Plain ANSI: bold, dim and colours only; \r\n line ends for the terminal.
 const ESC = "\u001b[";
 const codexLine = (s = ""): string => `${s}\r\n`;
+/** One line of the Codex header box, padded to the box's visible width
+ *  (escape codes take no columns, so they're stripped before measuring). */
+const CODEX_BOX_INNER = 46;
+const codexBoxLine = (content: string): string => {
+  const visible = content.replace(/\u001b\[[0-9;]*m/g, "").length;
+  const pad = " ".repeat(Math.max(0, CODEX_BOX_INNER - visible));
+  return codexLine(`${ESC}2m│${ESC}0m ${content}${pad}${ESC}2m│${ESC}0m`);
+};
 const CODEX_TRANSCRIPT: string[] = [
-  codexLine(`${ESC}2m╭───────────────────────────────────────────────╮${ESC}0m`),
-  codexLine(`${ESC}2m│${ESC}0m ${ESC}1m>_ OpenAI Codex${ESC}0m                                ${ESC}2m│${ESC}0m`),
-  codexLine(`${ESC}2m│${ESC}0m ${ESC}2mdirectory:${ESC}0m ~/demo-webapp                     ${ESC}2m│${ESC}0m`),
-  codexLine(`${ESC}2m╰───────────────────────────────────────────────╯${ESC}0m`),
+  codexLine(`${ESC}2m╭${"─".repeat(CODEX_BOX_INNER + 1)}╮${ESC}0m`),
+  codexBoxLine(`${ESC}1m>_ OpenAI Codex${ESC}0m`),
+  codexBoxLine(`${ESC}2mdirectory:${ESC}0m ~/demo-webapp`),
+  codexLine(`${ESC}2m╰${"─".repeat(CODEX_BOX_INNER + 1)}╯${ESC}0m`),
   codexLine(),
   codexLine(`${ESC}1m›${ESC}0m Read src/payments/schema.ts and outline the /v1/charge endpoint:`),
   codexLine(`  idempotency, validation, success and failure responses. ~6 lines.`),
@@ -1234,11 +1242,15 @@ async function captureWeb(
 // ── Teardown ─────────────────────────────────────────────────────────────────
 /** Every descendant pid of rootPid (via ps -Ao pid,ppid). */
 function descendantPids(rootPid: number): number[] {
-  let out: string;
-  try {
-    out = spawnSync("ps", ["-Ao", "pid,ppid"], { encoding: "utf-8" }).stdout;
-  } catch (err) {
-    console.warn(`teardown: descendantPids ps failed (tree sweep skipped): ${err}`);
+  // spawnSync reports a failed exec (ps unavailable, or denied by a sandbox)
+  // as a null stdout, not a throw: both mean "skip the sweep", never a crash
+  // that aborts the rest of teardown.
+  const ps = spawnSync("ps", ["-Ao", "pid,ppid"], { encoding: "utf-8" });
+  const out = ps.stdout;
+  if (ps.error || typeof out !== "string") {
+    console.warn(
+      `teardown: descendantPids ps failed (tree sweep skipped): ${ps.error ?? `exit ${ps.status}`}`,
+    );
     return [];
   }
   const children = new Map<number, number[]>();
