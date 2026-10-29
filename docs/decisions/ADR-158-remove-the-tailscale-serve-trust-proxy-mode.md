@@ -16,12 +16,16 @@
      - **`install-service --trust-proxy`** is refused with the same pointer.
      - **`install.sh`** re-renders an existing service WITHOUT the flag and prints why. An update therefore never crash-loops on a flag nobody can use.
      - Ignoring it silently would be worse than refusing: with serve still pointed at the port, every tailnet visitor would arrive as "this machine", exempt from the new-device lock.
-  4. **Kept:**
+  4. **Upgrade behavior.** No release ever contained `--trust-proxy`: v0.7.0 (2026-09-19) predates #488 (2026-10-08), checked against the tag. So bundle installs, and the in-app updater that applies release bundles, never see it. The only installs that can carry it are source installs that tracked `main` in between:
+     - **`off` / `none` / empty** asked for what is now the only mode. They're accepted, with one info line saying the setting can be removed.
+     - **Any other value, or a bare flag**, refuses to start (point 3). A bare `--trust-proxy` counts as present without swallowing the next argument, such as `--host=…`.
+     - **`install.sh`**, re-rendering a unit that still carries the flag, first asks Tailscale whether serve forwards to that port. If it does, it **stops without changing the unit**: the old version keeps running, and it prints `tailscale serve reset` plus the `--host=127.0.0.1,$(tailscale ip -4)` command. Otherwise it drops the flag with a notice. Re-rendering while serve still forwarded would make every tailnet visitor "this machine" (SecurityAudit, #548).
+  5. **Kept:**
      - ADR-139's host list and everything in it (extra listeners, retry, the address-in-use warning, the name-resolution check);
      - the exact (non-/64) keying of Tailscale IPv6 addresses in the throttle (it applies to direct-bind visitors);
      - the new-device lock (ADR-148).
      - The docs say plainly that a reverse proxy on the same machine isn't supported, and why.
-  5. **A CI guard keeps the header-trust path from coming back:**
+  6. **A CI guard keeps the header-trust path from coming back:**
      - a server/source scan fails if `X-Forwarded-For` or `Tailscale-User-Login` is read outside tests;
      - a real-server test sends those headers from loopback TCP and checks they never become an identity;
      - tests cover the refusals.

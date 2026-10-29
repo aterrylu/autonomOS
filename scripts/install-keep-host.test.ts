@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -56,7 +58,51 @@ describe("install.sh drops the removed --trust-proxy (ADR-158)", () => {
   it("and says so when a service file still had it", () => {
     assert.match(
       script,
-      /grep -q -- '--trust-proxy=' "\$SERVICE_FILE"[\s\S]*Dropping --trust-proxy[\s\S]*tailscale serve reset/,
+      /grep -q -- '--trust-proxy' "\$SERVICE_FILE"[\s\S]*Dropping --trust-proxy from the service/,
+    );
+  });
+});
+
+describe("install.sh won't re-render a --trust-proxy unit while tailscale serve still forwards to it (ADR-158)", () => {
+  /** Run install.sh's own serve_forwards_port with a fake `tailscale` whose
+   *  `serve status` prints `status`. Never touches the real Tailscale. */
+  function forwards(status: string, port: number): boolean {
+    const dir = mkdtempSync(join(tmpdir(), "fake-ts-"));
+    try {
+      const fake = join(dir, "tailscale");
+      writeFileSync(fake, `#!/bin/sh\ncat <<'EOT'\n${status}\nEOT\n`);
+      chmodSync(fake, 0o755);
+      const fn = /^serve_forwards_port\(\) \{[\s\S]*?^\}/m.exec(
+        readFileSync(INSTALL, "utf8"),
+      );
+      assert.ok(fn, "install.sh defines serve_forwards_port at top level");
+      const r = spawnSync("bash", ["-c", `${fn[0]}\nserve_forwards_port ${port}`], {
+        env: { ...process.env, PATH: `${dir}:/usr/bin:/bin` },
+      });
+      return r.status === 0;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("detects serve forwarding to this port", () => {
+    assert.equal(
+      forwards("https://box.tail1234.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:3100", 3100),
+      true,
+    );
+  });
+  it("…and not another port, or no serve config", () => {
+    assert.equal(
+      forwards("https://box.tail1234.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:31000", 3100),
+      false,
+    );
+    assert.equal(forwards("No serve config", 3100), false);
+  });
+  it("the upgrade path stops (exit 1, the reset + --host commands) instead of dropping the flag in that case", () => {
+    const script = readFileSync(INSTALL, "utf8");
+    assert.match(
+      script,
+      /if serve_forwards_port "\$TS_PORT"; then[\s\S]*tailscale serve reset[\s\S]*--host=127\.0\.0\.1,\\\$\(tailscale ip -4\)[\s\S]*exit 1/,
     );
   });
 });

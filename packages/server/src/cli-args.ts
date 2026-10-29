@@ -72,7 +72,9 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
       continue;
     }
     if (arg === "--trust-proxy") {
-      args.trustProxy = argv[++i] ?? "";
+      // Bare flag: present, but never swallow the next argument (it could be
+      // --host=…). Its old value always followed "=" in a service file.
+      args.trustProxy = "(set)";
       continue;
     }
     if (arg === "--allow-weak-token") {

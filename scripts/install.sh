@@ -107,6 +107,20 @@ fi
 # fine (claude in ~/.local/bin but not on the installing shell's PATH).
 # nvm versioned bins are the one gap; one is on PATH whenever nvm is
 # loaded, which it must be for the node check above to have passed.
+# Is `tailscale serve` still forwarding to this machine's PORT? (ADR-158)
+# autonomOS no longer runs behind serve: with serve still forwarding, every
+# tailnet visitor would arrive as loopback (exempt from the new-device lock).
+serve_forwards_port() {
+  local port="$1" ts
+  ts=$(command -v tailscale 2>/dev/null || true)
+  if [[ -z "$ts" && -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
+    ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+  fi
+  [[ -n "$ts" ]] || return 1
+  "$ts" serve status 2>/dev/null |
+    grep -Eq "proxy (https?://)?(127\.0\.0\.1|localhost|\[::1\])?:?${port}([^0-9]|$)"
+}
+
 claude_available() {
   command -v claude >/dev/null 2>&1 && return 0
   for d in "$HOME/.local/bin" "$HOME/.bun/bin" "$HOME/.npm-global/bin" \
@@ -442,8 +456,21 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     # `tailscale serve` support (--trust-proxy) was removed (ADR-158). A
     # service file that still carries it is re-rendered WITHOUT it, and said
     # so: the server would refuse to start with it.
-    if grep -q -- '--trust-proxy=' "$SERVICE_FILE"; then
-      echo "[install] Dropping --trust-proxy from the service: tailscale serve support was removed (ADR-158). Run 'tailscale serve reset' if you had set serve up for autonomOS, and reach it with --host=127.0.0.1,\$(tailscale ip -4) instead."
+    if grep -q -- '--trust-proxy' "$SERVICE_FILE"; then
+      TS_PORT="${KEPT_PORT#--port=}"
+      TS_PORT="${TS_PORT:-3000}"
+      if serve_forwards_port "$TS_PORT"; then
+        # Re-rendering without the flag while serve still forwards would make
+        # every tailnet visitor "this machine". Stop; the old version keeps
+        # running until the operator chooses.
+        echo "[install] ✖ Not updating the service: it ran behind tailscale serve (--trust-proxy), which autonomOS no longer supports (ADR-158), and tailscale serve still forwards to port $TS_PORT." >&2
+        echo "[install]   The current version keeps running. To switch to the supported setup, run:" >&2
+        echo "[install]     tailscale serve reset" >&2
+        echo "[install]     autonomos install-service --force --port=$TS_PORT --host=127.0.0.1,\$(tailscale ip -4)" >&2
+        echo "[install]   then re-run this installer." >&2
+        exit 1
+      fi
+      echo "[install] Dropping --trust-proxy from the service: tailscale serve support was removed (ADR-158), and serve isn't forwarding to port $TS_PORT. Reach autonomOS with --host=127.0.0.1,\$(tailscale ip -4)."
     fi
     [[ -n "$KEPT_PORT" ]] && KEEP_FLAGS+=("$KEPT_PORT")
     [[ -n "$KEPT_HOST" ]] && KEEP_FLAGS+=("$KEPT_HOST")

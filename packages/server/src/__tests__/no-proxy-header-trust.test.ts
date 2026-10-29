@@ -53,7 +53,10 @@ describe("no proxy-header identity (ADR-158)", () => {
       parseCliArgs(["--trust-proxy=tailscale"]).trustProxy,
       "tailscale",
     );
-    assert.equal(parseCliArgs(["--trust-proxy", "x"]).trustProxy, "x");
+    // A bare flag is present, and never swallows the next argument.
+    const bare = parseCliArgs(["--trust-proxy", "--host=127.0.0.1"]);
+    assert.equal(bare.trustProxy, "(set)");
+    assert.equal(bare.host, "127.0.0.1");
     assert.equal(parseCliArgs([]).trustProxy, undefined);
   });
 });

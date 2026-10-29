@@ -98,6 +98,19 @@ describe("trust-proxy removed (ADR-158)", {
     assert.match(err.message, /AUTONOMOS_TRUST_PROXY/);
   });
 
+  it("AUTONOMOS_TRUST_PROXY=off/none (asking for what is now the only mode) starts, and says the setting can go", async () => {
+    for (const v of ["off", "none"]) {
+      const s = await bootServer({
+        token: WEAK,
+        extraArgs: ["--host=127.0.0.1"],
+        env: { AUTONOMOS_TRUST_PROXY: v },
+        prepareConfigDir: (d) => mkdirSync(join(d, "templates")),
+      });
+      booted.push(s);
+      assert.match(s.logs(), /set to off: that's now the only mode/);
+    }
+  });
+
   it("forged proxy headers from loopback TCP never become an identity (the device is the TCP peer)", async () => {
     const s = await bootServer({
       token: WEAK,

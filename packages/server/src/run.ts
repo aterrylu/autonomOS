@@ -232,9 +232,22 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // or env var refuses to start, loudly. Ignoring it would be worse: if serve
   // still points at the port, every tailnet visitor would arrive as "this
   // machine", exempt from the new-device lock, with nothing said.
-  const legacyTrustProxy =
-    cliArgs.trustProxy ?? process.env.AUTONOMOS_TRUST_PROXY;
-  if (legacyTrustProxy !== undefined && legacyTrustProxy.trim() !== "")
+  const legacyTrustProxy = (
+    cliArgs.trustProxy ?? process.env.AUTONOMOS_TRUST_PROXY
+  )
+    ?.trim()
+    .toLowerCase();
+  // "off" / "none" / empty were valid ways to say "no proxy": they ask for
+  // what autonomOS now always does, so they're accepted (and said so once).
+  if (
+    legacyTrustProxy === "off" ||
+    legacyTrustProxy === "none" ||
+    legacyTrustProxy === ""
+  )
+    console.log(
+      "ℹ --trust-proxy / AUTONOMOS_TRUST_PROXY is set to off: that's now the only mode, so the setting does nothing and can be removed (ADR-158).",
+    );
+  else if (legacyTrustProxy !== undefined)
     refuseToStart(
       [
         `✖ Refusing to start: --trust-proxy${cliArgs.trustProxy === undefined ? " (AUTONOMOS_TRUST_PROXY)" : ""} was removed; autonomOS no longer supports tailscale serve in front of it.`,
