@@ -6,8 +6,9 @@
 // Never mounted in production (env-gated), and writes only to the isolated
 // AUTONOMOS_CONFIG_DIR the harness sets.
 
-import type { UUID } from "@autonomos/core";
+import type { Provider, UUID } from "@autonomos/core";
 import { Hono } from "hono";
+import { writeAgentTokenFile } from "../agentCredentials.js";
 import {
   _appendToReplayBufferForTesting,
   _registerSyntheticAttachment,
@@ -20,6 +21,12 @@ import { buildBurst, burstBytes, DEFAULT_BURST } from "../perf/ink-burst.js";
 const ptys = new Map<string, FakePty>();
 
 export const perfRouter = new Hono();
+
+const SYNTHETIC_PROVIDERS = new Set<string>([
+  "claude-code",
+  "codex",
+  "gemini-cli",
+] satisfies Provider[]);
 
 perfRouter.get("/health", (c) => c.json({ ok: true, sessions: ptys.size }));
 
@@ -54,7 +61,14 @@ perfRouter.post("/session", async (c) => {
     id?: string;
     name?: string;
     seedMb?: number;
+    provider?: string;
   };
+  // Which runtime the synthetic session claims to be (its icon, its status
+  // vocabulary). The README hero script uses this for a scripted Codex pane
+  // and a Gemini org-chart node, so it needs no real CLI or login (#551).
+  const provider = body.provider ?? "claude-code";
+  if (!SYNTHETIC_PROVIDERS.has(provider))
+    return c.json({ error: `unknown provider "${provider}"` }, 400);
   const id = (body.id ?? "00000000-0000-4000-8000-0000000000ff") as UUID;
   const name = body.name ?? "perf-burst";
   const now = Date.now();
@@ -67,7 +81,7 @@ perfRouter.post("/session", async (c) => {
     workingDirectory: "/tmp",
     permissionMode: "ask",
     status: "running",
-    provider: "claude-code",
+    provider: provider as Provider,
     providerSessionId: id,
     startedAt: now,
     createdAt: now,
@@ -90,6 +104,10 @@ perfRouter.post("/session", async (c) => {
     _registerSyntheticAttachment(id, pty.asIPty());
   }
 
+  // A per-agent token, as a real spawn mints: lets a harness pose this
+  // session's status through the ordinary hook ingest (X-Agent-Token).
+  writeAgentTokenFile(id);
+
   let seeded: { chunks: number; bytes: number } | undefined;
   if (body.seedMb !== undefined) {
     const burst = scaledBurst(body.seedMb);
@@ -97,7 +115,7 @@ perfRouter.post("/session", async (c) => {
     seeded = { chunks: burst.length, bytes: burstBytes(burst) };
   }
 
-  return c.json({ id, name, seeded });
+  return c.json({ id, name, provider, seeded });
 });
 
 /** Fire one burst into the session's PTY. Returns the chunk/byte counts so the
