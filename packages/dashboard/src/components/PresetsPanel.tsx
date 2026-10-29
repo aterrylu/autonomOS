@@ -4,6 +4,7 @@ import { presetsApi } from "../api/config";
 import { presetsPoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
+import { panelPalette } from "./panelPalette";
 
 /**
  * PresetsPanel — view and manage model-override env presets.
@@ -49,10 +50,11 @@ function KeyValueEditor({
   keyPlaceholder?: string;
   valuePlaceholder?: string;
 }) {
+  const c = panelPalette(page);
   const inputStyle = {
-    background: "rgba(0,0,0,0.3)",
+    background: c.input,
     border: `1px solid ${page.border}`,
-    color: "#e6e1cf",
+    color: c.title,
   };
   return (
     <div className="flex flex-col gap-1.5">
@@ -99,8 +101,8 @@ function KeyValueEditor({
         onClick={() => onChange([...entries, ["", ""]])}
         className="text-[10px] px-2 py-0.5 rounded cursor-pointer self-start"
         style={{
-          background: "rgba(255,255,255,0.06)",
-          color: "#e6e1cf",
+          background: c.subtle,
+          color: c.title,
           border: `1px solid ${page.border}`,
         }}
       >
@@ -123,6 +125,7 @@ function StringListEditor({
   page: PageTheme;
   placeholder?: string;
 }) {
+  const c = panelPalette(page);
   return (
     <div className="flex flex-col gap-1.5">
       {values.map((val, idx) => (
@@ -139,9 +142,9 @@ function StringListEditor({
             placeholder={placeholder}
             className="flex-1 text-[11px] rounded px-1.5 py-1 font-mono"
             style={{
-              background: "rgba(0,0,0,0.3)",
+              background: c.input,
               border: `1px solid ${page.border}`,
-              color: "#e6e1cf",
+              color: c.title,
             }}
           />
           <button
@@ -160,8 +163,8 @@ function StringListEditor({
         onClick={() => onChange([...values, ""])}
         className="text-[10px] px-2 py-0.5 rounded cursor-pointer self-start"
         style={{
-          background: "rgba(255,255,255,0.06)",
-          color: "#e6e1cf",
+          background: c.subtle,
+          color: c.title,
           border: `1px solid ${page.border}`,
         }}
       >
@@ -187,6 +190,7 @@ export function SecretRow({
   maskedValue?: string;
   page: PageTheme;
 }) {
+  const c = panelPalette(page);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -217,10 +221,7 @@ export function SecretRow({
   };
 
   const keyLabel = (
-    <span
-      className="text-[11px] font-mono shrink-0"
-      style={{ color: "#e6e1cf" }}
-    >
+    <span className="text-[11px] font-mono shrink-0" style={{ color: c.title }}>
       {keyName}
     </span>
   );
@@ -267,7 +268,7 @@ export function SecretRow({
               type="button"
               onClick={() => setConfirmClear(false)}
               className="text-[10px] px-2 py-1 rounded cursor-pointer shrink-0"
-              style={{ background: "rgba(255,255,255,0.06)", color: "#e6e1cf" }}
+              style={{ background: c.subtle, color: c.title }}
             >
               Cancel
             </button>
@@ -327,9 +328,9 @@ export function SecretRow({
           autoComplete="off"
           className="flex-1 text-[11px] rounded px-2 py-1.5 font-mono"
           style={{
-            background: "rgba(0,0,0,0.3)",
+            background: c.input,
             border: `1px solid ${page.border}`,
-            color: "#e6e1cf",
+            color: c.title,
           }}
         />
         <button
@@ -374,6 +375,7 @@ export function SecretRow({
 // ── Preset card ─────────────────────────────────────────────────
 
 function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
+  const c = panelPalette(page);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -441,8 +443,8 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
     <div
       className="relative group"
       style={{
-        background: "rgba(28, 36, 51, 0.6)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        background: c.card,
+        border: `1px solid ${c.cardBorder}`,
         borderRadius: 12,
         padding: "14px 16px",
       }}
@@ -452,7 +454,7 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
         <div className="flex-1 min-w-0 flex items-center gap-2">
           <span
             className="text-[13px] font-semibold tracking-tight truncate"
-            style={{ color: "#e6e1cf" }}
+            style={{ color: c.title }}
           >
             {preset.name}
           </span>
@@ -474,8 +476,8 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
             onClick={startEdit}
             className="text-[10px] px-2 py-0.5 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
             style={{
-              background: "rgba(255,255,255,0.06)",
-              color: "#e6e1cf",
+              background: c.subtle,
+              color: c.title,
               border: `1px solid ${page.border}`,
             }}
           >
@@ -496,7 +498,7 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
               type="button"
               onClick={() => setConfirmDelete(false)}
               className="text-[10px] px-2 py-0.5 rounded cursor-pointer"
-              style={{ background: "rgba(255,255,255,0.06)", color: "#e6e1cf" }}
+              style={{ background: c.subtle, color: c.title }}
             >
               Cancel
             </button>
@@ -575,7 +577,7 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
               style={{ color: page.statusFg }}
               title={`${k}=${v}`}
             >
-              <span style={{ color: "#e6e1cf" }}>{k}</span>={v}
+              <span style={{ color: c.title }}>{k}</span>={v}
             </div>
           ))}
         </div>
@@ -595,9 +597,9 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
               placeholder="e.g. Kimi K2.7-code"
               className="text-[11px] rounded px-2 py-1.5"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: c.input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: c.title,
               }}
             />
           </label>
@@ -611,9 +613,9 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
               onChange={(e) => setDescription(e.target.value)}
               className="text-[11px] rounded px-2 py-1.5"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: c.input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: c.title,
               }}
             />
           </label>
@@ -628,9 +630,9 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
               }
               className="text-[11px] rounded px-2 py-1.5 cursor-pointer"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: c.input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: c.title,
               }}
             >
               <option value="">claude-code (default)</option>
@@ -680,8 +682,8 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
               onClick={() => setEditing(false)}
               className="text-[11px] px-3 py-1 rounded cursor-pointer"
               style={{
-                background: "rgba(255,255,255,0.06)",
-                color: "#e6e1cf",
+                background: c.subtle,
+                color: c.title,
                 border: `1px solid ${page.border}`,
               }}
             >
@@ -697,6 +699,7 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
 // ── Create form ─────────────────────────────────────────────────
 
 function CreateForm({ page, onDone }: { page: PageTheme; onDone: () => void }) {
+  const c = panelPalette(page);
   const [name, setName] = useState("");
   const [label, setLabel] = useState("");
   const [description, setDescription] = useState("");
@@ -737,22 +740,22 @@ function CreateForm({ page, onDone }: { page: PageTheme; onDone: () => void }) {
   };
 
   const inputStyle = {
-    background: "rgba(0,0,0,0.3)",
+    background: c.input,
     border: `1px solid ${page.border}`,
-    color: "#e6e1cf",
+    color: c.title,
   };
 
   return (
     <div
       className="flex flex-col gap-3 mb-4"
       style={{
-        background: "rgba(28, 36, 51, 0.6)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        background: c.card,
+        border: `1px solid ${c.cardBorder}`,
         borderRadius: 12,
         padding: "14px 16px",
       }}
     >
-      <span className="text-[13px] font-semibold" style={{ color: "#e6e1cf" }}>
+      <span className="text-[13px] font-semibold" style={{ color: c.title }}>
         New preset
       </span>
       <label className="flex flex-col gap-1">
@@ -853,8 +856,8 @@ function CreateForm({ page, onDone }: { page: PageTheme; onDone: () => void }) {
           onClick={onDone}
           className="text-[11px] px-3 py-1 rounded cursor-pointer"
           style={{
-            background: "rgba(255,255,255,0.06)",
-            color: "#e6e1cf",
+            background: c.subtle,
+            color: c.title,
             border: `1px solid ${page.border}`,
           }}
         >
@@ -868,12 +871,13 @@ function CreateForm({ page, onDone }: { page: PageTheme; onDone: () => void }) {
 // ── Empty state ─────────────────────────────────────────────────
 
 function EmptyState({ page }: { page: PageTheme }) {
+  const c = panelPalette(page);
   return (
     <div
       className="flex flex-col items-center justify-center gap-3 h-full text-center px-8"
       style={{ color: page.statusFg }}
     >
-      <span className="text-[14px] font-medium" style={{ color: "#e6e1cf" }}>
+      <span className="text-[14px] font-medium" style={{ color: c.title }}>
         No presets yet
       </span>
       <div className="text-[11px] leading-relaxed max-w-sm opacity-80">
@@ -891,6 +895,7 @@ function EmptyState({ page }: { page: PageTheme }) {
 export function PresetsPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const c = panelPalette(page);
   const { data, error } = usePoll(presetsPoll);
   const presets = data ?? {};
   const presetsLoading = data === null && !error;
@@ -913,7 +918,7 @@ export function PresetsPanel() {
         <div>
           <h2
             className="text-[15px] font-semibold tracking-tight"
-            style={{ color: "#e6e1cf" }}
+            style={{ color: c.title }}
           >
             Presets
           </h2>

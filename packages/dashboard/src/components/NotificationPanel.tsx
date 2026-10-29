@@ -8,6 +8,7 @@ import {
 import { pushEscapeCloser } from "../shortcuts/escapeStack";
 import { THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
+import { isLightBg } from "./recency";
 
 /** Inject the proactive glow keyframes once */
 const GLOW_STYLE_ID = "notification-glow-keyframes";
@@ -326,7 +327,9 @@ function NotificationRow({
         type="button"
         className="relative w-full text-left px-3 py-2 cursor-pointer transition-colors"
         style={{
-          background: n.proactive ? "#0d0b1a" : page.bg,
+          // The proactive card's dark fill is for dark themes only: on a light
+          // page it would sit under page.fg (dark) text. The glow still marks it.
+          background: n.proactive && !isLightBg(page.bg) ? "#0d0b1a" : page.bg,
           borderBottom: `1px solid ${page.border}`,
           borderRadius: n.proactive ? "4px" : undefined,
           zIndex: 1,

@@ -2180,7 +2180,9 @@ function HierarchyNodeRow({
   // Colored left border for parents with children (existing design)
   const borderColor = hasChildren
     ? isCollapsed
-      ? "rgba(255,255,255,0.15)"
+      ? isLightBg(page.bg)
+        ? "rgba(0,0,0,0.15)"
+        : "rgba(255,255,255,0.15)"
       : "rgba(59,130,246,0.5)"
     : undefined;
 

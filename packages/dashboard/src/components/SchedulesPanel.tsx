@@ -4,6 +4,7 @@ import { schedulesPoll } from "../api/polls";
 import { schedulesApi } from "../api/schedules";
 import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
+import { panelPalette } from "./panelPalette";
 
 /**
  * SchedulesPanel — view and manage cron schedules.
@@ -116,6 +117,7 @@ interface ScheduleCardProps {
 }
 
 function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
+  const c = panelPalette(page);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [runs, setRuns] = useState<RunRecord[]>([]);
@@ -171,8 +173,8 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
     <div
       className="relative group"
       style={{
-        background: "rgba(28, 36, 51, 0.6)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        background: c.card,
+        border: `1px solid ${c.cardBorder}`,
         borderRadius: 12,
         padding: "14px 16px",
       }}
@@ -189,16 +191,16 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
             width: 10,
             height: 10,
             borderRadius: "50%",
-            background: schedule.enabled ? "#22c55e" : "rgba(255,255,255,0.2)",
+            background: schedule.enabled ? "#22c55e" : c.dotOff,
             border: schedule.enabled
               ? "1px solid #16a34a"
-              : "1px solid rgba(255,255,255,0.1)",
+              : `1px solid ${c.dotOffBorder}`,
           }}
         />
         <div className="flex-1 min-w-0">
           <span
             className="text-[13px] font-semibold tracking-tight truncate block"
-            style={{ color: "#e6e1cf" }}
+            style={{ color: c.title }}
           >
             {name}
           </span>
@@ -233,8 +235,8 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
               onClick={() => setConfirmDelete(false)}
               className="text-[10px] px-2 py-0.5 rounded cursor-pointer"
               style={{
-                background: "rgba(255,255,255,0.06)",
-                color: "#e6e1cf",
+                background: c.subtle,
+                color: c.title,
               }}
             >
               Cancel
@@ -365,12 +367,13 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
 // ── Empty State ─────────────────────────────────────────────────
 
 function EmptyState({ page }: { page: PageTheme }) {
+  const c = panelPalette(page);
   return (
     <div
       className="flex flex-col items-center justify-center gap-3 h-full text-center px-8"
       style={{ color: page.statusFg }}
     >
-      <span className="text-[14px] font-medium" style={{ color: "#e6e1cf" }}>
+      <span className="text-[14px] font-medium" style={{ color: c.title }}>
         No schedules yet
       </span>
       <div className="text-[11px] leading-relaxed max-w-sm opacity-80">
@@ -394,6 +397,7 @@ function MaxRunsControl({
   status: SchedulerStatus | null;
   page: PageTheme;
 }) {
+  const c = panelPalette(page);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(String(status?.maxConcurrentRuns ?? 3));
 
@@ -430,9 +434,9 @@ function MaxRunsControl({
           onBlur={handleSave}
           className="w-10 text-[11px] text-center rounded px-1 py-0.5"
           style={{
-            background: "rgba(0,0,0,0.3)",
+            background: c.input,
             border: `1px solid ${page.border}`,
-            color: "#e6e1cf",
+            color: c.title,
           }}
           // biome-ignore lint/a11y/noAutofocus: small inline input
           autoFocus
@@ -451,7 +455,7 @@ function MaxRunsControl({
       className="text-[10px] cursor-pointer rounded px-2 py-0.5"
       style={{
         color: page.statusFg,
-        background: "rgba(255,255,255,0.04)",
+        background: c.faint,
         border: `1px solid ${page.border}`,
       }}
       title="Max concurrent scheduled runs"
@@ -466,6 +470,7 @@ function MaxRunsControl({
 export function SchedulesPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const c = panelPalette(page);
   const { data, error } = usePoll(schedulesPoll);
 
   const schedules = data?.schedules ?? {};
@@ -494,7 +499,7 @@ export function SchedulesPanel() {
           <div className="flex items-center gap-2">
             <h2
               className="text-[15px] font-semibold tracking-tight"
-              style={{ color: "#e6e1cf" }}
+              style={{ color: c.title }}
             >
               Schedules
             </h2>
