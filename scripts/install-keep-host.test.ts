@@ -14,18 +14,18 @@ import { fileURLToPath } from "node:url";
 
 const INSTALL = fileURLToPath(new URL("./install.sh", import.meta.url));
 
-function keptPattern(name = "KEPT_HOST"): string {
+function keptHostPattern(): string {
   const line = readFileSync(INSTALL, "utf8")
     .split("\n")
-    .find((l) => l.includes(`${name}=$(grep -oE`));
-  assert.ok(line, `install.sh still extracts ${name} with grep -oE`);
+    .find((l) => l.includes("KEPT_HOST=$(grep -oE"));
+  assert.ok(line, "install.sh still extracts KEPT_HOST with grep -oE");
   const m = /grep -oE -- '([^']+)'/.exec(line);
   assert.ok(m, "pattern found");
   return m[1];
 }
 
-function kept(serviceText: string, name = "KEPT_HOST"): string {
-  const res = spawnSync("grep", ["-oE", "--", keptPattern(name)], {
+function kept(serviceText: string): string {
+  const res = spawnSync("grep", ["-oE", "--", keptHostPattern()], {
     input: serviceText,
     encoding: "utf8",
   });
@@ -47,20 +47,16 @@ describe("install.sh keeps the service's --host", () => {
   });
 });
 
-describe("install.sh keeps the service's --trust-proxy (ADR-140)", () => {
-  it("survives the re-render, so an update doesn't stop trusting serve", () => {
-    assert.equal(
-      kept(
-        "<string>--host=127.0.0.1</string><string>--trust-proxy=tailscale</string>",
-        "KEPT_TRUST",
-      ),
-      "--trust-proxy=tailscale",
-    );
+describe("install.sh drops the removed --trust-proxy (ADR-157)", () => {
+  const script = readFileSync(INSTALL, "utf8");
+  it("doesn't carry it into the re-rendered service (the server would refuse it)", () => {
+    assert.ok(!/KEEP_FLAGS\+=\("\$KEPT_TRUST"\)/.test(script));
+    assert.ok(!/KEPT_TRUST=/.test(script));
   });
-  it("and is passed to install-service", () => {
+  it("and says so when a service file still had it", () => {
     assert.match(
-      readFileSync(INSTALL, "utf8"),
-      /\[\[ -n "\$KEPT_TRUST" \]\] && KEEP_FLAGS\+=\("\$KEPT_TRUST"\)/,
+      script,
+      /grep -q -- '--trust-proxy=' "\$SERVICE_FILE"[\s\S]*Dropping --trust-proxy[\s\S]*tailscale serve reset/,
     );
   });
 });

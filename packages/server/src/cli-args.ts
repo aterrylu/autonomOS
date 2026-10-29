@@ -16,6 +16,8 @@ export type CliArgs = {
   host: string | undefined;
   printUrl: boolean;
   allowWeakToken: boolean;
+  /** REMOVED option (ADR-157), still parsed so a leftover one is refused
+   *  with a message that says what to do, not "unknown option". */
   trustProxy: string | undefined;
   help: boolean;
 };
@@ -42,13 +44,6 @@ Options:
                   Without it, such a first start is refused. Existing installs
                   are never refused, only warned. \`autonomos token rotate\`
                   replaces a weak token.
-  --trust-proxy=tailscale
-                  (env AUTONOMOS_TRUST_PROXY) Run behind \`tailscale serve\`:
-                  a request from this machine carrying X-Forwarded-For is
-                  treated as coming from that tailnet address, so per-device
-                  protections work per device. Only allowed with a loopback
-                  --host (127.0.0.1), or the network could reach it around
-                  serve.
   --help          Print this message and exit
 `;
 
@@ -72,18 +67,16 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
       args.printUrl = true;
       continue;
     }
-    if (arg === "--allow-weak-token") {
-      args.allowWeakToken = true;
-      continue;
-    }
     if (arg.startsWith("--trust-proxy=")) {
       args.trustProxy = arg.slice("--trust-proxy=".length);
       continue;
     }
     if (arg === "--trust-proxy") {
-      const next = argv[++i];
-      if (next === undefined) throw new Error("--trust-proxy requires a value");
-      args.trustProxy = next;
+      args.trustProxy = argv[++i] ?? "";
+      continue;
+    }
+    if (arg === "--allow-weak-token") {
+      args.allowWeakToken = true;
       continue;
     }
     if (arg.startsWith("--port=")) {

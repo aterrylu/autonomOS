@@ -439,12 +439,14 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     KEEP_FLAGS=()
     KEPT_PORT=$(grep -oE -- '--port=[0-9]+' "$SERVICE_FILE" | head -1 || true)
     KEPT_HOST=$(grep -oE -- '--host=[^ <"]+' "$SERVICE_FILE" | head -1 || true)
-    # Behind `tailscale serve` (ADR-140): dropping it on an update would make
-    # every tailnet visitor look like this machine again.
-    KEPT_TRUST=$(grep -oE -- '--trust-proxy=[a-z]+' "$SERVICE_FILE" | head -1 || true)
+    # `tailscale serve` support (--trust-proxy) was removed (ADR-157). A
+    # service file that still carries it is re-rendered WITHOUT it, and said
+    # so: the server would refuse to start with it.
+    if grep -q -- '--trust-proxy=' "$SERVICE_FILE"; then
+      echo "[install] Dropping --trust-proxy from the service: tailscale serve support was removed (ADR-157). Run 'tailscale serve reset' if you had set serve up for autonomOS, and reach it with --host=127.0.0.1,\$(tailscale ip -4) instead."
+    fi
     [[ -n "$KEPT_PORT" ]] && KEEP_FLAGS+=("$KEPT_PORT")
     [[ -n "$KEPT_HOST" ]] && KEEP_FLAGS+=("$KEPT_HOST")
-    [[ -n "$KEPT_TRUST" ]] && KEEP_FLAGS+=("$KEPT_TRUST")
     echo "[install] Existing service detected. Re-rendering service + restarting into the new bundle..."
     "$WRAPPER" install-service --force ${KEEP_FLAGS[@]+"${KEEP_FLAGS[@]}"} || RC=$?
     if [[ "$RC" == "0" ]]; then
