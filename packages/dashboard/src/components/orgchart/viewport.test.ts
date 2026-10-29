@@ -178,13 +178,27 @@ describe("anyRectVisible", () => {
     const v = { x: -228.6, y: 12, k: 0.6 };
     expect(anyRectVisible(v, [card(32, 32), card(32, 136)], vp)).toBe(false);
   });
-  it("a sliver counts as visible (zoom applies to position and size)", () => {
-    expect(anyRectVisible({ x: -399, y: 0, k: 2 }, [card(0, 0)], vp)).toBe(
+  it("a sliver at the edge doesn't count: at least 12px of a card must show", () => {
+    // At k = 2 the 200px card is 400px wide on screen.
+    expect(anyRectVisible({ x: -388, y: 0, k: 2 }, [card(0, 0)], vp)).toBe(
       true,
-    );
-    expect(anyRectVisible({ x: -400, y: 0, k: 2 }, [card(0, 0)], vp)).toBe(
+    ); // 12px
+    expect(anyRectVisible({ x: -389, y: 0, k: 2 }, [card(0, 0)], vp)).toBe(
       false,
-    );
+    ); // 11px
+  });
+  it("a card smaller than 12px on screen counts when all of it shows", () => {
+    expect(
+      anyRectVisible({ x: 0, y: 0, k: 1 }, [{ x: 10, y: 10, w: 8, h: 8 }], vp),
+    ).toBe(true);
+  });
+  it("a degenerate view shows nothing", () => {
+    for (const v of [
+      { x: 0, y: 0, k: 0 },
+      { x: Number.NaN, y: 0, k: 1 },
+      { x: 0, y: 0, k: Number.POSITIVE_INFINITY },
+    ])
+      expect(anyRectVisible(v, [card(100, 100)], vp)).toBe(false);
   });
   it("no cards → nothing visible", () => {
     expect(anyRectVisible({ x: 0, y: 0, k: 1 }, [], vp)).toBe(false);

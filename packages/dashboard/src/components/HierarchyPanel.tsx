@@ -509,9 +509,10 @@ function OrgCanvas({
   // Every card's box, for the canvas's "is anything still on screen?" check.
   // Keyed by the positions themselves, so a status frame that doesn't move a
   // card doesn't hand the canvas a new array (and doesn't re-check the view).
-  const cardsKey = [...layout.pos]
-    .map(([id, p]) => `${id}@${p.x},${p.y}`)
-    .join("|");
+  const cardsKey = useMemo(
+    () => [...layout.pos].map(([id, p]) => `${id}@${p.x},${p.y}`).join("|"),
+    [layout],
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: cardsKey captures layout.pos
   const cards = useMemo(
     () =>

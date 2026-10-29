@@ -431,8 +431,13 @@ describe("two top-level teams: both stay in view as agents come and go (Terry's 
       await orgTreePoll.refresh();
     });
   };
-  const fullyOnScreen = (id: string) => {
-    const { x, y, k } = view();
+  // Would card `id` (at its CURRENT layout position) sit fully on screen
+  // under view `v`? With an older view, this is where the bug left it.
+  const fullyOnScreenUnder = (
+    v: { x: number; y: number; k: number },
+    id: string,
+  ) => {
+    const { x, y, k } = v;
     const c = card(id) as HTMLElement;
     const left = x + Number.parseFloat(c.style.left) * k;
     const top = y + Number.parseFloat(c.style.top) * k;
@@ -440,11 +445,15 @@ describe("two top-level teams: both stay in view as agents come and go (Terry's 
       left >= 0 && top >= 0 && left + 200 * k <= VP.w && top + 60 * k <= VP.h
     );
   };
+  const fullyOnScreen = (id: string) => fullyOnScreenUnder(view(), id);
 
   it("a second team that arrives after the chart opened is shown beside the first", async () => {
     await mount(() => setFleet([team("Lead", 3)]));
+    const opened = view();
     await swap([team("Lead", 3), team("Other", 1)]);
     await waitFor(() => expect(card("Other")).not.toBeNull());
+    // Precondition: the view it opened with would strand the new team.
+    expect(fullyOnScreenUnder(opened, "Other")).toBe(false);
     expect(fullyOnScreen("Lead")).toBe(true);
     expect(fullyOnScreen("Other")).toBe(true);
     expect(fullyOnScreen("Other-0")).toBe(true);
@@ -468,5 +477,74 @@ describe("two top-level teams: both stay in view as agents come and go (Terry's 
     await swap([team("Lead", 3), team("Other", 2)]);
     await waitFor(() => expect(card("Other-1")).not.toBeNull());
     expect(view()).toEqual(before);
+  });
+
+  it("clicking a card (which focuses it) doesn't count as placing the view", async () => {
+    await mount(() => setFleet([team("Lead", 3)]));
+    fireEvent.click(card("Lead") as HTMLElement);
+    (card("Lead") as HTMLElement).focus();
+    await swap([team("Lead", 3), team("Other", 1)]);
+    await waitFor(() => expect(card("Other")).not.toBeNull());
+    expect(fullyOnScreen("Other")).toBe(true);
+  });
+
+  it("a change made while the pane was hidden (0×0) is re-checked when it shows again", async () => {
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: () => void) {
+          observers.push(cb);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const resize = () =>
+      act(() => {
+        for (const cb of observers) cb();
+      });
+    await mount(() => setFleet([team("Lead", 10), team("Other", 1)]));
+    expect(observers.length).toBeGreaterThan(0);
+    const before = view();
+    VP = { w: 0, h: 0 }; // dockview hides the pane
+    resize();
+    await swap([team("Other", 1)]); // the visible team is removed meanwhile
+    await waitFor(() => expect(card("Lead")).toBeNull());
+    expect(view()).toEqual(before); // nothing to frame at 0×0
+    VP = { w: 900, h: 500 }; // the pane shows again
+    resize();
+    expect(fullyOnScreen("Other")).toBe(true);
+    expect(fullyOnScreen("Other-0")).toBe(true);
+  });
+
+  it("after Fit, a fleet change fits again (not the 60% opening floor)", async () => {
+    await mount(() => setFleet([team("Lead", 10), team("Other", 1)]));
+    fireEvent.click($("[data-org-zoom-fit]") as HTMLElement);
+    await waitFor(() => expect(fullyOnScreen("Other")).toBe(true));
+    await swap([team("Lead", 10), team("Other", 2)]);
+    await waitFor(() => expect(card("Other-1")).not.toBeNull());
+    for (const id of ["Lead", "Lead-0", "Lead-9", "Other", "Other-1"])
+      expect(fullyOnScreen(id), id).toBe(true);
+    expect(view().k).toBeLessThan(0.6);
+  });
+
+  it("a pinch-zoomed view stays put while a card is still on screen", async () => {
+    await mount(() => setFleet([team("Lead", 3), team("Other", 1)]));
+    const vp = viewport();
+    act(() => {
+      vp.dispatchEvent(new Event("gesturestart", { cancelable: true }));
+      vp.dispatchEvent(
+        Object.assign(new Event("gesturechange", { cancelable: true }), {
+          scale: 1.2,
+          clientX: 300,
+          clientY: 200,
+        }),
+      );
+    });
+    const pinched = view();
+    await swap([team("Lead", 3), team("Other", 2)]);
+    await waitFor(() => expect(card("Other-1")).not.toBeNull());
+    expect(view()).toEqual(pinched);
   });
 });
