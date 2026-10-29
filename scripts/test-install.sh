@@ -383,6 +383,13 @@ echo "$VERSION_JSON" | grep -q '"version"' || {
 }
 echo "  ✓ /api/system/version OK"
 
+# ── the installed bundle really spawns an agent PTY ──────────────────────
+# install/start/status above never spawn, so a bundle whose spawn-helper ships
+# without +x (or points at the build machine) passed while every macOS spawn
+# died with "posix_spawnp failed" (#532). Own isolated server + stub agent.
+echo "==> Installed bundle spawns an agent that stays up"
+bash "$ROOT/scripts/smoke-bundle-spawn.sh" "$TEST_PREFIX/share/autonomos"
+
 # ── stop ─────────────────────────────────────────────────────────────────
 echo "==> Stopping daemon"
 assert_only_test_label "autonomos stop"
