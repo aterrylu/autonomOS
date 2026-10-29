@@ -10,6 +10,7 @@ import { providersApi } from "../api/misc";
 import { presetsPoll, templatesPoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
+import { panelPalette } from "./panelPalette";
 import {
   knownDefault,
   PERMISSION_RUNTIMES,
@@ -25,6 +26,7 @@ import {
 export function CreateAgentPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const c = panelPalette(page);
 
   const { projects, createSession, status, fetchProjects } = useStore(
     useShallow((s) => ({
@@ -189,7 +191,7 @@ export function CreateAgentPanel() {
             placeholder="e.g. Dispatcher, Researcher"
             className="w-full max-w-md px-3 py-2 rounded text-sm"
             style={{
-              background: "rgba(255,255,255,0.06)",
+              background: c.subtle,
               border: `1px solid ${page.border}`,
               color: page.fg,
             }}
@@ -314,7 +316,7 @@ export function CreateAgentPanel() {
             onChange={(e) => setSelectedPreset(e.target.value)}
             className="w-full max-w-md px-3 py-2 rounded text-sm cursor-pointer"
             style={{
-              background: "rgba(255,255,255,0.06)",
+              background: c.subtle,
               border: `1px solid ${page.border}`,
               color: page.fg,
             }}
@@ -391,7 +393,7 @@ export function CreateAgentPanel() {
               placeholder="/path/to/project"
               className="mt-2 w-full max-w-md px-3 py-2 rounded text-sm"
               style={{
-                background: "rgba(255,255,255,0.06)",
+                background: c.subtle,
                 border: `1px solid ${page.border}`,
                 color: page.fg,
               }}
@@ -531,6 +533,7 @@ function SelectionCard({
   children: React.ReactNode;
   disabled?: boolean;
 }) {
+  const c = panelPalette(page);
   return (
     <button
       type="button"
@@ -538,9 +541,7 @@ function SelectionCard({
       disabled={disabled}
       className="shrink-0 w-[180px] p-3 rounded-lg text-left cursor-pointer transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed flex flex-col justify-start"
       style={{
-        background: selected
-          ? "rgba(35,134,54,0.15)"
-          : "rgba(255,255,255,0.04)",
+        background: selected ? "rgba(35,134,54,0.15)" : c.faint,
         border: `1.5px solid ${selected ? "#238636" : page.border}`,
         color: page.fg,
       }}
@@ -561,6 +562,7 @@ function RuntimeCard({
   onClick: () => void;
   page: { bg: string; fg: string; border: string; statusFg: string };
 }) {
+  const c = panelPalette(page);
   const { capabilities: caps, installed } = provider;
 
   const installUrls: Record<string, string> = {
@@ -570,14 +572,14 @@ function RuntimeCard({
     "gemini-cli": "https://github.com/google-gemini/gemini-cli",
   };
 
-  let background = "rgba(255,255,255,0.04)";
+  let background = c.faint;
   let borderColor = page.border;
   if (selected) {
     background = "rgba(35,134,54,0.15)";
     borderColor = "#238636";
   } else if (!installed) {
-    background = "rgba(255,255,255,0.02)";
-    borderColor = "rgba(255,255,255,0.08)";
+    background = c.faintest;
+    borderColor = c.mutedBorder;
   }
 
   return (
