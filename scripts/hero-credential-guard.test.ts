@@ -95,8 +95,14 @@ describe("capture-hero.ts never reads or copies a real credential (#551)", () =>
     ])
       assert.ok(!forbidden.test(source), `capture-hero.ts matches ${forbidden}`);
   });
-  it("runs the guard on its fake HOME", () => {
-    assert.match(source, /assertNoCredentials\(/);
+  it("runs the guard on its fake HOME after boot AND right before the screenshot", () => {
+    // Two different moments: what boot seeded, and anything the agents pulled
+    // in while the scene ran.
+    assert.match(source, /assertNoCredentials\(server\.fakeHome, "[^"]*\(after boot\)"\)/);
+    assert.match(
+      source,
+      /assertNoCredentials\(server\.fakeHome, "[^"]*\(before capture\)"\)[\s\S]*?captureWeb\(/,
+    );
   });
 });
 
