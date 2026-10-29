@@ -33,6 +33,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  anyRectVisible,
   centerOn,
   clampZoom,
   fitView,
@@ -58,6 +59,17 @@ const requestFrame = (cb: FrameRequestCallback) =>
 
 /** Terry's pick 4A: open fitted, but never below this zoom. */
 export const OPEN_FLOOR = 0.6;
+
+/** The opening view (pick 4A: fit, 60% floor) for the chart as it is now. */
+function openingView(
+  { content, anchorX }: { content: Size; anchorX: number },
+  viewport: Size,
+): View {
+  return openView(content, viewport, { floor: OPEN_FLOOR, anchorX });
+}
+
+const sameView = (a: View, b: View) =>
+  a.x === b.x && a.y === b.y && a.k === b.k;
 const STEP = 1.25;
 const GLIDE_MS = 260;
 
@@ -87,6 +99,7 @@ export function useCanvasView({
   panRef,
   stageRef,
   content,
+  cards,
   anchorX,
   onGestureStart,
 }: {
@@ -97,6 +110,9 @@ export function useCanvasView({
   stageRef: RefObject<HTMLDivElement | null>;
   /** The laid-out chart size, in px at 100%. */
   content: Size;
+  /** Every drawn card's box (world px). A new array when the chart changes:
+   *  that is what re-checks the view (see "the chart changed" below). */
+  cards: readonly Rect[];
   /** World x to center when opening at the floor (the top root's center). */
   anchorX: number;
   /** A pan/zoom began — e.g. close a context menu so it doesn't float away. */
@@ -109,9 +125,16 @@ export function useCanvasView({
   const listeners = useRef(new Set<() => void>());
   const snapshot = useRef(state.current);
   const opened = useRef(false);
+  // Who placed the view last: the opening ("open"), Fit ("fit"), or the user
+  // (a pan, zoom, pinch, the map, or a reveal that actually moved it). It
+  // decides what a fleet change does (see recheck).
+  const placed = useRef<"open" | "fit" | "user">("open");
+  // A fleet change arrived while the pane was hidden (0×0): re-check it once
+  // the pane has a size again.
+  const pending = useRef(false);
   const anim = useRef(0);
-  const live = useRef({ content, anchorX, onGestureStart });
-  live.current = { content, anchorX, onGestureStart };
+  const live = useRef({ content, cards, anchorX, onGestureStart });
+  live.current = { content, cards, anchorX, onGestureStart };
 
   const commit = useCallback(
     (view: View) => {
@@ -166,30 +189,76 @@ export function useCanvasView({
     return {
       zoomBy: (f) => {
         const [cx, cy] = center();
+        placed.current = "user";
         live.current.onGestureStart?.();
         glide(zoomAt(state.current.view, f, cx, cy));
       },
       reset: () => {
         const [cx, cy] = center();
+        placed.current = "user";
         glide(zoomAt(state.current.view, 1 / state.current.view.k, cx, cy));
       },
       fit: () => {
+        // Fit means "frame everyone": later fleet changes fit again.
+        placed.current = "fit";
         live.current.onGestureStart?.();
         glide(fitView(live.current.content, state.current.viewport));
       },
-      reveal: (r) =>
-        glide(revealRect(state.current.view, r, state.current.viewport)),
-      centerOn: (wx, wy) =>
-        glide(centerOn(state.current.view, wx, wy, state.current.viewport)),
+      // A reveal for a card already on screen (every click focuses its card)
+      // changes nothing, so it must not count as the user placing the view.
+      reveal: (r) => {
+        const to = revealRect(state.current.view, r, state.current.viewport);
+        if (sameView(to, state.current.view)) return;
+        placed.current = "user";
+        glide(to);
+      },
+      centerOn: (wx, wy) => {
+        const to = centerOn(state.current.view, wx, wy, state.current.viewport);
+        if (sameView(to, state.current.view)) return;
+        placed.current = "user";
+        glide(to);
+      },
       set: (v) => {
+        const to = { ...v, k: clampZoom(v.k) };
+        if (sameView(to, state.current.view)) return;
+        placed.current = "user";
         cancelFrame(anim.current);
-        commit({ ...v, k: clampZoom(v.k) });
+        commit(to);
       },
     };
   }, [glide, commit]);
 
+  // Re-check the view against the chart as it is now (ADR-159, refining
+  // ADR-120's "never move"). A view the user placed stays put while any card
+  // is still on screen. Otherwise: after Fit it fits again; an untouched view
+  // re-opens on the fleet (a team that arrived isn't left off-screen); and a
+  // view left showing no card at all (its team was removed) re-opens, so the
+  // chart never reads as empty while agents exist.
+  const recheck = useCallback(() => {
+    const { view, viewport } = state.current;
+    if (viewport.w === 0 || viewport.h === 0) {
+      pending.current = true;
+      return;
+    }
+    pending.current = false;
+    const { content, cards } = live.current;
+    if (placed.current === "user" && anyRectVisible(view, cards, viewport)) {
+      commit(view);
+      return;
+    }
+    cancelFrame(anim.current);
+    if (placed.current === "fit") {
+      commit(fitView(content, viewport));
+      return;
+    }
+    placed.current = "open";
+    commit(openingView(live.current, viewport));
+  }, [commit]);
+
   // Size tracking. Dockview keeps a hidden panel mounted at 0×0, so the
   // opening view waits for the first REAL size (pick 4A: fit, 60% floor).
+  // A later resize keeps the view, unless a fleet change came in while the
+  // pane was hidden or the new size leaves no card on screen.
   useLayoutEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -199,27 +268,30 @@ export function useCanvasView({
       if (viewport.w === 0 || viewport.h === 0) return;
       if (!opened.current) {
         opened.current = true;
-        commit(
-          openView(live.current.content, viewport, {
-            floor: OPEN_FLOOR,
-            anchorX: live.current.anchorX,
-          }),
-        );
-      } else commit(state.current.view);
+        commit(openingView(live.current, viewport));
+      } else if (
+        pending.current ||
+        !anyRectVisible(state.current.view, live.current.cards, viewport)
+      )
+        recheck();
+      else commit(state.current.view);
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [viewportRef, commit]);
+  }, [viewportRef, commit, recheck]);
 
-  // The chart changed size (agents came or went): re-publish so the map and
-  // its "doesn't fit" rule see the new bounds — but never move the view.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the chart size is the trigger
-  useEffect(() => {
-    if (opened.current) commit(state.current.view);
-  }, [content.w, content.h, commit]);
+  // The chart changed (agents came or went). A layout effect, so a removed
+  // team never paints one empty frame before the view re-frames. The mount
+  // run is skipped: the size effect above already opened the view.
+  const seenCards = useRef(cards);
+  useLayoutEffect(() => {
+    if (seenCards.current === cards) return;
+    seenCards.current = cards;
+    if (opened.current) recheck();
+  }, [cards, recheck]);
 
   // Pointer / wheel / key gestures, as native listeners (wheel must be
   // non-passive to preventDefault the page scroll).
@@ -243,6 +315,8 @@ export function useCanvasView({
     const down = (e: PointerEvent) => {
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pts.size === 2) {
+        placed.current = "user";
+        live.current.onGestureStart?.();
         const [a, b] = [...pts.values()];
         const [cx, cy] = local((a.x + b.x) / 2, (a.y + b.y) / 2);
         pinch = {
@@ -282,6 +356,7 @@ export function useCanvasView({
         pan.moved = true;
         el.setPointerCapture?.(e.pointerId);
         el.dataset.orgPanning = "";
+        placed.current = "user";
         live.current.onGestureStart?.();
       }
       commit({ ...pan.from, x: pan.from.x + dx, y: pan.from.y + dy });
@@ -310,6 +385,7 @@ export function useCanvasView({
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
       cancelFrame(anim.current);
+      placed.current = "user";
       live.current.onGestureStart?.();
       const a = interpretWheel(e, "pan"); // pick 1A
       const v = state.current.view;
@@ -323,6 +399,8 @@ export function useCanvasView({
     let g0 = 1;
     const gStart = (e: Event) => {
       e.preventDefault();
+      placed.current = "user";
+      live.current.onGestureStart?.();
       g0 = state.current.view.k;
     };
     const gChange = (e: Event) => {

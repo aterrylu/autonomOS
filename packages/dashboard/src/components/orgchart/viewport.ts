@@ -78,6 +78,33 @@ export function openView(
   return { x: viewport.w / 2 - anchorX * k, y: pad, k };
 }
 
+/** How much of a card must show (screen px, each axis) to count as visible:
+ *  a sliver at the pane's edge isn't "showing" an agent. */
+export const MIN_VISIBLE_PX = 12;
+
+/**
+ * Does any of `rects` (world px, e.g. the cards) show on screen under view
+ * `v`, by at least MIN_VISIBLE_PX on each axis (or all of it, for a card
+ * smaller than that at this zoom)? A chart can still overlap the viewport by
+ * its padding alone while every card is off-screen, so this checks the cards,
+ * not the chart's box. A degenerate view (k ≤ 0, non-finite) shows nothing.
+ */
+export function anyRectVisible(
+  v: View,
+  rects: readonly Rect[],
+  viewport: Size,
+): boolean {
+  if (!(v.k > 0) || ![v.x, v.y, v.k].every(Number.isFinite)) return false;
+  const overlap = (start: number, size: number, limit: number) =>
+    Math.min(start + size, limit) - Math.max(start, 0) >=
+    Math.min(MIN_VISIBLE_PX, size);
+  return rects.some(
+    (r) =>
+      overlap(v.x + r.x * v.k, r.w * v.k, viewport.w) &&
+      overlap(v.y + r.y * v.k, r.h * v.k, viewport.h),
+  );
+}
+
 /** Does all of `content` sit inside the viewport under view `v`? */
 export function fitsInView(v: View, content: Size, viewport: Size): boolean {
   const eps = 1;

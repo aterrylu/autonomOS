@@ -1,0 +1,20 @@
+## ADR-159: Org chart view follows the fleet when untouched or when nothing would be on screen
+
+- **Date:** 2026-10-29
+- **Decided by:** OrgChart@autonomOS (agent), as a bugfix under Terry's standing rule that bugfixes merge without his sign-off; relayed by TeamLead.
+- **Supersedes:** ADR-120 (item 6, the clause "the view is never moved when agents come or go"); the rest of ADR-120 stands.
+- **Context:** Terry saw two top-level teams with only ONE chain drawn, and after he removed that agent, the chart looked EMPTY while the other manager was still running. The tree data was correct everywhere (`/api/agents/tree`, `pruneExited`, the sidebar, `get_org_chart`). The cause was the canvas view. ADR-120 froze it whenever the chart changed. A team that arrived after the chart opened, or that started off-screen at the 60% opening floor, stayed off-screen. When the visible team was removed, the survivor was re-laid out outside the frozen view: drawn, but with no card on screen. A deterministic repro (two teams, the first too wide for 60%, then the first removed) showed the view at x = -228 with 0 of 2 surviving cards visible.
+- **Decision:** The view remembers who placed it last: the opening view, Fit, or the user. The user means a pan, wheel, zoom button, reset, pinch (touch or Safari gesture), the map, or a reveal that actually moved the view. A reveal for a card already on screen moves nothing, and every card click focuses its card, so that doesn't count. When the drawn cards change (`useCanvasView`'s `cards`), one `recheck()` decides:
+  - user-placed and at least one card still on screen: the view stays exactly where it is;
+  - placed by Fit: fit again (`fitView`), not the 60% opening floor;
+  - otherwise, untouched or with no card left on screen: re-open on the fleet as it is now (`openView`: fit, 60% floor).
+
+  A change that arrives while the pane is hidden (dockview's 0×0) is re-checked when the pane gets a size again. A resize that leaves no card on screen also re-checks. "On screen" means at least 12px of a card shows on each axis, or all of it for a card smaller than that (`anyRectVisible`). It is checked per card, never on the chart's box, because the chart's padding can overlap the viewport while every card is off-screen. A degenerate view counts as showing nothing. The re-check runs as a layout effect, so a removed team never paints one empty frame. The panel hands the canvas a new `cards` array only when a card's id or position changes, so a status frame doesn't re-check the view.
+- **Rationale:** ADR-120's clause existed so the chart wouldn't jump while you read it. That still holds, because a view you placed doesn't move while it shows anything. But applied to a view nobody touched, or to one left showing nothing, the clause makes a correct fleet look missing, which is worse than any jump. Re-opening (rather than, say, a minimal pan) uses the same framing the chart opens with, so the result is predictable.
+- **Alternatives considered:**
+  - Always re-fit on every change: it would yank a view the user placed whenever an agent spawned or exited. That breaks ADR-120's intent, and a test now pins it.
+  - Re-frame only when nothing is visible, ignoring untouched views: this fixes the empty chart but not the "second team arrived off-screen" half of the bug.
+  - Lower the 60% opening floor so two wide teams always fit: that is a design change to Terry's pick 4A, not a bugfix. **Known limit:** a fleet too wide for 60% still opens (and re-opens) on the first root, with later teams off-screen and shown on the map. Fit shows everyone and is now remembered across changes.
+  - Count any sliver as visible: a card 1px inside the pane isn't showing an agent, and the view would be kept while the chart looks empty.
+  - A bounding-box visibility test: it is wrong in exactly the reported case (padding overlaps, cards don't).
+- **Source:** TeamLead relay of Terry's report, 2026-10-29. Fix PR `terry/orgchart-two-roots`; guards in `HierarchyPanel.canvas.dom.test.tsx` ("two top-level teams …") and `viewport.test.ts` (`anyRectVisible`).
