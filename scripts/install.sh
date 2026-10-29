@@ -92,6 +92,24 @@ EOF
   fi
 fi
 
+# Is `tailscale serve` still forwarding to this machine's PORT? (ADR-158)
+# autonomOS no longer runs behind serve: with serve still forwarding, every
+# tailnet visitor would arrive as loopback (exempt from the new-device lock).
+serve_forwards_port() {
+  local port="$1" ts
+  ts=$(command -v tailscale 2>/dev/null || true)
+  if [[ -z "$ts" && -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
+    ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+  fi
+  [[ -n "$ts" ]] || return 1
+  # Capture first: piping into `grep -q` under pipefail can fail with SIGPIPE
+  # when grep exits early on a match, which would read as "not forwarding",
+  # the one answer that must never be wrong here (nox, #548).
+  local out
+  out=$("$ts" serve status 2>/dev/null) || return 1
+  grep -Eq "proxy (https?://)?(127\.0\.0\.1|localhost|\[::1\])?:?${port}([^0-9]|$)" <<<"$out"
+}
+
 # ── claude pre-flight ─────────────────────────────────────────────────────
 # Claude Code is the daemon's REQUIRED default provider: the server refuses
 # to boot without it (run.ts provider validation, process.exit(1)), and
@@ -107,20 +125,6 @@ fi
 # fine (claude in ~/.local/bin but not on the installing shell's PATH).
 # nvm versioned bins are the one gap; one is on PATH whenever nvm is
 # loaded, which it must be for the node check above to have passed.
-# Is `tailscale serve` still forwarding to this machine's PORT? (ADR-158)
-# autonomOS no longer runs behind serve: with serve still forwarding, every
-# tailnet visitor would arrive as loopback (exempt from the new-device lock).
-serve_forwards_port() {
-  local port="$1" ts
-  ts=$(command -v tailscale 2>/dev/null || true)
-  if [[ -z "$ts" && -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
-    ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
-  fi
-  [[ -n "$ts" ]] || return 1
-  "$ts" serve status 2>/dev/null |
-    grep -Eq "proxy (https?://)?(127\.0\.0\.1|localhost|\[::1\])?:?${port}([^0-9]|$)"
-}
-
 claude_available() {
   command -v claude >/dev/null 2>&1 && return 0
   for d in "$HOME/.local/bin" "$HOME/.bun/bin" "$HOME/.npm-global/bin" \

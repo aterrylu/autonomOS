@@ -76,7 +76,8 @@ describe("install.sh won't re-render a --trust-proxy unit while tailscale serve 
         readFileSync(INSTALL, "utf8"),
       );
       assert.ok(fn, "install.sh defines serve_forwards_port at top level");
-      const r = spawnSync("bash", ["-c", `${fn[0]}\nserve_forwards_port ${port}`], {
+      // pipefail, exactly as install.sh runs (set -euo pipefail).
+      const r = spawnSync("bash", ["-c", `set -o pipefail\n${fn[0]}\nserve_forwards_port ${port}`], {
         env: { ...process.env, PATH: `${dir}:/usr/bin:/bin` },
       });
       return r.status === 0;
@@ -88,6 +89,13 @@ describe("install.sh won't re-render a --trust-proxy unit while tailscale serve 
   it("detects serve forwarding to this port", () => {
     assert.equal(
       forwards("https://box.tail1234.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:3100", 3100),
+      true,
+    );
+  });
+  it("a match followed by lots more output still reads as forwarding (no SIGPIPE false negative under pipefail; nox, #548)", () => {
+    const tail = "|-- /other proxy http://127.0.0.1:9999\n".repeat(60_000);
+    assert.equal(
+      forwards(`|-- / proxy http://127.0.0.1:3100\n${tail}`, 3100),
       true,
     );
   });
