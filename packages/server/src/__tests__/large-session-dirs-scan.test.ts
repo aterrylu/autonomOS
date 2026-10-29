@@ -13,6 +13,13 @@
  * runs the REAL fallback, the REAL usage poll (live endpoint failing) and the
  * REAL Projects route, and bounds the worst event-loop stall and the peak RSS
  * growth while they run.
+ *
+ * Box load must not trip it (10-29: p99 134-138ms at load 22.7 blocked a
+ * push). Load delays every timer tick, so the stall and p99 bounds apply to
+ * what the scan ADDS over an idle window measured just before it, in the same
+ * run. Peak RSS doesn't depend on load at all, and the whole-file reader blows
+ * through it (+860-1200MB against 200MB), so a restored readFileSync goes RED
+ * whatever the load.
  */
 
 import assert from "node:assert/strict";
@@ -60,6 +67,7 @@ const FILES = 3;
 // ~100ms worst (p99 ≤ 42ms) under that load, so it's bounded by p99 plus a
 // looser worst-case. RSS is the sharpest signal: a whole-file read of these
 // fixtures needs hundreds of MB.
+// Stall/p99 bounds are on top of the idle baseline (see `responsive`).
 const MAX_STALL_MS = 100;
 const PROJECTS_MAX_STALL_MS = 250;
 const P99_MS = 100;
@@ -131,7 +139,7 @@ function writeAuth(): void {
 }
 
 /** Run `fn` while measuring the worst stall, p99 delay and peak RSS growth. */
-async function measured(fn: () => Promise<unknown>) {
+async function measured(fn: () => Promise<unknown>): Promise<Measured> {
   const h = monitorEventLoopDelay({ resolution: 10 });
   let last = performance.now();
   let worst = 0;
@@ -158,6 +166,49 @@ async function measured(fn: () => Promise<unknown>) {
   };
 }
 
+interface Measured {
+  worstMs: number;
+  p99Ms: number;
+  rssGrowthMb: number;
+}
+
+/** The same probe over an idle window: what box load alone does to it now.
+ *  1s, so one momentary spike isn't the whole sample. */
+const idleBaseline = () =>
+  measured(() => new Promise((r) => setTimeout(r, 1000)));
+/** Load allowance cap: a spike during the baseline can't erase the stall
+ *  bound (a blocking read that leaves RSS flat, e.g. a sync chunked read,
+ *  must still fail on a loaded box). Far below the field's ~10s stall. */
+const MAX_IDLE_ALLOWANCE_MS = 500;
+
+/** Asserts the scan stayed responsive: stall and p99 over the idle baseline,
+ *  peak RSS growth absolute. Logs both so a failure shows the load. */
+function assertResponsive(
+  label: string,
+  m: Measured,
+  idle: Measured,
+  bounds: { stallMs: number; p99Ms: number },
+): void {
+  process.stderr.write(
+    `MEASURED ${label}: worst stall ${m.worstMs.toFixed(0)}ms, p99 ${m.p99Ms.toFixed(0)}ms, peak RSS +${m.rssGrowthMb.toFixed(0)}MB (idle baseline: worst ${idle.worstMs.toFixed(0)}ms, p99 ${idle.p99Ms.toFixed(0)}ms)\n`,
+  );
+  const stallBound =
+    bounds.stallMs + Math.min(idle.worstMs, MAX_IDLE_ALLOWANCE_MS);
+  const p99Bound = bounds.p99Ms + Math.min(idle.p99Ms, MAX_IDLE_ALLOWANCE_MS);
+  assert.ok(
+    m.worstMs < stallBound,
+    `${label} froze the event loop for ${m.worstMs.toFixed(0)}ms (bound ${bounds.stallMs}ms + idle ${idle.worstMs.toFixed(0)}ms)`,
+  );
+  assert.ok(
+    m.p99Ms < p99Bound,
+    `${label}: event-loop p99 ${m.p99Ms.toFixed(0)}ms (bound ${bounds.p99Ms}ms + idle ${idle.p99Ms.toFixed(0)}ms)`,
+  );
+  assert.ok(
+    m.rssGrowthMb < MAX_RSS_GROWTH_MB,
+    `${label}: RSS grew ${m.rssGrowthMb.toFixed(0)}MB (bound ${MAX_RSS_GROWTH_MB}MB)`,
+  );
+}
+
 describe("Codex usage fallback on large rollouts", () => {
   before(() => {
     const day = join(CODEX, "sessions", "2026", "10", "24");
@@ -174,54 +225,33 @@ describe("Codex usage fallback on large rollouts", () => {
 
   it(`finds the freshest snapshot without stalling the event loop (${FILES} × ${FILE_MB}MB)`, async () => {
     const out: { snap?: Awaited<ReturnType<typeof readFreshestRollout>> } = {};
+    const idle = await idleBaseline();
     const m = await measured(async () => {
       out.snap = await readFreshestRollout();
     });
     const snap = out.snap;
-    process.stderr.write(
-      `MEASURED fallback scan: worst stall ${m.worstMs.toFixed(0)}ms, p99 ${m.p99Ms.toFixed(0)}ms, peak RSS +${m.rssGrowthMb.toFixed(0)}MB\n`,
-    );
     assert.ok(snap, "found a snapshot");
     // precondition: it really read each file's TAIL (the freshest event)
     assert.equal(snap?.snapshotAt, `2026-10-24T0${FILES - 1}:00:00.000Z`);
-    assert.ok(
-      m.worstMs < MAX_STALL_MS,
-      `fallback scan froze the event loop for ${m.worstMs.toFixed(0)}ms (bound ${MAX_STALL_MS}ms)`,
-    );
-    assert.ok(
-      m.p99Ms < P99_MS,
-      `event-loop p99 ${m.p99Ms.toFixed(0)}ms (bound ${P99_MS}ms)`,
-    );
-    assert.ok(
-      m.rssGrowthMb < MAX_RSS_GROWTH_MB,
-      `RSS grew ${m.rssGrowthMb.toFixed(0)}MB (bound ${MAX_RSS_GROWTH_MB}MB)`,
-    );
+    assertResponsive("fallback scan", m, idle, {
+      stallMs: MAX_STALL_MS,
+      p99Ms: P99_MS,
+    });
   });
 
   it("the real usage poll with the live endpoint failing stays responsive", async () => {
     invalidateCodexUsageCache();
     const failing = async () => new Response("down", { status: 503 });
     const out: { data?: Awaited<ReturnType<typeof getCodexUsage>> } = {};
+    const idle = await idleBaseline();
     const m = await measured(async () => {
       out.data = await getCodexUsage(failing as never);
     });
-    const data = out.data;
-    process.stderr.write(
-      `MEASURED usage poll (live failing): worst stall ${m.worstMs.toFixed(0)}ms, p99 ${m.p99Ms.toFixed(0)}ms, peak RSS +${m.rssGrowthMb.toFixed(0)}MB\n`,
-    );
-    assert.equal(data?.source, "rollout", "served the on-disk fallback");
-    assert.ok(
-      m.p99Ms < P99_MS,
-      `event-loop p99 ${m.p99Ms.toFixed(0)}ms (bound ${P99_MS}ms)`,
-    );
-    assert.ok(
-      m.worstMs < MAX_STALL_MS,
-      `usage poll froze the event loop for ${m.worstMs.toFixed(0)}ms (bound ${MAX_STALL_MS}ms)`,
-    );
-    assert.ok(
-      m.rssGrowthMb < MAX_RSS_GROWTH_MB,
-      `RSS grew ${m.rssGrowthMb.toFixed(0)}MB (bound ${MAX_RSS_GROWTH_MB}MB)`,
-    );
+    assert.equal(out.data?.source, "rollout", "served the on-disk fallback");
+    assertResponsive("usage poll (live failing)", m, idle, {
+      stallMs: MAX_STALL_MS,
+      p99Ms: P99_MS,
+    });
   });
 });
 
@@ -274,26 +304,17 @@ describe("Projects scan on a large Claude Code session", () => {
 
   it(`a cold scan resolves a mid-file title without stalling (${FILE_MB}MB session)`, async () => {
     const out: { row?: Awaited<ReturnType<typeof scanProjects>> } = {};
+    const idle = await idleBaseline();
     const m = await measured(async () => {
       out.row = await scanProjects();
     });
-    process.stderr.write(
-      `MEASURED Projects cold scan: worst stall ${m.worstMs.toFixed(0)}ms, p99 ${m.p99Ms.toFixed(0)}ms, peak RSS +${m.rssGrowthMb.toFixed(0)}MB\n`,
-    );
     // precondition: the big file really was scanned past its head and tail
     assert.equal(out.row?.summary, "Big middle title");
-    assert.ok(
-      m.p99Ms < P99_MS,
-      `event-loop p99 ${m.p99Ms.toFixed(0)}ms (bound ${P99_MS}ms)`,
-    );
-    assert.ok(
-      m.worstMs < PROJECTS_MAX_STALL_MS,
-      `Projects scan froze the event loop for ${m.worstMs.toFixed(0)}ms (bound ${PROJECTS_MAX_STALL_MS}ms)`,
-    );
-    assert.ok(
-      m.rssGrowthMb < MAX_RSS_GROWTH_MB,
-      `RSS grew ${m.rssGrowthMb.toFixed(0)}MB (bound ${MAX_RSS_GROWTH_MB}MB)`,
-    );
+    // A short scan has few samples, so its p99 is ~its worst gap: one bound.
+    assertResponsive("Projects cold scan", m, idle, {
+      stallMs: PROJECTS_MAX_STALL_MS,
+      p99Ms: PROJECTS_MAX_STALL_MS,
+    });
   });
 
   it("after a new turn is appended, the rescan reads only the new turn", async () => {
