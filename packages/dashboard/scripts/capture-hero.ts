@@ -6,11 +6,10 @@
  * dark radial-gradient). The dashboard content proves the multi-CLI story:
  *   (left)         org-chart hierarchy — mixed provider icons (Claude + Codex +
  *                  Gemini), the money shot for "orchestrate any coding agent"
- *   (top-right)    a LIVE Claude Code terminal  (real turn, subscription OAuth)
- *   (bottom-right) a LIVE Codex terminal         (real codex app-server turn)
- * Gemini appears in the ORG CHART / agents list ONLY (its own icon + a clean
- * status) — no Gemini terminal is shown, so no Gemini auth is required for a
- * good shot (see PROVIDERS below).
+ *   (top-right)    the real Claude Code TUI
+ *   (bottom-right) the real Codex TUI (HERO_GEMINI_PANE=1: the real Gemini TUI)
+ * Gemini runs in the org chart otherwise. Every CLI is its real binary on a
+ * local MOCK model backend (see NO REAL LOGIN below).
  *
  * The pipeline screenshots the dashboard to a TEMP raw png, then frameMacWindow
  * composites it into the window frame → the final docs/assets/hero.png.
@@ -21,22 +20,25 @@
  *   bun --cwd packages/dashboard run capture-hero
  * Output can be redirected with HERO_OUT_DIR; viewport via HERO_W / HERO_H
  * (default 1680×920, deviceScaleFactor 1 — dsf 2 breaks the xterm fit).
+ * HERO_CROPS_DIR=<dir> also saves a crop of each pane (for review).
  *
  * PREREQUISITES:
  *   - playwright-core + a Chromium install (bundled via the dashboard's
  *     @playwright/test dependency; run `bunx playwright install chromium` once).
- *   - `claude` on PATH. The base scene renders real Claude Code TUIs.
+ *   - `claude`, `codex` and `gemini` on PATH: each pane is the real TUI.
  *   - The dashboard is auto-built (packages/dashboard/dist) if missing.
  *
- * NO REAL LOGIN, EVER (#551). The capture never reads or copies a credential:
- *   - Claude   — the real `claude` binary, against a local MOCK Anthropic
- *                backend serving canned replies (zero tokens). Its throwaway
- *                HOME has no credentials, and a `security` shim first on PATH
- *                answers every keychain read with "not found" (and logs it).
- *   - Codex    — a SCRIPTED pane: a perf-mode synthetic session (provider
- *                codex) fed a committed transcript. No codex binary runs.
- *   - Gemini   — a synthetic org-chart node (provider gemini-cli), posed to
- *                "working". No gemini binary runs.
+ * NO REAL LOGIN, EVER (#551). The capture never reads or copies a credential.
+ * One local mock (startDemoMock) speaks all three wire APIs and serves each
+ * agent a canned turn, so the TUIs render natively with zero tokens:
+ *   - Claude   — ANTHROPIC_BASE_URL + a dummy token. Its throwaway HOME has no
+ *                credentials, and a `security` shim first on PATH answers every
+ *                keychain read with "not found" (and logs it).
+ *   - Codex    — a throwaway CODEX_HOME whose config's only model provider is
+ *                the mock's Responses API (dummy env_key). No login file exists.
+ *                Its turn runs a real read-only tool call (sed on the demo repo).
+ *   - Gemini   — API-key auth with a dummy key, GOOGLE_GEMINI_BASE_URL → the
+ *                mock. Its turn runs a real read_file call.
  *   - Usage    — both usage bars are route-mocked with fixed demo numbers.
  *   The server runs with AUTONOMOS_DISABLE_CREDENTIAL_READS=1, and
  *   scripts/hero-credential-guard.ts fails the run if any credential lands in
@@ -51,8 +53,6 @@
  *     shows (the canvas can pan/zoom since PR 5; no capture-time transform).
  *   - Host: route-mocks `/api/host` → hostname "dev-server" so the status bar
  *     reads a generic name instead of the operator's machine.
- *   - Gemini MCP is stripped from the generated Gemini settings so it sidesteps
- *     the Gemini→gateway auth reconnect loop (hooks stay on for status).
  *   - Viewport ~1680×920 at dsf 1 for legible fonts across three panes.
  *   - Frame: after capture, the raw screenshot is composited into a macOS/PWA
  *     window (frameMacWindow) — window + image sizes derive from the raw png's
@@ -60,18 +60,18 @@
  *
  * SAFETY (load-bearing — the operator may run a LIVE autonomOS on :3100 with
  * their own real agents at HOME=<real home>):
- *   - Fully isolated: temp AUTONOMOS_CONFIG_DIR, a fake $HOME (seeded read-only
- *     with copies of the operator's creds, rm -rf'd on teardown), and an
- *     EPHEMERAL port (--port=0). It NEVER binds or touches :3100.
+ *   - Fully isolated: temp AUTONOMOS_CONFIG_DIR, a fake $HOME (no credentials,
+ *     rm -rf'd on teardown), and an EPHEMERAL port (--port=0). It NEVER binds
+ *     or touches :3100. On macOS `make hero` also runs it under
+ *     hero-no-credentials.sb, which denies the real credential stores.
  *   - Teardown is scoped: agents are deleted via their own API, then a
  *     fake-HOME-scoped PID sweep reaps any daemon/TUI whose HOME is our temp
  *     home (Codex app-server, Gemini/Claude TUIs). Kills are BY PID with a
  *     HOME===fakeHome check — NEVER by process name — so the operator's real
  *     agents (HOME=<real home>) are never touched.
  *
- * DETERMINISM: the Claude + Codex turns are REAL model turns, so re-shoots are
- * SIMILAR, not pixel-identical (wording/timing vary). With no Claude creds the
- * mock path is deterministic. Re-run if a turn renders empty or off-message.
+ * DETERMINISM: the replies are canned, so re-shoots differ only in timing
+ * details the TUIs print (e.g. "Worked for Ns").
  */
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
@@ -114,6 +114,12 @@ const HERO_W = Number(process.env.HERO_W ?? 1680);
 const HERO_H = Number(process.env.HERO_H ?? 920);
 const HERO_DSF = Number(process.env.HERO_DSF ?? 1);
 const HERO_ZOOM = Number(process.env.HERO_ZOOM ?? 1);
+/** Show the Gemini terminal in the bottom-right pane instead of Codex's. */
+const GEMINI_PANE = process.env.HERO_GEMINI_PANE === "1";
+/** When set, also save a crop of each pane (org chart, top, bottom) here. */
+const CROPS_DIR = process.env.HERO_CROPS_DIR;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // ── Providers ────────────────────────────────────────────────────────────────
 type Provider = "claude-code" | "codex" | "gemini-cli";
@@ -121,15 +127,14 @@ type Provider = "claude-code" | "codex" | "gemini-cli";
 const onPath = (bin: string): boolean =>
   spawnSync("which", [bin], { encoding: "utf-8" }).status === 0;
 
-/** `claude` is the one real CLI the capture runs, and only against the local
- *  mock backend: no login is read, so none can be rotated (#551). */
-function requireClaude(): void {
-  if (!onPath("claude")) {
-    throw new Error("`claude` not on PATH — required to render the base scene.");
+/** The capture runs the real `claude`, `codex` and `gemini`, only against the
+ *  local mock backend: no login is read, so none can be rotated (#551). */
+function requireClis(): void {
+  const missing = ["claude", "codex", "gemini"].filter((bin) => !onPath(bin));
+  if (missing.length) {
+    throw new Error(`${missing.join(", ")} not on PATH: each hero pane is that CLI's real TUI.`);
   }
-  console.log(
-    "Providers: claude=real binary on the MOCK backend; codex=scripted pane; gemini=org-chart node. No real login is used.",
-  )
+  console.log("Providers: claude, codex and gemini binaries on the MOCK backend. No real login is used.");
 }
 
 // ── The cast ─────────────────────────────────────────────────────────────────
@@ -140,9 +145,11 @@ interface CastMember {
   rows?: number;
   /** REAL-turn prompt (Claude/Codex). Omit for a free, prompt-less org node. */
   prompt?: string;
-  /** Canned reply served by the mock backend when this Claude agent runs
-   *  without real creds. `matchKey` must be a substring of `prompt`. */
-  mock?: { matchKey: string; reply: string };
+  /** The turn the mock backend serves this agent's real CLI. `matchKey` must
+   *  be a substring of `prompt`. With `tool`, the first response is that tool
+   *  call (in the CLI's own wire format); the CLI runs it for real and the
+   *  reply follows once the tool's output comes back. */
+  mock?: { matchKey: string; reply: string; tool?: { name: string; args: Record<string, unknown> } };
   /** true → shown as a terminal pane in the hero (needs a rendered turn). */
   visible?: boolean;
   manager?: string;
@@ -153,9 +160,6 @@ interface CastMember {
    *  this agent's sidebar row. The preset is created (env-only, no secrets)
    *  in the demo instance before spawning. */
   envPreset?: string;
-  /** No CLI behind it: a perf-mode synthetic session (#551). With `script`,
-   *  its terminal shows those raw chunks (a scripted pane). */
-  synthetic?: { script?: string[] };
 }
 
 const DISPATCHER_PROMPT =
@@ -175,46 +179,35 @@ const DISPATCHER_MOCK_REPLY = [
   "On track — I'll flag the moment the migration clears review.",
 ].join("\n");
 
-// The scripted Codex pane (#551): a hand-written turn in Codex's inline-TUI
-// style, replayed into a synthetic session, so the hero needs no codex login.
-// Plain ANSI: bold, dim and colours only; \r\n line ends for the terminal.
-const ESC = "\u001b[";
-const codexLine = (s = ""): string => `${s}\r\n`;
-/** One line of the Codex header box, padded to the box's visible width
- *  (escape codes take no columns, so they're stripped before measuring). */
-const CODEX_BOX_INNER = 46;
-const codexBoxLine = (content: string): string => {
-  const visible = content.replace(/\u001b\[[0-9;]*m/g, "").length;
-  const pad = " ".repeat(Math.max(0, CODEX_BOX_INNER - visible));
-  return codexLine(`${ESC}2m│${ESC}0m ${content}${pad}${ESC}2m│${ESC}0m`);
-};
-const CODEX_TRANSCRIPT: string[] = [
-  codexLine(`${ESC}2m╭${"─".repeat(CODEX_BOX_INNER + 1)}╮${ESC}0m`),
-  codexBoxLine(`${ESC}1m>_ OpenAI Codex${ESC}0m`),
-  codexBoxLine(`${ESC}2mdirectory:${ESC}0m ~/demo-webapp`),
-  codexLine(`${ESC}2m╰${"─".repeat(CODEX_BOX_INNER + 1)}╯${ESC}0m`),
-  codexLine(),
-  codexLine(`${ESC}1m›${ESC}0m Read src/payments/schema.ts and outline the /v1/charge endpoint:`),
-  codexLine(`  idempotency, validation, success and failure responses. ~6 lines.`),
-  codexLine(),
-  codexLine(`${ESC}36m•${ESC}0m ${ESC}1mExplored${ESC}0m`),
-  codexLine(`  ${ESC}2m└${ESC}0m Read schema.ts`),
-  codexLine(),
-  codexLine(`${ESC}36m•${ESC}0m /v1/charge design:`),
-  codexLine(),
-  codexLine(`  - POST /v1/charge takes { amount, currency } + an Idempotency-Key header`),
-  codexLine(`  - Validate: non-empty key, positive integer amount (minor units), ISO currency`),
-  codexLine(`  - Store by idempotency key; identical retries return the original result`),
-  codexLine(`  - ${ESC}32m201${ESC}0m with the Charge; ${ESC}33m409${ESC}0m on key reuse with a different payload`),
-  codexLine(`  - ${ESC}31m400${ESC}0m on validation errors, ${ESC}31m402${ESC}0m on decline`),
-  codexLine(),
-  codexLine(`${ESC}2m─ Worked for 38s ───────────────────────────────${ESC}0m`),
-  codexLine(),
-  `${ESC}1m›${ESC}0m `,
-];
+const API_DEV_PROMPT =
+  "Read src/payments/schema.ts and outline the /v1/charge endpoint: idempotency, validation, success and failure responses. ~6 lines.";
 
-/** The cast: Dispatcher (visible Claude, mock turn) + three org-only Claude
- *  leads/devs, a scripted Codex pane, and a Gemini org-chart node. */
+const API_DEV_MOCK_REPLY = [
+  "/v1/charge design:",
+  "",
+  "- `POST /v1/charge` takes `{ amount, currency }` plus an `Idempotency-Key` header",
+  "- Validate: non-empty key, positive integer `amount` (minor units), ISO `currency`",
+  "- Store by idempotency key; identical retries return the original result",
+  "- `201` with the Charge; `409` on key reuse with a different payload",
+  "- `400` on validation errors, `402` on decline",
+].join("\n");
+
+const QA_PROMPT =
+  "Read src/payments/schema.ts and list the edge cases the /v1/charge tests must cover. Short bullets.";
+
+const QA_MOCK_REPLY = [
+  "Edge cases for `/v1/charge`:",
+  "",
+  "* Same `Idempotency-Key`, same payload: returns the original Charge",
+  "* Same key, different payload: `409`",
+  "* `amount` of 0, negative, or fractional: `400`",
+  "* Unknown or lowercase `currency`: `400`",
+  "* Declined card: `402`, and no Charge is stored",
+].join("\n");
+
+/** The cast: Dispatcher (visible Claude) + three org-only Claude leads/devs,
+ *  a visible Codex terminal and a Gemini agent. All are the real CLIs on the
+ *  local mock backend. */
 function buildCast(): CastMember[] {
   const cast: CastMember[] = [
     {
@@ -261,37 +254,73 @@ function buildCast(): CastMember[] {
     },
   ];
 
-  // Second visible terminal: a SCRIPTED Codex pane (no codex binary, no
-  // login). It replays CODEX_TRANSCRIPT, a hand-written Codex-style turn.
+  // Second visible terminal: the real codex TUI on the mock Responses API.
+  // Its turn runs a real (read-only) tool call before replying.
   cast.push({
     name: "APIDeveloper",
     provider: "codex",
     manager: "BackendLead",
     cols: 96,
     rows: 34,
-    visible: true,
-    synthetic: { script: CODEX_TRANSCRIPT },
+    visible: !GEMINI_PANE,
+    prompt: API_DEV_PROMPT,
+    mock: {
+      matchKey: "outline the /v1/charge endpoint",
+      reply: API_DEV_MOCK_REPLY,
+      tool: { name: "exec_command", args: { cmd: "sed -n '1,40p' src/payments/schema.ts" } },
+    },
   });
 
-  // Gemini — ORG CHART ONLY, synthetic (no gemini binary, no login), posed to
-  // "working" via the Gemini-native `BeforeAgent` event.
+  // Gemini: the real gemini binary on the mock Gemini API, in the org chart
+  // (HERO_GEMINI_PANE=1 shows its terminal instead of Codex's). Posed to
+  // "working" after its turn via the Gemini-native `BeforeAgent` event.
   cast.push({
     name: "QAEngineer",
     provider: "gemini-cli",
     manager: "BackendLead",
+    cols: 96,
+    rows: 34,
+    visible: GEMINI_PANE,
+    prompt: QA_PROMPT,
+    mock: {
+      matchKey: "edge cases the /v1/charge tests",
+      reply: QA_MOCK_REPLY,
+      tool: { name: "read_file", args: { file_path: "src/payments/schema.ts" } },
+    },
     pose: [{ hook_event_name: "BeforeAgent" }],
-    synthetic: {},
   });
 
   return cast;
 }
 
-// ── Mock Anthropic /v1/messages SSE backend (used only when Claude has no creds)
+// ── The mock model backend ───────────────────────────────────────────────────
+// One local server speaks all three CLIs' wire APIs, so every terminal is the
+// real binary's own TUI and no real login is ever used (#551):
+//   Claude  POST /v1/messages                      (Anthropic SSE)
+//   Codex   POST /v1/responses                     (OpenAI Responses SSE)
+//   Gemini  POST /v1beta/models/<m>:streamGenerateContent / :generateContent
+// Each request is matched to a cast member by its prompt (`mock.matchKey`).
+// A turn with a `tool` answers with that tool call first; the CLI runs it for
+// real, and the reply is served once the tool's output comes back.
+type MockTurn = NonNullable<CastMember["mock"]>;
+
 function sse(res: ServerResponse, ev: string, data: unknown): void {
   res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function streamText(res: ServerResponse, text: string): void {
+function startSse(res: ServerResponse): void {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+}
+
+/** Text in ~24-char pieces, so a TUI streams it in as a real reply would. */
+const pieces = (text: string): string[] => text.match(/[\s\S]{1,24}/g) ?? [text];
+
+function streamAnthropicText(res: ServerResponse, text: string): void {
+  startSse(res);
   sse(res, "message_start", {
     type: "message_start",
     message: {
@@ -325,48 +354,178 @@ function streamText(res: ServerResponse, text: string): void {
   res.end();
 }
 
+/** One OpenAI Responses turn: a tool call (function_call item) or a message. */
+async function streamResponses(
+  res: ServerResponse,
+  out: { tool: { name: string; args: Record<string, unknown> } } | { text: string },
+): Promise<void> {
+  const ev = (type: string, data: Record<string, unknown>): void =>
+    sse(res, type, { type, ...data });
+  const id = `resp_${randomUUID()}`;
+  startSse(res);
+  ev("response.created", { response: { id, status: "in_progress", output: [] } });
+  let item: Record<string, unknown>;
+  if ("tool" in out) {
+    const args = JSON.stringify(out.tool.args);
+    item = {
+      id: "fc_demo",
+      type: "function_call",
+      status: "completed",
+      call_id: `call_${randomUUID()}`,
+      name: out.tool.name,
+      arguments: args,
+    };
+    ev("response.output_item.added", {
+      output_index: 0,
+      item: { ...item, status: "in_progress", arguments: "" },
+    });
+    ev("response.function_call_arguments.delta", { item_id: "fc_demo", output_index: 0, delta: args });
+    ev("response.function_call_arguments.done", { item_id: "fc_demo", output_index: 0, arguments: args });
+  } else {
+    item = {
+      id: "msg_demo",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: out.text, annotations: [] }],
+    };
+    ev("response.output_item.added", {
+      output_index: 0,
+      item: { ...item, status: "in_progress", content: [] },
+    });
+    ev("response.content_part.added", {
+      item_id: "msg_demo",
+      output_index: 0,
+      content_index: 0,
+      part: { type: "output_text", text: "" },
+    });
+    for (const delta of pieces(out.text)) {
+      ev("response.output_text.delta", { item_id: "msg_demo", output_index: 0, content_index: 0, delta });
+      await sleep(20);
+    }
+  }
+  ev("response.output_item.done", { output_index: 0, item });
+  ev("response.completed", {
+    response: {
+      id,
+      status: "completed",
+      output: [item],
+      usage: {
+        input_tokens: 1800,
+        input_tokens_details: { cached_tokens: 0 },
+        output_tokens: 160,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: 1960,
+      },
+    },
+  });
+  res.end();
+}
+
+const geminiResponse = (parts: unknown[]) => ({
+  candidates: [{ content: { role: "model", parts }, index: 0, finishReason: "STOP" }],
+  usageMetadata: { promptTokenCount: 1800, candidatesTokenCount: 160, totalTokenCount: 1960 },
+  modelVersion: "gemini-demo",
+});
+const geminiChunk = (parts: unknown[]): string =>
+  `data: ${JSON.stringify(geminiResponse(parts))}\n\n`;
+
+/** Gemini's side calls (model routing, next-speaker checks) ask for JSON with
+ *  a `responseJsonSchema`: answer with a minimal object of the right shape. */
+function geminiJsonFor(schema: unknown): Record<string, unknown> {
+  const props = (schema as { properties?: Record<string, { type?: string }> })?.properties ?? {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) {
+    const t = String(v.type ?? "").toUpperCase();
+    if (t === "INTEGER" || t === "NUMBER") out[k] = 10;
+    else if (t === "BOOLEAN") out[k] = false;
+    else out[k] = k === "next_speaker" ? "user" : "Simple request.";
+  }
+  return out;
+}
+
 interface DemoMock {
   url: string;
+  /** Replies served (turn completed) per cast member name. */
   served: () => ReadonlyMap<string, number>;
   close: () => Promise<void>;
 }
 
-/** Local stand-in for the Anthropic SSE endpoint. Matches each request body
- *  against a cast member's `mock.matchKey` and streams its canned reply. */
 function startDemoMock(cast: CastMember[]): Promise<DemoMock> {
   const canned = cast.filter((m) => m.mock);
   const served = new Map<string, number>();
+  const turnFor = (raw: string): CastMember | undefined =>
+    canned.find((m) => raw.includes((m.mock as MockTurn).matchKey));
+  const markServed = (m: CastMember | undefined): void => {
+    if (m) served.set(m.name, (served.get(m.name) ?? 0) + 1);
+  };
+
+  const handle = async (url: string, raw: string, res: ServerResponse): Promise<void> => {
+    if (url.includes("count_tokens") || url.includes(":countTokens")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ input_tokens: 1, totalTokens: 1 }));
+      return;
+    }
+    if (url.includes("/v1/messages")) {
+      const m = turnFor(raw);
+      streamAnthropicText(res, m ? (m.mock as MockTurn).reply : "Standing by.");
+      // Counted only after the stream completed: a throw mid-stream must NOT
+      // mark the turn as rendered.
+      markServed(m);
+      return;
+    }
+    if (url.includes("/v1/responses")) {
+      const body = JSON.parse(raw) as { input?: { type?: string }[] };
+      const m = turnFor(raw);
+      const turn = m?.mock;
+      const toolDone = (body.input ?? []).some((i) => i.type === "function_call_output");
+      if (turn?.tool && !toolDone) {
+        await streamResponses(res, { tool: turn.tool });
+        return;
+      }
+      await streamResponses(res, { text: turn ? turn.reply : "Standing by." });
+      markServed(m);
+      return;
+    }
+    if (url.includes(":generateContent")) {
+      const body = JSON.parse(raw) as { generationConfig?: { responseJsonSchema?: unknown } };
+      const text = JSON.stringify(geminiJsonFor(body.generationConfig?.responseJsonSchema));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(geminiResponse([{ text }])));
+      return;
+    }
+    if (url.includes(":streamGenerateContent")) {
+      const m = turnFor(raw);
+      const turn = m?.mock;
+      const toolDone = raw.includes('"functionResponse"');
+      startSse(res);
+      if (turn?.tool && !toolDone) {
+        res.write(geminiChunk([{ functionCall: { name: turn.tool.name, args: turn.tool.args } }]));
+        res.end();
+        return;
+      }
+      for (const text of pieces(turn ? turn.reply : "Standing by.")) {
+        res.write(geminiChunk([{ text }]));
+        await sleep(20);
+      }
+      res.end();
+      markServed(m);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end("{}");
+  };
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
-      const url = req.url ?? "";
       const raw = Buffer.concat(chunks).toString("utf-8");
-      if (url.includes("count_tokens")) {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ input_tokens: 1 }));
-        return;
-      }
-      if (req.method === "POST" && url.includes("/v1/messages")) {
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-        const member = canned.find((m) => raw.includes(m.mock!.matchKey));
-        if (member) {
-          streamText(res, member.mock!.reply);
-          // Count only after the stream completed (res.end inside streamText) —
-          // a throw mid-stream must NOT mark the turn as rendered.
-          served.set(member.name, (served.get(member.name) ?? 0) + 1);
-        } else {
-          streamText(res, "Standing by.");
-        }
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end("{}");
+      handle(req.url ?? "", raw, res).catch((err) => {
+        console.warn(`mock: ${req.url} failed: ${err}`);
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      });
     });
     req.on("error", (err) => console.warn(`mock: request error: ${err.message}`));
     res.on("error", (err) => console.warn(`mock: response error: ${err.message}`));
@@ -489,6 +648,39 @@ async function bootServer(
     { mode: 0o755 },
   );
 
+  // Codex: a throwaway CODEX_HOME (fakeHome/.codex) whose only provider is
+  // the mock Responses API, keyed by a dummy env var. There is no login file
+  // at all, so codex has nothing to refresh or rotate (#551). Codex's default
+  // model is kept, so the TUI reads exactly as an operator's would.
+  const fakeCodex = join(fakeHome, ".codex");
+  mkdirSync(fakeCodex, { recursive: true });
+  writeFileSync(
+    join(fakeCodex, "config.toml"),
+    [
+      'model_provider = "hero-mock"',
+      "",
+      "[model_providers.hero-mock]",
+      'name = "OpenAI"',
+      `base_url = "${mockUrl}/v1"`,
+      'env_key = "HERO_MOCK_OPENAI_KEY"',
+      'wire_api = "responses"',
+      "",
+      `[projects.${JSON.stringify(workspace)}]`,
+      'trust_level = "trusted"',
+      "",
+    ].join("\n"),
+    { mode: 0o600 },
+  );
+
+  // Gemini: API-key auth with a dummy key; GOOGLE_GEMINI_BASE_URL (below)
+  // sends every request to the mock. Nothing is copied from a real ~/.gemini.
+  mkdirSync(join(fakeHome, ".gemini"), { recursive: true });
+  writeFileSync(
+    join(fakeHome, ".gemini", "settings.json"),
+    JSON.stringify({ security: { auth: { selectedType: "gemini-api-key" } } }),
+    { mode: 0o600 },
+  );
+
   const claudeBin = spawnSync("which", ["claude"], {
     encoding: "utf-8",
   }).stdout.trim();
@@ -503,9 +695,6 @@ async function bootServer(
     PATH: `${shimDir}:${process.env.PATH ?? ""}`,
     AUTONOMOS_CONFIG_DIR: configDir,
     AUTONOMOS_TOKEN: token,
-    // Perf mode mounts /api/perf (the scripted Codex pane and the Gemini node)
-    // and engages only on a loopback bind.
-    AUTONOMOS_PERF: "1",
     AUTONOMOS_HOST: "127.0.0.1",
     // The server's own usage plugins read no login either.
     AUTONOMOS_DISABLE_CREDENTIAL_READS: "1",
@@ -525,7 +714,12 @@ async function bootServer(
     "OPENAI_API_KEY",
   ])
     delete env[k];
-  console.log(`Claude → mock backend at ${mockUrl}`);
+  // Dummy keys for the mock (set AFTER the purge above): Codex reads its
+  // provider's env_key, Gemini its API key plus the base-URL override.
+  env.HERO_MOCK_OPENAI_KEY = "sk-hero-mock";
+  env.GEMINI_API_KEY = "hero-mock-gemini-key";
+  env.GOOGLE_GEMINI_BASE_URL = mockUrl;
+  console.log(`Claude, Codex and Gemini → mock backend at ${mockUrl}`);
 
   const child = spawn(TSX_BIN, [SERVER_ENTRY, "--port=0"], {
     env,
@@ -608,7 +802,6 @@ async function api<T>(
   return { status: res.status, body };
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 async function warmUsage(server: DemoServer, label: string): Promise<void> {
   try {
@@ -733,33 +926,6 @@ async function stageScene(
   console.log(`Spawning ${cast.length} agents…`);
   await Promise.all(
     cast.map(async (m) => {
-      if (m.synthetic) {
-        // No CLI: a perf-mode synthetic session (#551), optionally replaying a
-        // scripted transcript into its terminal.
-        const id = randomUUID();
-        const created = await api<{ error?: string }>(server, "/api/perf/session", {
-          method: "POST",
-          body: JSON.stringify({
-            id,
-            name: m.name,
-            provider: m.provider,
-            workingDirectory: workspace,
-          }),
-        });
-        if (created.status !== 200)
-          throw new Error(
-            `synthetic ${m.name} failed (${created.status}): ${JSON.stringify(created.body)}`,
-          );
-        if (m.synthetic.script) {
-          const emitted = await api(server, `/api/perf/emit-raw/${id}`, {
-            method: "POST",
-            body: JSON.stringify({ data: m.synthetic.script }),
-          });
-          if (emitted.status !== 200)
-            throw new Error(`script ${m.name} → ${emitted.status}`);
-        }
-        return;
-      }
       const { status, body } = await api<{ id?: string; error?: string }>(
         server,
         "/api/agents",
@@ -793,16 +959,16 @@ async function stageScene(
     return a.id;
   };
 
-  // Wait for the two SHOWN turns to render. Per visible agent: Codex → rollout
-  // agent_message; real Claude → assistant JSONL; mock Claude → served count.
+  // Wait for the turns to render: the mock's served count, per agent.
   //
   // FUTURE HARDENING (deferred follow-ups, tracked separately):
   //   #2 scope each turn check to THIS agent's session-id instead of the current
   //      any-assistant-JSONL / any-codex-rollout scan (a coarse OR across agents).
   //   #4 assert the terminal panes actually rendered non-empty CONTENT (not just
   //      that a turn was recorded server-side) before capturing.
-  // Scripted panes are already painted; only mock-backed Claude turns render.
-  const visible = cast.filter((m) => m.visible && !m.synthetic);
+  // Every agent with a mock turn must finish it (the mock counts a reply only
+  // once it streamed in full, after any tool call ran).
+  const visible = cast.filter((m) => m.mock);
   const turnOk = (m: CastMember): boolean =>
     (mock.served().get(m.name) ?? 0) >= 1;
   console.log(`Waiting for ${visible.length} shown turns to render…`);
@@ -1105,6 +1271,18 @@ async function shoot(
 
     await page.screenshot({ path: opts.outPath });
     console.log("  ✓ raw dashboard capture");
+    if (CROPS_DIR) {
+      // One crop per dockview group, in layout order (org chart, top, bottom).
+      mkdirSync(CROPS_DIR, { recursive: true });
+      const groups = page.locator(".dv-groupview");
+      const names = ["org-chart", "top", "bottom"];
+      const n = await groups.count();
+      for (let i = 0; i < n; i++) {
+        const out = join(CROPS_DIR, `pane-${names[i] ?? i}.png`);
+        await groups.nth(i).screenshot({ path: out });
+        console.log(`  ✓ crop ${out}`);
+      }
+    }
   } finally {
     await context.close();
   }
@@ -1453,7 +1631,7 @@ async function bestEffortReap(r: Resources): Promise<void> {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
-  requireClaude();
+  requireClis();
   const cast = buildCast();
 
   // These are populated as boot proceeds; cleanup reads whatever exists so an
