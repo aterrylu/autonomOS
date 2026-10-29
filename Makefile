@@ -220,7 +220,11 @@ else
 	scripts/ci-gate-lock.sh $(MAKE) _check
 endif
 
+# First step: a worktree installed while a stale node-pty sorted first in the
+# store has a 644 spawn-helper, and every PTY test then fails with
+# "posix_spawnp failed." ensure-node-pty.sh heals it (idempotent).
 _check:
+	@bash scripts/ensure-node-pty.sh
 	$(TSX) scripts/decisions.ts check
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
