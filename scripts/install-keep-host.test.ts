@@ -66,11 +66,18 @@ describe("install.sh drops the removed --trust-proxy (ADR-158)", () => {
 describe("install.sh won't re-render a --trust-proxy unit while tailscale serve still forwards to it (ADR-158)", () => {
   /** Run install.sh's own serve_forwards_port with a fake `tailscale` whose
    *  `serve status` prints `status`. Never touches the real Tailscale. */
-  function forwards(status: string, port: number): boolean {
+  /** install.sh's serve_forwards_port exit code: 0 forwarding, 1 not, 2 can't
+   *  tell. `status: null` = a tailscale whose `serve status` FAILS (daemon down). */
+  function serveCheck(status: string | null, port: number): number | null {
     const dir = mkdtempSync(join(tmpdir(), "fake-ts-"));
     try {
       const fake = join(dir, "tailscale");
-      writeFileSync(fake, `#!/bin/sh\ncat <<'EOT'\n${status}\nEOT\n`);
+      writeFileSync(
+        fake,
+        status === null
+          ? "#!/bin/sh\necho 'failed to connect to local tailscaled' >&2\nexit 1\n"
+          : `#!/bin/sh\ncat <<'EOT'\n${status}\nEOT\n`,
+      );
       chmodSync(fake, 0o755);
       const fn = /^serve_forwards_port\(\) \{[\s\S]*?^\}/m.exec(
         readFileSync(INSTALL, "utf8"),
@@ -80,11 +87,14 @@ describe("install.sh won't re-render a --trust-proxy unit while tailscale serve 
       const r = spawnSync("bash", ["-c", `set -o pipefail\n${fn[0]}\nserve_forwards_port ${port}`], {
         env: { ...process.env, PATH: `${dir}:/usr/bin:/bin` },
       });
-      return r.status === 0;
+      return r.status;
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
+
+  const forwards = (status: string, port: number): boolean =>
+    serveCheck(status, port) === 0;
 
   it("detects serve forwarding to this port", () => {
     assert.equal(
@@ -106,11 +116,21 @@ describe("install.sh won't re-render a --trust-proxy unit while tailscale serve 
     );
     assert.equal(forwards("No serve config", 3100), false);
   });
-  it("the upgrade path stops (exit 1, the reset + --host commands) instead of dropping the flag in that case", () => {
+  it("an unreadable serve status (tailscaled stopped) is 'can't tell' (2), never 'not forwarding' (#549)", () => {
+    assert.equal(serveCheck(null, 3100), 2);
+    assert.equal(serveCheck("No serve config", 3100), 1);
+  });
+  it("the upgrade path stops on 'forwarding' AND on 'can't tell' (exit 1, the reset + --host commands), dropping the flag only on 'not forwarding'", () => {
     const script = readFileSync(INSTALL, "utf8");
     assert.match(
       script,
-      /if serve_forwards_port "\$TS_PORT"; then[\s\S]*tailscale serve reset[\s\S]*--host=127\.0\.0\.1,\\\$\(tailscale ip -4\)[\s\S]*exit 1/,
+      /serve_forwards_port "\$TS_PORT" \|\| SERVE_RC=\$\?\n\s*if \[\[ "\$SERVE_RC" != "1" \]\]; then[\s\S]*tailscale serve reset[\s\S]*--host=127\.0\.0\.1,\\\$\(tailscale ip -4\)[\s\S]*exit 1/,
+    );
+  });
+  it("the stop message says the old version runs only until its next restart (#549)", () => {
+    assert.match(
+      readFileSync(INSTALL, "utf8"),
+      /keeps running until its next restart; after that it refuses to start/,
     );
   });
 });
