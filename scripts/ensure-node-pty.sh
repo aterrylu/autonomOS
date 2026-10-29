@@ -42,12 +42,16 @@ fi
 # node-pty's own resolution order.
 #
 # The store can hold several node-pty versions at once (an upgrade leaves the old
-# tree behind until pruned), and the stale one may sort first — so keep scanning
-# until a directory actually yields an addon rather than trusting the first hit.
+# tree behind until pruned), and the stale one SORTS FIRST (node-pty@1.0.0 before
+# @1.1.0) and still has an addon. Checking "the first one with an addon" therefore
+# checked (and chmodded) the stale copy while the server loaded the real one with
+# a 644 helper: every PTY spawn then failed with "posix_spawnp failed." So the
+# addon checked is the one the SERVER resolves; the scan is only a fallback.
 PTY_PLATFORM="$(node -p 'process.platform + "-" + process.arch')"
 PTY_DIR=""
 PTY_NODE=""
-for d in node_modules/.bun/node-pty@*/node_modules/node-pty node_modules/node-pty; do
+SERVER_PTY="$(node -p 'require("path").dirname(require.resolve("node-pty/package.json", { paths: [require("path").resolve("packages/server")] }))' 2>/dev/null || true)"
+for d in ${SERVER_PTY:+"$SERVER_PTY"} node_modules/.bun/node-pty@*/node_modules/node-pty node_modules/node-pty; do
   [ -d "$d" ] || continue
   for c in "$d/build/Release/pty.node" "$d/prebuilds/$PTY_PLATFORM/pty.node"; do
     [ -f "$c" ] && { PTY_DIR="$d"; PTY_NODE="$c"; break 2; }
@@ -68,11 +72,16 @@ fi
 # The release bundle chmods it while staging (build-binary.ts), but the source
 # path loads it straight out of node_modules, where posix_spawn() then fails with
 # "posix_spawnp failed." on every single spawn. macOS only — no helper elsewhere.
-PTY_HELPER="$(dirname "$PTY_NODE")/spawn-helper"
-if [ -f "$PTY_HELPER" ] && [ ! -x "$PTY_HELPER" ]; then
-  chmod +x "$PTY_HELPER"
-  echo "[ensure-node-pty] chmod +x $PTY_HELPER (npm tarball ships it 644)"
-fi
+# Every copy in the store, not just the one checked below: whichever version a
+# process ends up loading must be able to spawn. Idempotent and cheap.
+for PTY_HELPER in "$(dirname "$PTY_NODE")/spawn-helper" \
+  node_modules/.bun/node-pty@*/node_modules/node-pty/prebuilds/"$PTY_PLATFORM"/spawn-helper \
+  node_modules/.bun/node-pty@*/node_modules/node-pty/build/Release/spawn-helper; do
+  if [ -f "$PTY_HELPER" ] && [ ! -x "$PTY_HELPER" ]; then
+    chmod +x "$PTY_HELPER"
+    echo "[ensure-node-pty] chmod +x $PTY_HELPER (npm tarball ships it 644)"
+  fi
+done
 
 # dlopen the native addon directly — this is exactly the operation that fails on
 # an ABI mismatch, and it sidesteps bun's non-hoisted module resolution.
