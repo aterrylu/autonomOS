@@ -29,7 +29,7 @@ import {
   HELPER_ANCHOR,
   HELPER_REPOINT,
   stageNodePtyNative,
-} from "../../build/stage-node-pty.js";
+} from "../packages/server/build/stage-node-pty.js";
 
 const DIRS_ANCHOR =
   'var dirs = ["build/Release", "build/Debug", "prebuilds/" + process.platform + "-" + process.arch];';
