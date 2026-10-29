@@ -175,7 +175,7 @@ All app-level chords live in the registry at `packages/dashboard/src/shortcuts/r
 ## Key Conventions
 
 ### Decision Records (CRITICAL)
-Every architectural decision is its own file in [`docs/decisions/`](docs/decisions/README.md): `ADR-NNN-<slug>.md`, listed in the generated index `docs/decisions/README.md`. Start one with `make adr NEW="Short title"`. It takes the next free number (checking origin/main AND open PRs) and writes a template. Don't append to `docs/DECISIONS.md` (it's a pointer stub now, and CI rejects entries there), and don't edit the index (a bot PR regenerates it hourly, ADR-147). Each entry must include:
+Every architectural decision is its own file in [`docs/decisions/`](docs/decisions/README.md): `ADR-NNN-<slug>.md`, browsable by number and title in GitHub's folder view (`make adr-index` prints a table with date, status and supersession; it is never committed, ADR-157). Start one with `make adr NEW="Short title"`. It takes the next free number (checking origin/main AND open PRs) and writes a template. Don't append to `docs/DECISIONS.md` (it's a pointer stub now, and CI rejects entries there). Each entry must include:
 - **Date** (YYYY-MM-DD) and **Decided by** (human vs agent)
 - **Context**: why this decision was needed
 - **Decision**: what was chosen
@@ -185,7 +185,7 @@ Every architectural decision is its own file in [`docs/decisions/`](docs/decisio
 
 The labels are exact (`**Alternatives considered:**`, not `**Alternatives:**`). `make check`, and therefore CI and the pre-push gate, rejects a new ADR that is missing a field, still holds a template TODO, or reuses a number.
 
-Never delete or modify past entries; the migrated ones are hash-locked in `docs/decisions/legacy-manifest.json`. If a decision is reversed, add a new entry referencing the old one (an optional `**Supersedes:** ADR-NNN` field feeds the index). If two parallel PRs pick the same number, whoever merges later runs `make adr-renumber FILE=docs/decisions/ADR-NNN-….md`: one file changes, nothing else. Main doesn't require up-to-date branches, so both can merge. Then the decisions-index workflow opens a "renumber colliding ADR" PR for the later one and lists its code mentions for the owner (ADR-150). A branch that still appended to the old `docs/DECISIONS.md` moves its entry with `make adr-import REF=HEAD` (steps in `docs/decisions/README.md`).
+Never delete or modify past entries; the migrated ones are hash-locked in `docs/decisions/legacy-manifest.json`. If a decision is reversed, add a new entry referencing the old one (an optional `**Supersedes:** ADR-NNN` field, or `part of ADR-NNN` / `ADR-NNN (part: …)`, feeds the `make adr-index` table). If two parallel PRs pick the same number, whoever merges later runs `make adr-renumber FILE=docs/decisions/ADR-NNN-….md`: one file changes, nothing else. Main doesn't require up-to-date branches, so both can occasionally merge; main's CI then goes red with the same command, and whoever merged later runs it in a follow-up PR. There is no bot for this (ADR-157). A branch that still appended to the old `docs/DECISIONS.md` moves its entry with `make adr-import REF=HEAD` (steps in `docs/decisions/README.md`).
 
 ### Research & Learnings
 All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When investigating competitors, frameworks, or approaches:
