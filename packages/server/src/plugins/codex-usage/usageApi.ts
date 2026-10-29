@@ -224,13 +224,24 @@ export function usageUrl(baseUrl: string): string {
  *   - `ok`           — got usage JSON.
  *   - `unauthorized` — 401/403 (token rejected/expired server-side).
  *   - `rate_limited` — 429 (back off; the token is fine).
- *   - `unavailable`  — network / parse / other non-2xx failure.
+ *   - `unavailable`  — network / parse / other non-2xx failure; `reason` is a
+ *     short cause ("HTTP 503", "ECONNREFUSED") for the panel.
  */
 export type CodexUsageApiResult =
   | { status: "ok"; data: CodexUsageRaw }
   | { status: "unauthorized" }
   | { status: "rate_limited" }
-  | { status: "unavailable" };
+  | { status: "unavailable"; reason: string };
+
+/** A short, token-free cause for a thrown fetch: the system error code when
+ *  there is one (undici puts it on `cause`), else the error's name. */
+function failureReason(err: unknown): string {
+  const cause = (err as { cause?: { code?: unknown } })?.cause;
+  if (typeof cause?.code === "string") return cause.code;
+  const code = (err as { code?: unknown })?.code;
+  if (typeof code === "string") return code;
+  return err instanceof Error ? err.name : "network error";
+}
 
 /**
  * Call `GET {base}/wham/usage` with the read-only access token. Read-only: the
@@ -255,12 +266,12 @@ export async function fetchCodexUsage(
     if (res.status === 401 || res.status === 403)
       return { status: "unauthorized" };
     if (res.status === 429) return { status: "rate_limited" };
-    if (!res.ok) return { status: "unavailable" };
+    if (!res.ok) return { status: "unavailable", reason: `HTTP ${res.status}` };
     const data = (await res.json()) as CodexUsageRaw;
     return { status: "ok", data };
   } catch (err) {
     // Network / parse failure — the message never contains the token.
     console.error("[codex-usage] live usage fetch failed:", err);
-    return { status: "unavailable" };
+    return { status: "unavailable", reason: failureReason(err) };
   }
 }

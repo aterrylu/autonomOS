@@ -35,8 +35,22 @@ pid=""
 watchdog=""
 trap '[ -n "$pid" ] && kill -TERM -- -"$pid" 2>/dev/null; [ -n "$watchdog" ] && kill "$watchdog" 2>/dev/null; cleanup; exit 143' TERM INT HUP
 
+owner=$$
 set -m # background jobs get their own process group (pgid = their pid)
-"$@" &
+(
+  # Parent-death watcher, INSIDE the command's group. Whenever this runner is
+  # gone (it exited normally, or died without its trap: SIGKILL from a crash
+  # or a parent killing the gate's process group), the watcher stops the
+  # command's whole group within a second, itself included. That ends
+  # anything the command left running (a leaked test process), which would
+  # otherwise keep running in its own group, holding the lock's fd and the
+  # caller's output, with no watchdog left to bound it.
+  (
+    while kill -0 "$owner" 2>/dev/null; do sleep 1; done
+    kill -KILL 0 2>/dev/null
+  ) &
+  exec "$@"
+) &
 pid=$!
 set +m
 
@@ -45,9 +59,17 @@ set +m
   # caller's stdout/stderr open for the whole bound, so anything reading the
   # run's output (lefthook) would wait the full bound after every run.
   trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
-  sleep "$BOUND" &
-  sleeper=$!
-  wait "$sleeper"
+  # Count the bound in 1s steps and leave as soon as the runner is gone: one
+  # long sleep outlived a runner killed with SIGKILL (no trap), holding the
+  # lock's fd and the caller's output for the whole bound.
+  left=$BOUND
+  while [ "$left" -gt 0 ]; do
+    kill -0 "$owner" 2>/dev/null || exit 0
+    sleep 1 &
+    sleeper=$!
+    wait "$sleeper"
+    left=$((left - 1))
+  done
   kill -0 "$pid" 2>/dev/null || exit 0
   echo fired >"$fired"
   {

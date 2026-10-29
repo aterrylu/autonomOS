@@ -24,15 +24,19 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import { type InstallInfo, writeInstallJson } from "./installInfo.js";
 import {
   type ProvenanceResult,
@@ -375,6 +379,20 @@ export async function performUpgrade(
       };
     }
 
+    // No link may point out of the bundle. tar already refuses `..` members
+    // and writing THROUGH a link (GNU tar 1.35 + bsdtar 3.5.3, measured), but
+    // a link on its own extracts cleanly — and once swapped in, code that
+    // reads or writes "inside the bundle" would reach anywhere. A release
+    // never ships one (v0.7.0: no links at all); in-bundle links stay allowed.
+    const outward = firstOutwardSymlink(newDir);
+    if (outward) {
+      rmSync(newDir, { recursive: true, force: true });
+      return {
+        status: "error",
+        message: `The v${releaseVersion} download contains a link that points outside the bundle (${outward}), so it wasn't installed. A release never does; please report this.`,
+      };
+    }
+
     // The bundle must BE the version its tag names. A writer can put tag vN
     // on an OLD commit on main: it passes the "built from main" check, and
     // its signed build is genuinely the old code — installed as "vN" it's a
@@ -525,6 +543,50 @@ export function performRollback(bundleDir: string): RollbackResult {
   }
 
   return { status: "rolled-back", from, to };
+}
+
+/**
+ * The first symlink under `root` that leads outside it, as "path → target",
+ * or null. Each link is judged by where it REALLY resolves (realpath: links
+ * followed in order, as the kernel does), never by its target string — a
+ * chain of individually "inside" links (`self → .`, `up → self/..`) leaves
+ * the bundle while every string resolves inside it (nox, #523). Refused too:
+ * an absolute target, even one naming a path inside (the dir is renamed into
+ * place after extraction, so it would dangle there), and a link that doesn't
+ * resolve at all (dangling or a loop) — a release never ships either.
+ */
+export function firstOutwardSymlink(
+  root: string,
+  rel = "",
+  realRoot = realpathSync.native(root),
+): string | null {
+  for (const name of readdirSync(join(root, rel))) {
+    const r = join(rel, name);
+    const path = join(root, r);
+    const st = lstatSync(path);
+    if (st.isSymbolicLink()) {
+      const target = readlinkSync(path);
+      if (isAbsolute(target)) return `${r} → ${target}`;
+      let real: string;
+      try {
+        // .native = libc realpath(3), which walks links as the kernel does.
+        // Node's JS realpathSync splices a link's target into the path and
+        // normalizes `..` lexically, so it resolves `up → lib/self/../..`
+        // INSIDE the bundle (measured on macOS and Linux) — the very bug
+        // this check exists to catch.
+        real = realpathSync.native(path);
+      } catch {
+        return `${r} → ${target} (doesn't resolve)`;
+      }
+      if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+        return `${r} → ${target}`;
+      }
+    } else if (st.isDirectory()) {
+      const bad = firstOutwardSymlink(root, r, realRoot);
+      if (bad) return bad;
+    }
+  }
+  return null;
 }
 
 /** Version stamped into a bundle dir's package.json, or "unknown". */

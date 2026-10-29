@@ -25,6 +25,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { SERVER_LEAF } from "./agents/oomGuard.js";
 import { getConfigDir } from "./configDir.js";
 import { upgradeStatusPath, writeUpgradeStatus } from "./upgradeStatus.js";
 import { getServerVersion } from "./version.js";
@@ -127,9 +128,17 @@ export function detectSupervisor(
 ): Supervisor {
   const { launchdLabel, systemdUnit } = expectedServiceNames(env);
   if (platform === "linux" && env.INVOCATION_ID) {
+    // With a delegated unit the server lives in its own leaf below the unit
+    // (oomGuard.ts): `…/autonomos.service/server` is still our unit.
     const ours = (probe.readCgroup ?? readOwnCgroup)()
       .split("\n")
-      .some((line) => line.trimEnd().endsWith(`/${systemdUnit}`));
+      .some((line) => {
+        const l = line.trimEnd();
+        return (
+          l.endsWith(`/${systemdUnit}`) ||
+          l.endsWith(`/${systemdUnit}/${SERVER_LEAF}`)
+        );
+      });
     return ours ? { kind: "systemd" } : { kind: "none" };
   }
   if (platform === "darwin" && env.XPC_SERVICE_NAME === launchdLabel) {

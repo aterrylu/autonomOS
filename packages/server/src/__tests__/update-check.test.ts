@@ -109,6 +109,37 @@ describe("runUpdateCheck", () => {
     const state = await runUpdateCheck(base);
     assert.equal(state.latest, null);
   });
+
+  // `latest` lands in the release URL and the dashboard: only an exact
+  // vX.Y.Z tag is trusted, never a prefix match.
+  for (const tag of [
+    "v1.2.3-rc.1",
+    "v1.2.3/../../evil",
+    "v1.2.3 ",
+    "1.2.3",
+    "v1.2",
+    "xv1.2.3",
+  ]) {
+    it(`ignores the tag ${JSON.stringify(tag)} (anchored vX.Y.Z only)`, async () => {
+      const base = await serveLatest(tag);
+      const warned: string[] = [];
+      const orig = console.warn;
+      console.warn = (m: string) => void warned.push(String(m));
+      let state: Awaited<ReturnType<typeof runUpdateCheck>>;
+      try {
+        state = await runUpdateCheck(base);
+      } finally {
+        console.warn = orig;
+      }
+      assert.equal(state.latest, null);
+      assert.equal(state.releaseUrl, null);
+      // Persistent and badge-killing: never silent.
+      assert.ok(
+        warned.some((w) => w.includes(JSON.stringify(tag))),
+        warned.join("\n"),
+      );
+    });
+  }
 });
 
 describe("isUpdateCheckEnabled", () => {
