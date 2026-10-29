@@ -36,7 +36,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import { type InstallInfo, writeInstallJson } from "./installInfo.js";
 import {
   type ProvenanceResult,
@@ -570,8 +570,12 @@ export function firstOutwardSymlink(
       // A relative path that climbs above the bundle at any point and comes
       // back in by the dir's own name (`../<bundle>.new/foo`) resolves inside
       // now but dangles after the rename into place: the absolute-inside
-      // case's twin (nox, #523).
-      if (climbsAboveRoot(r, target)) return `${r} → ${target}`;
+      // case's twin (nox, #523). Walked physically, so a link inside the
+      // target (`self → .` then `self/../<bundle>.new/foo`) can't hide the
+      // climb (nox, #535).
+      if (climbsAboveRoot(join(root, rel), target, realRoot)) {
+        return `${r} → ${target}`;
+      }
       let real: string;
       try {
         // .native = libc realpath(3), which walks links as the kernel does.
@@ -595,17 +599,29 @@ export function firstOutwardSymlink(
 }
 
 /** Whether a relative link target, walked segment by segment from the
- *  link's own directory, ever goes above the bundle root (lexically: links
- *  inside it are judged by realpath in firstOutwardSymlink). */
-function climbsAboveRoot(linkRel: string, target: string): boolean {
-  let depth = linkRel.split(/[\\/]/).filter(Boolean).length - 1;
+ *  link's own directory, ever leaves the bundle root. Walked PHYSICALLY: each
+ *  prefix that is a link is resolved by realpath before the next `..`, as
+ *  the kernel does, so `self/..` (with `self → .`) is the bundle's parent,
+ *  not the bundle. A prefix that doesn't exist stays lexical; the final
+ *  realpath in firstOutwardSymlink refuses it anyway. */
+function climbsAboveRoot(
+  linkDir: string,
+  target: string,
+  realRoot: string,
+): boolean {
+  let dir = realpathSync.native(linkDir);
   for (const seg of target.split("/")) {
     if (seg === "..") {
-      depth--;
-      if (depth < 0) return true;
+      dir = dirname(dir);
     } else if (seg && seg !== ".") {
-      depth++;
+      dir = join(dir, seg);
+      try {
+        if (lstatSync(dir).isSymbolicLink()) dir = realpathSync.native(dir);
+      } catch {
+        // Missing or a loop: left lexical, refused by the caller's realpath.
+      }
     }
+    if (dir !== realRoot && !dir.startsWith(realRoot + sep)) return true;
   }
   return false;
 }
