@@ -1,4 +1,4 @@
-## ADR-157: Remove the tailscale serve trust-proxy mode
+## ADR-158: Remove the tailscale serve trust-proxy mode
 
 - **Date:** 2026-10-29
 - **Decided by:** Terry (human): "serve option A: remove the Tailscale-serve mode". He keeps the direct tailnet bind. Relayed by TeamLead@autonomOS. SecurityFix-Auth@autonomOS implemented it.

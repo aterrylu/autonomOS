@@ -160,7 +160,7 @@ Firewall rules persist across reboots. On macOS, use the recommended setup above
 
 ### `tailscale serve`: not supported
 
-Don't put `tailscale serve` (or another reverse proxy on the same machine) in front of autonomOS. Every visitor arriving through it reaches autonomOS from this machine itself, so autonomOS can't tell your devices apart: its per-device protections (the sign-in throttle, and the new-device lock for a short token) would treat every device as this machine. Use the recommended setup above, where each device arrives from its own tailnet address. (A `--trust-proxy` mode that read serve's headers existed briefly and was removed before release: see ADR-157.)
+Don't put `tailscale serve` (or another reverse proxy on the same machine) in front of autonomOS. Every visitor arriving through it reaches autonomOS from this machine itself, so autonomOS can't tell your devices apart: its per-device protections (the sign-in throttle, and the new-device lock for a short token) would treat every device as this machine. Use the recommended setup above, where each device arrives from its own tailnet address. (A `--trust-proxy` mode that read serve's headers existed briefly and was removed before release: see ADR-158.)
 
 The trade-off: the recommended setup is plain `http://` inside Tailscale's encrypted tunnel. That's private between your devices, but browsers don't treat it as a "secure context", so desktop notifications and installing the dashboard as an app need `http://localhost` (or an SSH tunnel, below).
 

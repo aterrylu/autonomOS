@@ -227,7 +227,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // loud ON line lands in autonomos.log too.
   initPtyInputLog({ configDir: getConfigDir() });
 
-  // `tailscale serve` support (--trust-proxy) was REMOVED (ADR-157): reach
+  // `tailscale serve` support (--trust-proxy) was REMOVED (ADR-158): reach
   // autonomOS over the tailnet with the --host list (ADR-139). A leftover flag
   // or env var refuses to start, loudly. Ignoring it would be worse: if serve
   // still points at the port, every tailnet visitor would arrive as "this
@@ -511,7 +511,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   /** Count the wrong values a request presented: the throttle keys on the
    *  address (IPv6 /64), the new-device lock on the exact device. Both are
-   *  the TCP peer; no header can change them (ADR-157). */
+   *  the TCP peer; no header can change them (ADR-158). */
   function recordFailures(c: Context, presented: readonly string[]): void {
     const address = peerAddress(c);
     const device = rawPeerAddress(c);

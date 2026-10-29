@@ -217,7 +217,7 @@ function expandIPv6(addr: string): string[] | null {
  */
 export function rawPeerAddress(c: Context): string {
   // The device is the TCP peer, always. No header can change it: the
-  // tailscale serve mode that read proxy headers was removed (ADR-157).
+  // tailscale serve mode that read proxy headers was removed (ADR-158).
   const env = c.env as { incoming?: IncomingMessage } | undefined;
   const a = env?.incoming?.socket?.remoteAddress;
   if (!a) return "unknown";

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseCliArgs } from "../cli-args.js";
 
 /**
- * L1 guard (ADR-157): autonomOS never takes a client's identity from a proxy
+ * L1 guard (ADR-158): autonomOS never takes a client's identity from a proxy
  * header. The tailscale serve mode that read X-Forwarded-For /
  * Tailscale-User-Login (ADR-140) was removed: any local process could forge
  * them. If a header-trust path comes back, this fails; bring it back only with
@@ -27,7 +27,7 @@ function serverSources(dir: string): string[] {
   return out;
 }
 
-describe("no proxy-header identity (ADR-157)", () => {
+describe("no proxy-header identity (ADR-158)", () => {
   it("no server source reads X-Forwarded-For or Tailscale-User-Login", () => {
     const files = serverSources(SRC);
     assert.ok(
@@ -44,7 +44,7 @@ describe("no proxy-header identity (ADR-157)", () => {
     assert.deepEqual(
       hits.map((f) => f.slice(SRC.length)),
       [],
-      "a proxy identity header is read again; that needs a new ADR (see ADR-157)",
+      "a proxy identity header is read again; that needs a new ADR (see ADR-158)",
     );
   });
 

@@ -79,7 +79,7 @@ describe("install-service --host threading", () => {
     assert.equal(await install(["--host="]), 64);
   });
 
-  it("refuses the removed --trust-proxy (ADR-157) with what to do instead, not a bare 'unknown flag'", async () => {
+  it("refuses the removed --trust-proxy (ADR-158) with what to do instead, not a bare 'unknown flag'", async () => {
     const errors: string[] = [];
     const orig = console.error;
     console.error = (...a: unknown[]) => {

@@ -74,7 +74,7 @@ function parseFlags(argv: readonly string[]): InstallFlags {
     else if (a === "--host") host = argv[++i];
     else if (a === "--trust-proxy" || a.startsWith("--trust-proxy="))
       throw new Error(
-        "--trust-proxy was removed (ADR-157): autonomOS no longer runs behind tailscale serve. Use --host=127.0.0.1,$(tailscale ip -4) instead, and `tailscale serve reset` if serve was set up for it.",
+        "--trust-proxy was removed (ADR-158): autonomOS no longer runs behind tailscale serve. Use --host=127.0.0.1,$(tailscale ip -4) instead, and `tailscale serve reset` if serve was set up for it.",
       );
     else throw new Error(`Unknown flag: ${a}`);
   }

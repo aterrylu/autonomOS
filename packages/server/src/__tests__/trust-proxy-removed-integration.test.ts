@@ -12,7 +12,7 @@ import {
 
 /**
  * L3 (AUTONOMOS_INTEGRATION=1): the tailscale serve trust-proxy mode is gone
- * (ADR-157). A leftover setting refuses to start, loudly. Proxy headers from
+ * (ADR-158). A leftover setting refuses to start, loudly. Proxy headers from
  * loopback TCP never become an identity: the device is the TCP peer.
  */
 
@@ -41,7 +41,7 @@ function get(
   });
 }
 
-describe("trust-proxy removed (ADR-157)", {
+describe("trust-proxy removed (ADR-158)", {
   skip: !RUN_INTEGRATION,
   timeout: 180_000,
 }, () => {

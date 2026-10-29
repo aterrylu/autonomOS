@@ -47,7 +47,7 @@ describe("install.sh keeps the service's --host", () => {
   });
 });
 
-describe("install.sh drops the removed --trust-proxy (ADR-157)", () => {
+describe("install.sh drops the removed --trust-proxy (ADR-158)", () => {
   const script = readFileSync(INSTALL, "utf8");
   it("doesn't carry it into the re-rendered service (the server would refuse it)", () => {
     assert.ok(!/KEEP_FLAGS\+=\("\$KEPT_TRUST"\)/.test(script));

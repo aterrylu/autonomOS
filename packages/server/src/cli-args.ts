@@ -16,7 +16,7 @@ export type CliArgs = {
   host: string | undefined;
   printUrl: boolean;
   allowWeakToken: boolean;
-  /** REMOVED option (ADR-157), still parsed so a leftover one is refused
+  /** REMOVED option (ADR-158), still parsed so a leftover one is refused
    *  with a message that says what to do, not "unknown option". */
   trustProxy: string | undefined;
   help: boolean;

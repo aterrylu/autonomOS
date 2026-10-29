@@ -439,11 +439,11 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     KEEP_FLAGS=()
     KEPT_PORT=$(grep -oE -- '--port=[0-9]+' "$SERVICE_FILE" | head -1 || true)
     KEPT_HOST=$(grep -oE -- '--host=[^ <"]+' "$SERVICE_FILE" | head -1 || true)
-    # `tailscale serve` support (--trust-proxy) was removed (ADR-157). A
+    # `tailscale serve` support (--trust-proxy) was removed (ADR-158). A
     # service file that still carries it is re-rendered WITHOUT it, and said
     # so: the server would refuse to start with it.
     if grep -q -- '--trust-proxy=' "$SERVICE_FILE"; then
-      echo "[install] Dropping --trust-proxy from the service: tailscale serve support was removed (ADR-157). Run 'tailscale serve reset' if you had set serve up for autonomOS, and reach it with --host=127.0.0.1,\$(tailscale ip -4) instead."
+      echo "[install] Dropping --trust-proxy from the service: tailscale serve support was removed (ADR-158). Run 'tailscale serve reset' if you had set serve up for autonomOS, and reach it with --host=127.0.0.1,\$(tailscale ip -4) instead."
     fi
     [[ -n "$KEPT_PORT" ]] && KEEP_FLAGS+=("$KEPT_PORT")
     [[ -n "$KEPT_HOST" ]] && KEEP_FLAGS+=("$KEPT_HOST")
