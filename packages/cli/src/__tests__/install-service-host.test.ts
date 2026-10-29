@@ -79,11 +79,25 @@ describe("install-service --host threading", () => {
     assert.equal(await install(["--host="]), 64);
   });
 
-  it("refuses the removed --trust-proxy (ADR-157) instead of baking it", async () => {
-    assert.equal(
-      await install(["--host=127.0.0.1", "--trust-proxy=tailscale"]),
-      64,
-    );
-    assert.equal(await install(["--trust-proxy", "tailscale"]), 64);
+  it("refuses the removed --trust-proxy (ADR-157) with what to do instead, not a bare 'unknown flag'", async () => {
+    const errors: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => {
+      errors.push(a.join(" "));
+    };
+    try {
+      assert.equal(
+        await install(["--host=127.0.0.1", "--trust-proxy=tailscale"]),
+        64,
+      );
+      assert.equal(await install(["--trust-proxy", "tailscale"]), 64);
+    } finally {
+      console.error = orig;
+    }
+    assert.equal(errors.length, 2);
+    for (const e of errors) {
+      assert.match(e, /--trust-proxy was removed/);
+      assert.match(e, /--host=127\.0\.0\.1,\$\(tailscale ip -4\)/);
+    }
   });
 });
