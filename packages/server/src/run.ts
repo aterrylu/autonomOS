@@ -127,6 +127,7 @@ import {
   setTrustProxyMode,
   trustProxyGuard,
 } from "./trustProxy.js";
+import { attachWebSockets } from "./upgradeSockets.js";
 import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
 
@@ -851,7 +852,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Attach the internal app's WebSocket upgrade handler (for /ws/gateway) to the
   // internal server. Wired before listen() so no upgrade can race an unhandled
   // socket — the exact gap flagged in the PR A boot-ordering review.
-  iInject(internalServer);
+  attachWebSockets(internalServer, iInject, "internal");
   const controlSocketPath = getControlSocketPath();
 
   /**
@@ -1079,7 +1080,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // every route, guard and limit applies to them unchanged.
       for (const extra of bindHosts?.slice(1) ?? []) {
         const srv = createAdaptorServer({ fetch: app.fetch });
-        injectWebSocket(srv);
+        attachWebSockets(srv, injectWebSocket, `--host ${extra}`);
         extraListeners.push(
           keepListening({
             server: srv,
@@ -1162,7 +1163,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     },
   );
 
-  injectWebSocket(server);
+  attachWebSockets(server, injectWebSocket, "public");
 
   // Clean up all PTY processes on shutdown. Agents stay in persistence as
   // "running" so they auto-resume on next boot.
