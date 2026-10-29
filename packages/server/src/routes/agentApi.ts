@@ -159,13 +159,37 @@ export function verifiedAgentSession(c: Context): string | null {
 }
 
 /** Re-issue the request against `router`, with the path made relative to its
- *  mount point (`/api/agents/x/kill` → `/x/kill`). Query string kept. */
+ *  mount point (`/api/agents/x/kill` → `/x/kill`). Query string kept.
+ *
+ *  The init is spelled out field by field rather than handing `c.req.raw`
+ *  straight to the constructor (`new Request(url, c.req.raw)`, the usual Hono
+ *  idiom). @hono/node-server does not build a real Request per call — it hands
+ *  back a lazy subclass whose internals are only materialized when a property
+ *  is first read. Node <= 22's undici copied an init Request field by field and
+ *  so triggered those getters; Node 23+ reads its internal slots directly,
+ *  finds them uninitialized, and throws `TypeError: Illegal invocation`. That
+ *  took out EVERY agent-side call through this router (templates, agent tree,
+ *  spawn) on a newer Node, with nothing created and a confusing error.
+ *
+ *  Reading each field here forces the lazy getters to run, which is both the
+ *  fix and the reason this must not be "simplified" back. A body is attached
+ *  only for methods that can carry one; `duplex: "half"` is required whenever
+ *  body is a stream. */
 function forward(c: Context, entry: Entry): Promise<Response> | Response {
   const url = new URL(c.req.url);
   const prefix = `/api${entry.base}`;
   const rest = url.pathname.slice(prefix.length) || "/";
   url.pathname = rest;
-  return entry.router.fetch(new Request(url, c.req.raw), c.env);
+  const raw = c.req.raw;
+  const bodyless = raw.method === "GET" || raw.method === "HEAD";
+  const init: RequestInit = {
+    method: raw.method,
+    headers: raw.headers,
+    redirect: raw.redirect,
+    signal: raw.signal,
+    ...(bodyless ? {} : { body: raw.body, duplex: "half" }),
+  } as RequestInit;
+  return entry.router.fetch(new Request(url, init), c.env);
 }
 
 /** The router to mount at `/api` on the internal app. */
