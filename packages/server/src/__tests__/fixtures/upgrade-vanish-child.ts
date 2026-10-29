@@ -1,15 +1,18 @@
 /**
  * Child process for upgrade-socket-vanish.test.ts. A real Hono app + real
  * @hono/node-ws, with an upgrade the app REFUSES after an await (as the
- * same-origin guard / auth / an unknown route do), so node-ws later calls
- * `socket.end()` on the raw socket. Clients send a WebSocket upgrade and RST
- * their connection at once, so that `end()` writes to a dead peer.
+ * same-origin guard / auth / an unknown route do). Clients send a WebSocket
+ * upgrade and RST their connection at once, so the raw socket errors during
+ * node-ws's async window, while nothing but our guard listens for 'error':
+ * here the RST surfaces as a `read ECONNRESET`; on a real server under load
+ * the same window surfaces as `write EPIPE` from node-ws's `socket.end()`
+ * (pinned deterministically in the test itself).
  *
  *   MODE=raw      node-ws wired directly (what run.ts did): crashes, exit 1
  *   MODE=guarded  wired through attachWebSockets: must stay alive
  *
- * Prints READY, then ALIVE after every client has vanished and the refusals
- * have run, and exits 0. A crash exits non-zero before ALIVE.
+ * Prints READY, then `ALIVE refused=N` once EVERY refusal has actually run
+ * (counted, not slept for), and exits 0. A crash exits non-zero before ALIVE.
  */
 import net from "node:net";
 import { serve } from "@hono/node-server";
@@ -24,8 +27,10 @@ const CLIENTS = 25;
 const app = new Hono();
 const { injectWebSocket } = createNodeWebSocket({ app });
 // A refusal that takes a moment, like the guard/auth path under load.
+let refused = 0;
 app.get("/ws/refused", async (c) => {
   await sleep(40);
+  refused++;
   return c.text("refused", 403);
 });
 
@@ -47,9 +52,12 @@ server.once("listening", async () => {
     });
     s.on("error", () => {});
   }
-  // The refusals (40ms each) have all run by now.
-  await sleep(600);
-  console.log("ALIVE");
+  // Wait for EVERY refusal to have run (bounded), so ALIVE can't pass a run
+  // that never exercised the window. Then give node-ws's end() a beat.
+  const deadline = Date.now() + 10_000;
+  while (refused < CLIENTS && Date.now() < deadline) await sleep(10);
+  await sleep(100);
+  console.log(`ALIVE refused=${refused}`);
   server.close();
   process.exit(0);
 });
