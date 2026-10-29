@@ -542,18 +542,23 @@ describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => 
       { id: "c", name: "Planner", status: "needs_input" },
     ];
     let posted: unknown = null;
+    const armedRec = {
+      target: "0.7.0",
+      armedAt: "2026-09-23T10:00:00Z",
+      idleSince: null,
+    };
+    // Like the real server: once armed, the state route reports it. A GET
+    // that kept saying "not armed" reads as "cancelled elsewhere", so the
+    // armed poll (15 ms here) took the pill down mid-assertion under load.
+    let polls = 0;
     installServer({
-      "GET /api/system/upgrade": () => json({ ...IDLE_UPGRADE, busy }),
+      "GET /api/system/upgrade": () => {
+        if (posted) polls++;
+        return json({ ...IDLE_UPGRADE, busy, armed: posted ? armedRec : null });
+      },
       "POST /api/system/upgrade": (init) => {
         posted = JSON.parse(String(init?.body));
-        return json({
-          ok: true,
-          armed: {
-            target: "0.7.0",
-            armedAt: "2026-09-23T10:00:00Z",
-            idleSince: null,
-          },
-        });
+        return json({ ok: true, armed: armedRec });
       },
     });
     await openDialog();
@@ -603,6 +608,11 @@ describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => 
     // No one-click "Update now" on the pill: it would interrupt without
     // saying who. The waiting view has it, with the name.
     expect(armed.textContent).not.toContain("Update now");
+    // Force the race this test used to lose under load: let the armed poll
+    // really run, then the pill must still be up.
+    const seen = polls;
+    await waitFor(() => expect(polls).toBeGreaterThan(seen + 1));
+    expect(screen.getByTestId("update-badge-armed")).toBeInTheDocument();
     expect(screen.getByTestId("update-armed-cancel").textContent).toBe(
       "Cancel",
     );
