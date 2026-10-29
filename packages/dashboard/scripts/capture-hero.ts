@@ -81,6 +81,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -114,6 +115,12 @@ const HERO_W = Number(process.env.HERO_W ?? 1680);
 const HERO_H = Number(process.env.HERO_H ?? 920);
 const HERO_DSF = Number(process.env.HERO_DSF ?? 1);
 const HERO_ZOOM = Number(process.env.HERO_ZOOM ?? 1);
+/** A terminal pane's size in the hero layout (measured: the dashboard sends
+ *  this resize on attach). Spawning the PTY at it means no resize redraw, which
+ *  an inline TUI (Gemini's Ink) would leave behind as stale frames. */
+const PANE_SIZE = { cols: 94, rows: 24 };
+/** Logs each terminal's resize frames: re-measure PANE_SIZE after a layout change. */
+const DEBUG_GEOMETRY = process.env.HERO_DEBUG_GEOMETRY === "1";
 /** Show the Gemini terminal in the bottom-right pane instead of Codex's. */
 const GEMINI_PANE = process.env.HERO_GEMINI_PANE === "1";
 /** When set, also save a crop of each pane (org chart, top, bottom) here. */
@@ -260,8 +267,7 @@ function buildCast(): CastMember[] {
     name: "APIDeveloper",
     provider: "codex",
     manager: "BackendLead",
-    cols: 96,
-    rows: 34,
+    ...PANE_SIZE,
     visible: !GEMINI_PANE,
     prompt: API_DEV_PROMPT,
     mock: {
@@ -272,14 +278,14 @@ function buildCast(): CastMember[] {
   });
 
   // Gemini: the real gemini binary on the mock Gemini API, in the org chart
-  // (HERO_GEMINI_PANE=1 shows its terminal instead of Codex's). Posed to
-  // "working" after its turn via the Gemini-native `BeforeAgent` event.
+  // (HERO_GEMINI_PANE=1 shows its terminal instead of Codex's). When its pane
+  // isn't shown, it's posed to "working" after its turn via the Gemini-native
+  // `BeforeAgent` event.
   cast.push({
     name: "QAEngineer",
     provider: "gemini-cli",
     manager: "BackendLead",
-    cols: 96,
-    rows: 34,
+    ...PANE_SIZE,
     visible: GEMINI_PANE,
     prompt: QA_PROMPT,
     mock: {
@@ -287,7 +293,7 @@ function buildCast(): CastMember[] {
       reply: QA_MOCK_REPLY,
       tool: { name: "read_file", args: { file_path: "src/payments/schema.ts" } },
     },
-    pose: [{ hook_event_name: "BeforeAgent" }],
+    ...(GEMINI_PANE ? {} : { pose: [{ hook_event_name: "BeforeAgent" }] }),
   });
 
   return cast;
@@ -548,11 +554,10 @@ function startDemoMock(cast: CastMember[]): Promise<DemoMock> {
 }
 
 // ── Demo workspace (agents' cwd) ─────────────────────────────────────────────
-function makeDemoWorkspace(): string {
-  const dir = join(
-    mkdtempSync(join(tmpdir(), "autonomos-capture-")),
-    "demo-webapp",
-  );
+/** The demo repo lives in the fake HOME, so the TUIs print it as
+ *  `~/demo-webapp`, the way an operator's own checkout reads. */
+function makeDemoWorkspace(fakeHome: string): string {
+  const dir = join(fakeHome, "demo-webapp");
   mkdirSync(join(dir, "src/layout"), { recursive: true });
   mkdirSync(join(dir, "src/components"), { recursive: true });
   mkdirSync(join(dir, "src/payments"), { recursive: true });
@@ -602,6 +607,7 @@ interface Resources {
 let shuttingDown = false;
 
 async function bootServer(
+  fakeHome: string,
   workspace: string,
   mockUrl: string,
   resources: Resources,
@@ -625,8 +631,6 @@ async function bootServer(
   // Fake HOME — isolate the operator's real ~/.claude out of the shot and route
   // demo agents' session state here. Seed onboarding + bypass flags so a fresh
   // claude skips prompts.
-  const fakeHome = mkdtempSync(join(tmpdir(), "autonomos-demo-home-"));
-  resources.fakeHome = fakeHome; // register BEFORE seeding creds into it
   mkdirSync(join(fakeHome, ".claude", "projects"), { recursive: true });
   writeFileSync(
     join(fakeHome, ".claude.json"),
@@ -665,6 +669,15 @@ async function bootServer(
       'env_key = "HERO_MOCK_OPENAI_KEY"',
       'wire_api = "responses"',
       "",
+      // No plugin-marketplace sync: it downloads third-party docs (OAuth
+      // samples included) that the credential guard rightly can't tell apart.
+      "[features]",
+      "plugins = false",
+      "",
+      // No startup tip: the pane's top row would show a cut-off tail of it.
+      "[tui]",
+      "show_tooltips = false",
+      "",
       `[projects.${JSON.stringify(workspace)}]`,
       'trust_level = "trusted"',
       "",
@@ -677,7 +690,11 @@ async function bootServer(
   mkdirSync(join(fakeHome, ".gemini"), { recursive: true });
   writeFileSync(
     join(fakeHome, ".gemini", "settings.json"),
-    JSON.stringify({ security: { auth: { selectedType: "gemini-api-key" } } }),
+    JSON.stringify({
+      security: { auth: { selectedType: "gemini-api-key" } },
+      // No self-update attempt or update banner during a capture.
+      general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
+    }),
     { mode: 0o600 },
   );
 
@@ -719,6 +736,10 @@ async function bootServer(
   env.HERO_MOCK_OPENAI_KEY = "sk-hero-mock";
   env.GEMINI_API_KEY = "hero-mock-gemini-key";
   env.GOOGLE_GEMINI_BASE_URL = mockUrl;
+  // The dashboard's xterm renders 24-bit colour; say so, as a server started
+  // from a modern terminal would (else Gemini prints a "no true color" warning
+  // that depends on where `make hero` happened to run).
+  env.COLORTERM = "truecolor";
   console.log(`Claude, Codex and Gemini → mock backend at ${mockUrl}`);
 
   const child = spawn(TSX_BIN, [SERVER_ENTRY, "--port=0"], {
@@ -1160,6 +1181,14 @@ async function shoot(
     }, seed);
 
     const page = await context.newPage();
+    if (DEBUG_GEOMETRY) {
+      page.on("websocket", (ws) =>
+        ws.on("framesent", (f) => {
+          if (typeof f.payload === "string" && f.payload.includes('"cols"'))
+            console.log(`  resize ${ws.url().replace(/\?.*/, "")} ${f.payload}`);
+        }),
+      );
+    }
 
     // If seedBlob3 drifts from the dockview schema, api.fromJSON throws IN the
     // browser, DockviewLayout degrades to a solo pane and only logs to the
@@ -1687,11 +1716,15 @@ async function main(): Promise<void> {
     }
     mkdirSync(OUT_DIR, { recursive: true });
 
-    const workspace = makeDemoWorkspace();
+    // Resolved: tmpdir() is under the /var symlink, and a TUI shows the cwd
+    // as `~/…` only when it starts with HOME as written.
+    const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), "autonomos-demo-home-")));
+    resources.fakeHome = fakeHome; // register first, so an interrupt reaps it
+    const workspace = makeDemoWorkspace(fakeHome);
     resources.workspace = workspace;
     // The mock always drives Claude's turns: no real login is ever used.
     mock = await startDemoMock(cast);
-    server = await bootServer(workspace, mock.url, resources);
+    server = await bootServer(fakeHome, workspace, mock.url, resources);
     assertNoCredentials(server.fakeHome, "the hero's fake HOME (after boot)");
     console.log(
       `Demo server: http://127.0.0.1:${server.port} (config: ${server.configDir})`,
