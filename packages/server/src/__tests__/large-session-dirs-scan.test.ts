@@ -14,24 +14,32 @@
  * REAL Projects route, and bounds the worst event-loop stall and the peak RSS
  * growth while they run.
  *
- * Box load must not trip it (10-29: p99 134-138ms at load 22.7 blocked a
- * push). Load delays every timer tick, so the stall and p99 bounds apply to
- * what the scan ADDS over an idle window measured just before it, in the same
- * run. Peak RSS doesn't depend on load at all, and the whole-file reader blows
- * through it (+860-1200MB against 200MB), so a restored readFileSync goes RED
- * whatever the load.
+ * Box load must not trip it. Every agent's pre-push gate runs this file, at
+ * loads of 20-80. So the bounds that decide RED are the ones load can't move:
+ * - bytes read SYNCHRONOUSLY on the event loop (the bug itself: readFileSync of
+ *   whole rollouts), counted by wrapping node:fs;
+ * - peak RSS growth (+860-1200MB for the whole-file reader, against 200MB).
+ * Timing is only a backstop: the worst single stall against a 1s ceiling, well
+ * above load noise and far below the field's ~10s freeze. Measured with the
+ * fixed code at load 54-80 (10-29): stalls up to 364ms and p99 up to 299ms. A
+ * scan this short has few samples, so its p99 is about its worst gap. p99 and
+ * an idle baseline are logged, not asserted: neither separates the bug from a
+ * loaded box, while sync bytes do (0.00MB fixed vs 449.88MB whole-file reader).
  */
 
 import assert from "node:assert/strict";
-import {
+import fs, {
   appendFileSync,
   closeSync,
   mkdirSync,
   openSync,
+  readFileSync,
+  readSync,
   rmSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -67,11 +75,13 @@ const FILES = 3;
 // ~100ms worst (p99 ≤ 42ms) under that load, so it's bounded by p99 plus a
 // looser worst-case. RSS is the sharpest signal: a whole-file read of these
 // fixtures needs hundreds of MB.
-// Stall/p99 bounds are on top of the idle baseline (see `responsive`).
-const MAX_STALL_MS = 100;
-const PROJECTS_MAX_STALL_MS = 250;
-const P99_MS = 100;
+// Worst single stall: a ceiling over load noise (see the header).
+const MAX_STALL_MS = 1_000;
 const MAX_RSS_GROWTH_MB = 200;
+// Sync bytes per scan. The fixed code reads only auth/config files and the
+// Projects scanner's capped 256KB heads synchronously: well under 2MB. One
+// whole-file read of a fixture is FILE_MB.
+const MAX_SYNC_READ_MB = 2;
 
 function tokenCount(ts: string, used: number): string {
   return JSON.stringify({
@@ -139,11 +149,48 @@ function writeAuth(): void {
 }
 
 /** Run `fn` while measuring the worst stall, p99 delay and peak RSS growth. */
+/** Counts bytes read synchronously (readFileSync / readSync) while `fn` runs.
+ *  Wraps node:fs and re-syncs the ESM named exports, so a module that did
+ *  `import { readFileSync } from "node:fs"` is counted too. */
+async function countingSyncReads<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; bytes: number }> {
+  const origFile = fs.readFileSync;
+  const origRead = fs.readSync;
+  let bytes = 0;
+  // readFileSync may call fs.readSync internally: count each byte once.
+  let inReadFile = 0;
+  fs.readFileSync = ((...args: Parameters<typeof origFile>) => {
+    inReadFile++;
+    try {
+      const out = origFile(...args);
+      bytes += typeof out === "string" ? Buffer.byteLength(out) : out.length;
+      return out;
+    } finally {
+      inReadFile--;
+    }
+  }) as typeof origFile;
+  fs.readSync = ((...args: Parameters<typeof origRead>) => {
+    const n = origRead(...args);
+    if (inReadFile === 0) bytes += n;
+    return n;
+  }) as typeof origRead;
+  syncBuiltinESMExports();
+  try {
+    return { result: await fn(), bytes };
+  } finally {
+    fs.readFileSync = origFile;
+    fs.readSync = origRead;
+    syncBuiltinESMExports();
+  }
+}
+
 async function measured(fn: () => Promise<unknown>): Promise<Measured> {
   const h = monitorEventLoopDelay({ resolution: 10 });
   let last = performance.now();
   let worst = 0;
   const rss0 = process.memoryUsage().rss;
+  let syncBytes = 0;
   let peak = rss0;
   const tick = setInterval(() => {
     const now = performance.now();
@@ -153,7 +200,7 @@ async function measured(fn: () => Promise<unknown>): Promise<Measured> {
   }, 10);
   h.enable();
   try {
-    await fn();
+    syncBytes = (await countingSyncReads(fn)).bytes;
     await new Promise((r) => setTimeout(r, 50)); // let the last stall register
   } finally {
     h.disable();
@@ -163,6 +210,7 @@ async function measured(fn: () => Promise<unknown>): Promise<Measured> {
     worstMs: Math.max(worst, h.max / 1e6),
     p99Ms: h.percentile(99) / 1e6,
     rssGrowthMb: (peak - rss0) / 1024 / 1024,
+    syncReadMb: syncBytes / 1024 / 1024,
   };
 }
 
@@ -170,44 +218,55 @@ interface Measured {
   worstMs: number;
   p99Ms: number;
   rssGrowthMb: number;
+  syncReadMb: number;
 }
 
 /** The same probe over an idle window: what box load alone does to it now.
  *  1s, so one momentary spike isn't the whole sample. */
 const idleBaseline = () =>
   measured(() => new Promise((r) => setTimeout(r, 1000)));
-/** Load allowance cap: a spike during the baseline can't erase the stall
- *  bound (a blocking read that leaves RSS flat, e.g. a sync chunked read,
- *  must still fail on a loaded box). Far below the field's ~10s stall. */
-const MAX_IDLE_ALLOWANCE_MS = 500;
 
-/** Asserts the scan stayed responsive: stall and p99 over the idle baseline,
- *  peak RSS growth absolute. Logs both so a failure shows the load. */
-function assertResponsive(
-  label: string,
-  m: Measured,
-  idle: Measured,
-  bounds: { stallMs: number; p99Ms: number },
-): void {
+/** Asserts the scan stayed responsive. Sync bytes and peak RSS decide (load
+ *  can't move them); the worst stall is a ceiling. p99 and the idle baseline
+ *  are logged so a failure shows the load. */
+function assertResponsive(label: string, m: Measured, idle: Measured): void {
   process.stderr.write(
-    `MEASURED ${label}: worst stall ${m.worstMs.toFixed(0)}ms, p99 ${m.p99Ms.toFixed(0)}ms, peak RSS +${m.rssGrowthMb.toFixed(0)}MB (idle baseline: worst ${idle.worstMs.toFixed(0)}ms, p99 ${idle.p99Ms.toFixed(0)}ms)\n`,
-  );
-  const stallBound =
-    bounds.stallMs + Math.min(idle.worstMs, MAX_IDLE_ALLOWANCE_MS);
-  const p99Bound = bounds.p99Ms + Math.min(idle.p99Ms, MAX_IDLE_ALLOWANCE_MS);
-  assert.ok(
-    m.worstMs < stallBound,
-    `${label} froze the event loop for ${m.worstMs.toFixed(0)}ms (bound ${bounds.stallMs}ms + idle ${idle.worstMs.toFixed(0)}ms)`,
+    `MEASURED ${label}: sync reads ${m.syncReadMb.toFixed(2)}MB, worst stall ${m.worstMs.toFixed(0)}ms, p99 ${m.p99Ms.toFixed(0)}ms, peak RSS +${m.rssGrowthMb.toFixed(0)}MB (idle baseline: worst ${idle.worstMs.toFixed(0)}ms, p99 ${idle.p99Ms.toFixed(0)}ms)\n`,
   );
   assert.ok(
-    m.p99Ms < p99Bound,
-    `${label}: event-loop p99 ${m.p99Ms.toFixed(0)}ms (bound ${bounds.p99Ms}ms + idle ${idle.p99Ms.toFixed(0)}ms)`,
+    m.syncReadMb < MAX_SYNC_READ_MB,
+    `${label} read ${m.syncReadMb.toFixed(1)}MB synchronously on the event loop (bound ${MAX_SYNC_READ_MB}MB)`,
+  );
+  assert.ok(
+    m.worstMs < MAX_STALL_MS,
+    `${label} froze the event loop for ${m.worstMs.toFixed(0)}ms (ceiling ${MAX_STALL_MS}ms)`,
   );
   assert.ok(
     m.rssGrowthMb < MAX_RSS_GROWTH_MB,
     `${label}: RSS grew ${m.rssGrowthMb.toFixed(0)}MB (bound ${MAX_RSS_GROWTH_MB}MB)`,
   );
 }
+
+describe("sync-read counter (precondition)", () => {
+  it("counts a module's NAMED readFileSync import and readSync", async () => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    const probe = join(TEST_DIR, "probe.bin");
+    writeFileSync(probe, Buffer.alloc(3 * 1024 * 1024));
+    // Static named imports (this file's), the way rolloutScanner, auth and
+    // sessionScanners import them: live bindings the counter must reach.
+    // readFileSync's own internal readSync calls must not count twice.
+    const { bytes } = await countingSyncReads(async () => {
+      readFileSync(probe);
+      const fd = openSync(probe, "r");
+      try {
+        readSync(fd, Buffer.alloc(1024 * 1024), 0, 1024 * 1024, 0);
+      } finally {
+        closeSync(fd);
+      }
+    });
+    assert.equal(bytes, 4 * 1024 * 1024);
+  });
+});
 
 describe("Codex usage fallback on large rollouts", () => {
   before(() => {
@@ -233,10 +292,7 @@ describe("Codex usage fallback on large rollouts", () => {
     assert.ok(snap, "found a snapshot");
     // precondition: it really read each file's TAIL (the freshest event)
     assert.equal(snap?.snapshotAt, `2026-10-24T0${FILES - 1}:00:00.000Z`);
-    assertResponsive("fallback scan", m, idle, {
-      stallMs: MAX_STALL_MS,
-      p99Ms: P99_MS,
-    });
+    assertResponsive("fallback scan", m, idle);
   });
 
   it("the real usage poll with the live endpoint failing stays responsive", async () => {
@@ -248,10 +304,7 @@ describe("Codex usage fallback on large rollouts", () => {
       out.data = await getCodexUsage(failing as never);
     });
     assert.equal(out.data?.source, "rollout", "served the on-disk fallback");
-    assertResponsive("usage poll (live failing)", m, idle, {
-      stallMs: MAX_STALL_MS,
-      p99Ms: P99_MS,
-    });
+    assertResponsive("usage poll (live failing)", m, idle);
   });
 });
 
@@ -310,11 +363,7 @@ describe("Projects scan on a large Claude Code session", () => {
     });
     // precondition: the big file really was scanned past its head and tail
     assert.equal(out.row?.summary, "Big middle title");
-    // A short scan has few samples, so its p99 is ~its worst gap: one bound.
-    assertResponsive("Projects cold scan", m, idle, {
-      stallMs: PROJECTS_MAX_STALL_MS,
-      p99Ms: PROJECTS_MAX_STALL_MS,
-    });
+    assertResponsive("Projects cold scan", m, idle);
   });
 
   it("after a new turn is appended, the rescan reads only the new turn", async () => {
