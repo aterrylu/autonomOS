@@ -213,6 +213,7 @@ export function renderSystemdUserUnit(opts: SystemdUserUnitOptions): string {
   const envLines = [
     systemdEnvLine("HOME", opts.home),
     systemdEnvLine("PATH", opts.path),
+    systemdEnvLine("AUTONOMOS_CGROUP_DELEGATED", "1"),
     ...sortedEnv(opts.extraEnv).map(([k, v]) => systemdEnvLine(k, v)),
     ...(label ? [systemdEnvLine("AUTONOMOS_SERVICE_LABEL", label)] : []),
   ].join("\n");
@@ -233,6 +234,15 @@ Restart=always
 RestartSec=5
 StandardOutput=null
 StandardError=append:${systemdEscapePct(opts.logDir)}/${BOOT_ERROR_LOG}
+# An agent's runaway process (a big build) must not take the server and every
+# other agent down with it:
+# - OOMPolicy=continue: the default, stop, stops the WHOLE unit when the kernel
+#   OOM-kills any one process in it.
+# - Delegate=yes: the server gives each agent its own sub-cgroup, so an OOM
+#   kill (or systemd-oomd, which kills whole leaf cgroups) lands on that agent.
+#   AUTONOMOS_CGROUP_DELEGATED tells the server it may (the cgroup can't say).
+OOMPolicy=continue
+Delegate=yes
 ${envLines}
 
 [Install]

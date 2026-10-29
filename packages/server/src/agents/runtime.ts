@@ -44,6 +44,7 @@ import { instrumentPtyInput, withPtyInputSource } from "../ptyInputLog.js";
 import {
   clearAgentState,
   clearNotifications,
+  pushServerNotification,
   pushSystemNotification,
   retractSystemNotification,
 } from "../routes/hooks.js";
@@ -73,6 +74,7 @@ import {
 } from "./codexSocket.js";
 import { enrichAgent } from "./enrich.js";
 import { noteFreshStart } from "./freshStarts.js";
+import { type OomVerdict, oomGuard } from "./oomGuard.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -498,6 +500,132 @@ export function resumeSafetyNetArmed(opts: {
  * whose crash behavior is unchanged). Pure + exported so the decision is
  * unit-tested without driving a real PTY onExit.
  */
+// ── OOM kills (oomGuard.ts, ADR-156) ────────────────────────────────────
+
+/** At most one automatic resume per agent in this window: a box that keeps
+ *  running out of memory must not loop an agent through kill → resume. */
+export const OOM_RESUME_WINDOW_MS = 10 * 60_000;
+let oomResumeDelayMs = 5_000;
+const lastOomResume = new Map<string, number>();
+const oomResumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** @internal tests: shorten the wait before the automatic resume. */
+export function _setOomResumeDelayForTesting(ms: number): void {
+  oomResumeDelayMs = ms;
+}
+
+export function oomAutoResumeAllowed(
+  agentId: string,
+  now: number = Date.now(),
+): boolean {
+  const last = lastOomResume.get(agentId);
+  return last === undefined || now - last >= OOM_RESUME_WINDOW_MS;
+}
+
+/** The bell text for an agent memory (or an outside SIGKILL) took down. */
+export function oomExitNotice(
+  name: string,
+  verdict: OomVerdict,
+  willResume: boolean,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (verdict === "oom-then-exited") {
+    return `A process ${name} started was killed: out of memory, and ${name} then exited. Other agents and the server weren't affected.`;
+  }
+  const what =
+    verdict === "oom"
+      ? `${name} was killed: out of memory (the kernel's OOM killer stopped one of its processes). Other agents and the server weren't affected.`
+      : verdict === "oom-likely"
+        ? `${name} was killed (SIGKILL) while the system was out of memory, most likely by the OOM killer. Other agents and the server weren't affected.`
+        : platform === "darwin"
+          ? `${name} was killed (SIGKILL) by something outside autonomOS. On macOS that's usually the system reclaiming memory under pressure.`
+          : `${name} was killed (SIGKILL) by something outside autonomOS. On Linux that's usually systemd-oomd under memory pressure.`;
+  const next = willResume
+    ? " Resuming it in the same conversation."
+    : " Not resuming it automatically: it was already killed and resumed in the last 10 minutes. Resume it from the sidebar when there's memory to spare.";
+  return what + next;
+}
+
+/** A pending automatic resume is moot: anyone else starting, stopping or
+ *  deleting the agent wins over it. */
+function cancelOomResume(agentId: string): void {
+  const t = oomResumeTimers.get(agentId);
+  if (t) {
+    clearTimeout(t);
+    oomResumeTimers.delete(agentId);
+  }
+}
+
+/** Resume an agent memory took down, once per window, in the same
+ *  conversation. Through restartAgent: its lock is taken synchronously, so
+ *  an operator's Resume or Restart then gets a 409 and a Kill wins
+ *  (killedDuringRestart) — never two processes on one conversation. */
+function scheduleOomResume(agentId: string): void {
+  if (!oomAutoResumeAllowed(agentId)) return;
+  lastOomResume.set(agentId, Date.now());
+  cancelOomResume(agentId);
+  const t = setTimeout(() => {
+    oomResumeTimers.delete(agentId);
+    const a = getAgent(agentId);
+    // Deleted, killed by the operator, or someone already started it.
+    if (!a || a.exitReason !== "crashed") return;
+    if (live.has(agentId) || restartingAgents.has(agentId)) return;
+    if (serverStopping || restartInFlight) return;
+    restartAgent(agentId).catch((err) => {
+      // A 409 means someone else got there first: not a failure.
+      if (err instanceof SpawnError && err.status === 409) return;
+      if (!getAgent(agentId)) return;
+      pushSystemNotification(
+        agentId,
+        `Couldn't resume ${a.name} after it was killed for memory: ${err instanceof Error ? err.message : String(err)}. Resume it from the sidebar.`,
+      );
+    });
+  }, oomResumeDelayMs);
+  t.unref?.();
+  oomResumeTimers.set(agentId, t);
+}
+
+let oomPoll: ReturnType<typeof setInterval> | null = null;
+
+/** Boot: set up OOM containment before any agent can spawn (the server moves
+ *  into its leaf cgroup first), then watch for kills nobody else reports: a
+ *  process an agent started (a build) while the agent survived, and kills no
+ *  live agent can claim. Synchronous; safe to call more than once. */
+export function startOomGuard(pollMs = 5_000): void {
+  oomGuard.init();
+  if (oomPoll || oomGuard.platform !== "linux") return;
+  if (oomGuard.delegationRequested && !oomGuard.isolated) {
+    // The unit asked for per-agent isolation and it couldn't be set up:
+    // say so where the operator looks, not only in the log.
+    pushServerNotification(
+      `Per-agent memory isolation is off (${oomGuard.degradedReason ?? "not available"}). An agent that runs out of memory still can't stop the server, but systemd-oomd may take all agents together, and kills can't be attributed to an agent.`,
+    );
+  }
+  oomPoll = setInterval(() => {
+    const { perAgent, unattributed } = oomGuard.pollKills(
+      (id) => live.has(id),
+      Date.now(),
+      pollMs,
+    );
+    for (const { agentId } of perAgent) {
+      const a = getAgent(agentId);
+      if (!a) continue;
+      pushSystemNotification(
+        agentId,
+        `A process ${a.name} started was killed: out of memory. ${a.name} is still running; other agents and the server weren't affected.`,
+      );
+    }
+    if (unattributed > 0) {
+      pushServerNotification(
+        oomGuard.isolated
+          ? "A process of the autonomOS server (not of an agent) was killed: out of memory. The server and its agents kept running."
+          : "A process under autonomOS was killed: out of memory. The server and its agents kept running. Per-agent attribution needs the updated service unit (it's re-rendered on the next update).",
+      );
+    }
+  }, pollMs);
+  oomPoll.unref?.();
+}
+
 export function retainedThreadCrashNotice(opts: {
   reason: ExitReason;
   hasProviderThread: boolean;
@@ -856,6 +984,11 @@ export interface SpawnResult {
  */
 export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   if (serverStopping) throw serverStoppingError();
+  // Someone else is starting this agent: a pending automatic OOM resume is
+  // moot (its own respawn goes through restartAgent, i.e. fromRestart).
+  if (params.resumeAgentId && !params.fromRestart) {
+    cancelOomResume(params.resumeAgentId);
+  }
   if (
     params.forkFromAgentId &&
     (params.resumeAgentId || params.resumeSessionId)
@@ -1776,6 +1909,14 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     },
   };
   live.set(persisted.id, managed);
+  // OOM containment (Linux): the agent's processes are the kernel's first
+  // pick, and with a delegated unit they live in the agent's own cgroup.
+  // Best-effort and never throws. The daemon is the server's child, not the
+  // PTY's, and runs the agent's commands: it's the agent's too.
+  oomGuard.attach(persisted.id, pty.pid, { leader: true });
+  if (sidecar) {
+    oomGuard.attach(persisted.id, sidecar.proc.pid, { essential: true });
+  }
 
   // Codex agents have no hook relay — drive their dashboard status from the
   // app-server daemon's event stream instead (busy/idle). Eager from spawn so
@@ -1948,6 +2089,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // After the stale guard: an old PTY exiting late must not overwrite the
     // current process's exit code.
     observeExitCode(persisted.id, exitCode);
+    // Past the stale guard, a SIGKILL was NOT sent by the server (its kills
+    // drop the agent from `live` first): ask whether it was an OOM kill.
+    const oomVerdict = oomGuard.exitVerdict(persisted.id, signal, exitCode);
+    if (!shuttingDown) oomGuard.release(persisted.id);
 
     cancelPromptTracking(persisted.id);
     cancelChannelServerCheck(persisted.id);
@@ -2097,10 +2242,24 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         agentName: persisted.name,
         providerDisplayName: provider.displayName,
       });
-      if (retainNotice && stillPresent) {
+      if (oomVerdict && stillPresent) {
+        // One notice that says what happened (it replaces the generic
+        // retained-thread one: the resume below says what comes next).
+        pushSystemNotification(
+          persisted.id,
+          oomExitNotice(
+            persisted.name,
+            oomVerdict,
+            oomAutoResumeAllowed(persisted.id),
+          ),
+        );
+      } else if (retainNotice && stillPresent) {
         pushSystemNotification(persisted.id, retainNotice);
       }
       const updated = markExited(persisted.id, reason);
+      if (oomVerdict && oomVerdict !== "oom-then-exited" && stillPresent) {
+        scheduleOomResume(persisted.id);
+      }
       live.delete(persisted.id);
       // Tear down the Codex inbound control client (no-op for other providers).
       disposeCodexControl(persisted.id);
@@ -2136,6 +2295,8 @@ export function killAttachment(
 ): boolean {
   const managed = live.get(agentId);
   if (!managed) {
+    // A crashed agent waiting for its automatic OOM resume: the kill wins.
+    cancelOomResume(agentId);
     // Mid-restart the agent is out of `live` while its old process exits. A
     // kill then must WIN, not 409 and be undone by the respawn: record it and
     // mark the agent stopped now; restartAgent sees it and doesn't respawn.
@@ -2157,6 +2318,8 @@ export function killAttachment(
   void stopAgentPty(agentId, managed.pty);
   // Sidecar daemon is a separate process — kill it alongside the PTY.
   void managed.sidecar?.dispose();
+  cancelOomResume(agentId);
+  oomGuard.release(agentId);
   disposeCodexControl(agentId);
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
@@ -2178,6 +2341,9 @@ export function killAttachment(
 /** Hard-delete an agent. Kills PTY if running, then removes the record from
  *  disk. Caller is responsible for handling children (reassign or orphan). */
 export function deleteAgent(agentId: UUID): boolean {
+  cancelOomResume(agentId);
+  lastOomResume.delete(agentId);
+  oomGuard.release(agentId);
   const wasLive = live.has(agentId);
   if (wasLive) {
     const managed = live.get(agentId)!;
