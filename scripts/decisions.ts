@@ -8,11 +8,9 @@
 //
 // Subcommands (Makefile wrappers in parentheses):
 //   check                     validate every ADR file (make adr-check; first step of make check)
-//   index [--check]           regenerate docs/decisions/README.md (make adr-index)
+//   index                     print the index table: number, title, date, status, supersession (make adr-index)
 //   new "<title>"             allocate the next free number, write a template (make adr NEW=…)
 //   renumber <file>           move a colliding ADR to the next free number (make adr-renumber FILE=…)
-//   fix-collisions [--body f] renumber the later of two ADRs sharing a number (run on main by the
-//                             decisions-index workflow; writes the PR body to f)
 //   import [<ref>]            move ADRs a branch appended to the old docs/DECISIONS.md into
 //                             their own files (make adr-import REF=…)
 //   migrate [<ref>] --force   split <ref>:docs/DECISIONS.md (already run; re-run on the latest
@@ -25,9 +23,9 @@
 // rewriting them would falsify the log). The manifest is also the grandfather
 // allowlist for historical numbering quirks — see docs/decisions/README.md.
 //
-// The index (docs/decisions/README.md) is NOT maintained by PRs — that would
-// recreate the shared hotspot this layout exists to remove. The
-// decisions-index workflow regenerates it hourly from main (ADR-147).
+// The index table is never committed (ADR-157): a committed one is a file every ADR PR
+// edits, the shared hotspot this layout exists to remove, and keeping it fresh took a
+// bot. `make adr-index` prints it from the files; docs/decisions/README.md is a static guide.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -48,7 +46,8 @@ export const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const DECISIONS_DIR = "docs/decisions";
 export const LEGACY_LOG = "docs/DECISIONS.md";
 export const MANIFEST_FILE = "legacy-manifest.json";
-export const INDEX_FILE = "README.md";
+/** The static guide to this directory (not an index: that is printed, never committed). */
+const GUIDE_FILE = "README.md";
 
 /**
  * docs/DECISIONS.md after the split: a pointer, pinned byte for byte by `check`, so no
@@ -57,7 +56,7 @@ export const INDEX_FILE = "README.md";
 export const LEGACY_STUB = `# Architectural Decision Records → [\`docs/decisions/\`](decisions/)
 
 This log moved: **every decision is now its own file** in
-[\`docs/decisions/\`](decisions/), named \`ADR-NNN-<slug>.md\`, with a generated index in
+[\`docs/decisions/\`](decisions/), named \`ADR-NNN-<slug>.md\`, with a guide in
 [\`docs/decisions/README.md\`](decisions/README.md). ADR numbers did not change, so
 existing "ADR-NNN" references (code comments, PRs, notes) still point at the same
 decision: open \`docs/decisions/ADR-NNN-*.md\`.
@@ -336,6 +335,7 @@ export function checkDecisions(root: string): string[] {
     ...checkLegacyFrozen(dir, manifest),
     ...checkLegacyLogIsStub(root),
     ...checkDirectoryContents(dir),
+    ...checkGuideIsNotTheIndex(dir),
     ...checkNewEntries(dir, manifest),
     ...checkNumbersUnique(root, dir, manifest),
   ];
@@ -380,22 +380,35 @@ function checkLegacyLogIsStub(root: string): string[] {
   ];
 }
 
-/** Only ADR files, the index and the manifest live in docs/decisions/ (so nothing escapes check). */
+/** Only ADR files, the guide and the manifest live in docs/decisions/ (so nothing escapes check). */
 function checkDirectoryContents(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true })
     .filter(
       (d) =>
         !d.isFile() ||
         !(
-          d.name === INDEX_FILE ||
+          d.name === GUIDE_FILE ||
           d.name === MANIFEST_FILE ||
           ANY_ADR_FILE_RE.test(d.name)
         ),
     )
     .map(
       (d) =>
-        `${relPath(d.name)}: unexpected ${d.isFile() ? "file" : "entry"}. ${DECISIONS_DIR}/ holds only ADR-NNN-slug.md files, ${INDEX_FILE} and ${MANIFEST_FILE}.`,
+        `${relPath(d.name)}: unexpected ${d.isFile() ? "file" : "entry"}. ${DECISIONS_DIR}/ holds only ADR-NNN-slug.md files, ${GUIDE_FILE} and ${MANIFEST_FILE}.`,
     );
+}
+
+/** docs/decisions/README.md is the hand-written guide, never the generated table (ADR-157). */
+function checkGuideIsNotTheIndex(dir: string): string[] {
+  const path = join(dir, GUIDE_FILE);
+  if (
+    !existsSync(path) ||
+    !readFileSync(path, "utf8").startsWith(INDEX_HEADING)
+  )
+    return [];
+  return [
+    `${relPath(GUIDE_FILE)} holds the generated index table. It is the hand-written guide; the table is never committed (ADR-157). Restore it: git checkout origin/main -- ${relPath(GUIDE_FILE)}`,
+  ];
 }
 
 /** New entries: filename ↔ header, required fields. */
@@ -456,319 +469,64 @@ function checkNumbersUnique(
 ): string[] {
   const entries = loadEntries(dir, manifest);
   const next = pad(Math.max(...entries.map((e) => e.num)) + 1);
-  const errors: string[] = [];
-  for (const group of collidingGroups(entries)) {
-    const newcomers = group.filter((e) => !e.legacy);
-    errors.push(
-      `ADR-${pad(group[0]!.num)} is used by ${group.length} files: ${group.map((e) => relPath(e.file) + addedInNote(root, e.file)).join(", ")}.\n` +
-        "  Parallel PRs picked the same number; whoever merges LATER renumbers (one file, nothing else changes).\n" +
-        `  Fix: ${newcomers.map((e) => `make adr-renumber FILE=${relPath(e.file)}`).join("  or  ")}` +
-        `  (next free on this branch: ADR-${next}; the script also checks open PRs).` +
-        " On main, the decisions-index workflow opens this renumber PR itself.",
-    );
-  }
-  return errors;
-}
-
-// ── collisions on main ──────────────────────────────────────────────────────
-//
-// Since 2026-10-08 main no longer requires branches to be up to date, so two PRs that each
-// picked ADR-NNN can both pass CI and both merge. The decisions-index workflow then runs
-// `fix-collisions` on main (ADR-150): it renumbers the file added LATER (the "later merger
-// renumbers" rule, made mechanical) and opens a PR whose body lists every ADR-NNN mention that
-// later merge added, for its owner to fix. It never edits code.
-//
-// It refuses rather than guesses: no history to rank by, an unreadable open-PR list, or a
-// header it can't rewrite each stop it before any file moves. Ranking assumes main is
-// squash-merged (it is: merge commits are disabled); first-parent history keeps it sane if not.
-
-export interface AddCommit {
-  sha: string;
-  subject: string;
-  /** Position in main's first-parent history. Larger = later. Never a timestamp. */
-  order: number;
-}
-
-function isShallow(root: string): boolean {
-  return git(root, ["rev-parse", "--is-shallow-repository"]).trim() === "true";
-}
-
-function isTracked(root: string, file: string): boolean {
-  try {
-    git(root, ["ls-files", "--error-unmatch", relPath(file)]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** The first-parent commit that added `docs/decisions/<file>` at that path (a rename counts). */
-export function addedIn(root: string, file: string): AddCommit | undefined {
-  const line = git(root, [
-    "log",
-    "--first-parent",
-    "--no-renames",
-    "--diff-filter=A",
-    "--format=%H%x09%s",
-    "-1",
-    "--",
-    relPath(file),
-  ]).trim();
-  if (!line) return undefined;
-  const [sha, ...subject] = line.split("\t");
-  const order = Number(
-    git(root, ["rev-list", "--first-parent", "--count", sha!]).trim(),
-  );
-  return { sha: sha!, subject: subject.join("\t"), order };
-}
-
-/** `addedIn` for messages: never throws, and says nothing in a shallow clone (where git would
- *  blame the one grafted commit for every file). */
-function addedInNote(root: string, file: string): string {
-  try {
-    if (isShallow(root)) return "";
-    const c = addedIn(root, file);
-    return c ? ` (added in ${commitRef(c)})` : "";
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Lines `commit` added that mention ADR-NNN, as `path:line: text`, anywhere in the tree,
- * including other ADR files and the renumbered file's own body. An ADR file's header line
- * (line 1) is skipped: it names that file, it isn't a reference. Reads the commit's diff
- * against its first parent.
- */
-export function mentionsAddedIn(
-  root: string,
-  commit: string,
-  num: number,
-): string[] {
-  const id = new RegExp(`\\bADR-${pad(num)}(?!\\d)`);
-  const diff = run(
-    "git",
-    [
-      "-C",
-      root,
-      "-c",
-      "core.quotePath=false",
-      "diff",
-      "--unified=0",
-      "--no-renames",
-      "--no-color",
-      "--no-ext-diff",
-      `${commit}^1`,
-      commit,
-    ],
-    { maxBuffer: 512 * 1024 * 1024 },
-  );
-  const out: string[] = [];
-  let path = "";
-  let inHeader = false;
-  let line = 0;
-  for (const l of diff.split("\n")) {
-    if (l.startsWith("diff --git ")) {
-      inHeader = true;
-      path = "";
-      continue;
-    }
-    if (inHeader) {
-      // Only a header line names the file: an added line can also start with "+++ ".
-      if (l.startsWith("+++ ")) {
-        const p = l.slice(4).replace(/\t$/, "");
-        path = p === "/dev/null" ? "" : p.replace(/^b\//, "");
-        continue;
-      } else if (l.startsWith("@@")) {
-        inHeader = false;
-      } else {
-        continue;
-      }
-    }
-    const hunk = /^@@ -\S+ \+(\d+)/.exec(l);
-    if (hunk) {
-      line = Number(hunk[1]);
-      continue;
-    }
-    if (l.startsWith("+")) {
-      // An ADR file's own header line is its name, not a reference to change.
-      const isAdrHeader = path.startsWith(`${DECISIONS_DIR}/`) && line === 1;
-      if (path && !isAdrHeader && id.test(l)) {
-        out.push(`${path}:${line}: ${l.slice(1).trim().slice(0, 160)}`);
-      }
-      line++;
-    }
-  }
-  return out;
-}
-
-export interface CollisionFix {
-  num: number;
-  /** The file that keeps the number: legacy, else the earliest added. */
-  keep: string;
-  keepAddedIn?: AddCommit;
-  /** The file added later, to renumber. */
-  renumber: string;
-  addedIn?: AddCommit;
-  /** Mentions of ADR-NNN that `addedIn` added; undefined when they couldn't be listed. */
-  mentions?: string[];
-  /** Why `mentions` is missing, or a caveat about it. */
-  mentionsNote?: string;
-  /** The new number, chosen in planning. */
-  toNum?: number;
-  /** Set by fixCollisions: the renumbered path. */
-  to?: string;
-}
-
-/** Groups of entries sharing a number, except groups made only of grandfathered legacy files. */
-function collidingGroups(entries: Entry[]): Entry[][] {
   const byNum = new Map<number, Entry[]>();
   for (const e of entries) {
     const group = byNum.get(e.num);
     if (group) group.push(e);
     else byNum.set(e.num, [e]);
   }
-  return [...byNum.values()].filter(
-    (g) => g.length > 1 && !g.every((e) => e.legacy),
-  );
+  const errors: string[] = [];
+  for (const group of byNum.values()) {
+    if (group.length < 2 || group.every((e) => e.legacy)) continue;
+    const newcomers = group.filter((e) => !e.legacy);
+    // Without history (CI checks out shallow) the notes are empty, so say how to find out
+    // which file merged later: renumbering the earlier one would strand its references.
+    const notes = group.map((e) => addedInNote(root, e.file));
+    const whoIsLater = notes.every((n) => n !== "")
+      ? ""
+      : `\n  Which merged later? git log --diff-filter=A --format='%h %ad %s' --date=short -- ${group.map((e) => relPath(e.file)).join(" ")}`;
+    errors.push(
+      `ADR-${pad(group[0]!.num)} is used by ${group.length} files: ${group.map((e, k) => relPath(e.file) + notes[k]).join(", ")}.\n` +
+        "  Parallel PRs picked the same number; whoever merges LATER renumbers (one file, nothing else changes).\n" +
+        `  Fix: ${newcomers.map((e) => `make adr-renumber FILE=${relPath(e.file)}`).join("  or  ")}` +
+        `  (next free on this branch: ADR-${next}; the script also checks open PRs).` +
+        " If both PRs already merged, whoever merged later runs it in a follow-up PR." +
+        whoIsLater,
+    );
+  }
+  return errors;
 }
 
-export interface PlanOptions {
-  /** Numbers already claimed elsewhere (origin/main, open PRs); local files are added here. */
-  claimed?: number[];
-  /** The bot's own renumber commits: a file it moved earlier was really added by its original merge. */
-  renumberTitle?: string;
+// ── who added a file (for collision messages) ──────────────────────────────
+
+function isShallow(root: string): boolean {
+  return git(root, ["rev-parse", "--is-shallow-repository"]).trim() === "true";
 }
 
 /**
- * What to renumber for each collision, and to which number: in each group the legacy file
- * (else the earliest-added) keeps the number and every other file moves. Throws, before
- * anything is touched, when it can't rank (shallow clone, a tracked file with no add-commit)
- * or can't rewrite a header. Only a genuinely untracked file counts as the latest.
+ * ` (added in <sha> "<subject>")`: the first-parent commit that added `docs/decisions/<file>`
+ * at that path (a rename counts). Never throws, and says nothing for an uncommitted file or in
+ * a shallow clone (where git would blame the one grafted commit for every file).
  */
-export function collisionPlan(
-  root: string,
-  opts: PlanOptions = {},
-): CollisionFix[] {
-  const dir = join(root, DECISIONS_DIR);
-  const groups = collidingGroups(loadEntries(dir, loadManifest(dir)));
-  if (groups.length === 0) return [];
-  if (isShallow(root)) {
-    throw new Error(
-      "can't rank colliding ADRs in a shallow clone (fetch the full history: fetch-depth: 0)",
-    );
+function addedInNote(root: string, file: string): string {
+  try {
+    if (isShallow(root)) return "";
+    const line = git(root, [
+      "log",
+      "--first-parent",
+      "--no-renames",
+      "--diff-filter=A",
+      "--format=%H%x09%s",
+      "-1",
+      "--",
+      relPath(file),
+    ]).trim();
+    if (!line) return "";
+    const [sha, ...subject] = line.split("\t");
+    return ` (added in ${sha!.slice(0, 7)} "${subject.join("\t")}")`;
+  } catch {
+    return "";
   }
-  const taken = [
-    ...(opts.claimed ?? []),
-    ...adrFiles(dir).flatMap((f) => numbersIn(f)),
-  ];
-  const fixes: CollisionFix[] = [];
-  for (const group of groups) {
-    const ranked = group
-      .map((e) => {
-        if (e.legacy) return { e, c: undefined };
-        const c = addedIn(root, e.file);
-        if (!c && isTracked(root, e.file)) {
-          throw new Error(
-            `can't rank ADR-${pad(e.num)}: no commit adds ${relPath(e.file)} on this branch's first-parent history`,
-          );
-        }
-        return { e, c };
-      })
-      .sort((a, b) => {
-        if (a.e.legacy !== b.e.legacy) return a.e.legacy ? -1 : 1;
-        const ao = a.c?.order ?? Number.POSITIVE_INFINITY;
-        const bo = b.c?.order ?? Number.POSITIVE_INFINITY;
-        return ao - bo || a.e.file.localeCompare(b.e.file);
-      });
-    const [keeper, ...later] = ranked;
-    for (const { e, c } of later) {
-      if (e.legacy) continue; // two legacy repeats are grandfathered
-      const header = new RegExp(`^## ADR-${pad(e.num)}: `);
-      if (!header.test(e.text)) {
-        throw new Error(
-          `${relPath(e.file)}: its first line isn't "## ADR-${pad(e.num)}: …", so it can't be renumbered`,
-        );
-      }
-      const toNum = nextNumber(taken);
-      taken.push(toNum);
-      const fix: CollisionFix = {
-        num: e.num,
-        keep: keeper!.e.file,
-        keepAddedIn: keeper!.c,
-        renumber: e.file,
-        addedIn: c,
-        toNum,
-      };
-      if (!c) {
-        fix.mentionsNote =
-          "the file isn't committed, so there is no merge to scan";
-      } else if (
-        opts.renumberTitle &&
-        c.subject.startsWith(opts.renumberTitle)
-      ) {
-        fix.mentionsNote =
-          "this file was already moved by an earlier renumber PR, so the merge that first added it isn't scanned; search for its old number by hand";
-      } else {
-        try {
-          fix.mentions = mentionsAddedIn(root, c.sha, e.num);
-        } catch (err) {
-          fix.mentionsNote = `couldn't read ${c.sha.slice(0, 7)}'s diff (${why(err)}); search for ADR-${pad(e.num)} by hand`;
-        }
-      }
-      fixes.push(fix);
-    }
-  }
-  return fixes;
-}
-
-/** Plan, then apply every move (git mv + header, staged). Nothing moves if planning throws. */
-export function fixCollisions(
-  root: string,
-  opts: PlanOptions = {},
-): CollisionFix[] {
-  const plan = collisionPlan(root, opts);
-  return plan.map((f) => ({
-    ...f,
-    to: renumberTo(root, f.renumber, f.toNum!),
-  }));
-}
-
-function commitRef(c?: AddCommit): string {
-  return c ? `${c.sha.slice(0, 7)} "${c.subject}"` : "an uncommitted change";
-}
-
-/** The renumber PR's body: what moved, why, and the mentions the owner must update by hand. */
-export function renderCollisionBody(
-  fixes: CollisionFix[],
-  warnings: string[] = [],
-): string {
-  const rows = fixes.map(
-    (f) =>
-      `| ADR-${pad(f.num)} | \`${f.keep}\` (${commitRef(f.keepAddedIn)}) | \`${f.renumber}\` (${commitRef(f.addedIn)}) | **ADR-${pad(f.toNum!)}** |`,
-  );
-  const mentions = fixes.map((f) => {
-    const head = `**ADR-${pad(f.num)} mentions added by ${commitRef(f.addedIn)}:**`;
-    if (!f.mentions) return `${head} not listed: ${f.mentionsNote}.`;
-    if (f.mentions.length === 0)
-      return `${head} none (the whole diff was scanned, ADR files included).`;
-    return `${head} the owner should change these to ADR-${pad(f.toNum!)} in a follow-up (this PR never edits code):\n${f.mentions.map((m) => `- \`${m}\``).join("\n")}`;
-  });
-  const notes = warnings.length
-    ? `\n\n**Allocator notes:**\n${warnings.map((w) => `- ${w}`).join("\n")}`
-    : "";
-  return `**Automated: ADR number collision on main.**
-
-Two PRs merged the same ADR number. Since 2026-10-08 main doesn't require branches to be up to date, so CI can't catch this before merge. Under the "later merger renumbers" rule, this PR moves the ADR that was added LATER (by main's history order, not commit date) to the next free number and rewrites its header. It changes no other file.
-
-| Number | Keeps it | Renumbered (added later) | New number |
-|---|---|---|---|
-${rows.join("\n")}
-
-${mentions.join("\n\n")}${notes}
-
-Produced by \`scripts/decisions.ts fix-collisions\` in the decisions-index workflow (ADR-150). Check locally: \`make adr-check\`.
-`;
 }
 
 // ── index ───────────────────────────────────────────────────────────────────
@@ -778,31 +536,133 @@ export interface Supersession {
   partial: boolean;
 }
 
+/** Fields naming what an entry supersedes. The last three are legacy spellings; they mean "in part". */
+const SUPERSEDES_LABELS = [
+  "Supersedes",
+  "Supersedes / amends",
+  "Reverses",
+  "Amends",
+];
+
+/** A target's own parenthetical says only part of it is replaced: "(part: …)", "(…, in part)", "(…; the rest stands)". */
+const PARTIAL_PAREN_RE =
+  /^\s*part\s*:|\bin part\b|\bpartially\b|\bthe rest of\b|\bstands\b|\bonly\b|\b(?:outcome|pick|decision)s?\s+\d/i;
+
+interface SupersedesRef {
+  id: string;
+  possessive: boolean;
+  /** Where the ref's text starts; "ADR-041/040" yields two refs at the same spot. */
+  at: number;
+  /** End of the ref, or of the parenthetical that directly follows it. */
+  end: number;
+  paren: string;
+}
+
 /**
- * Supersession, where parseable: the title's "(supersedes ADR-X)" / "(reverses part of ADR-X)"
- * and the first clause of a `**Supersedes:**` field. `ADR-X's …` means only part of X.
+ * The ADRs one `**Supersedes:**`-style value names, each with its own "in part" verdict.
+ *
+ * Only the first sentence counts ("…. Composes with ADR-040" is context), and a value that
+ * opens with "none" / "nothing" names no target. Every ADR ref OUTSIDE parentheses is a target
+ * (a ref inside one is explanation: "(…, narrowed by ADR-100)"). A target is partial when:
+ * it is possessive ("ADR-041's premise"); descriptive text precedes it ("part of ADR-049",
+ * "the cookie lineage of ADR-041"); or its own parenthetical says so (PARTIAL_PAREN_RE). A
+ * bare "partial", or "part of" inside a parenthetical, is NOT a marker: "(the partial-write
+ * fix)" and "(it was part of the old design)" describe history, not scope.
+ */
+export function parseSupersedesValue(
+  value: string,
+  allPartial = false,
+): Supersession[] {
+  const text = value.replace(/\*+/g, ""); // **ADR-057** → ADR-057
+  if (/^\s*(?:none|nothing)\b/i.test(text)) return [];
+  const refs: SupersedesRef[] = [];
+  let depth = 0;
+  let parenStart = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (ch === "(") {
+      if (depth++ === 0) parenStart = i + 1;
+      continue;
+    }
+    if (ch === ")") {
+      if (depth > 0 && --depth === 0) {
+        // A parenthetical right after a ref (only spaces/quotes between) belongs to it.
+        const at = refs.length ? refs[refs.length - 1]!.at : -1;
+        const mine = refs.filter((r) => r.at === at && !r.paren);
+        if (
+          mine.length &&
+          /^[\s"'`]*$/.test(text.slice(mine[0]!.end, parenStart - 1))
+        ) {
+          for (const r of mine)
+            Object.assign(r, { paren: text.slice(parenStart, i), end: i + 1 });
+        }
+      }
+      continue;
+    }
+    if (depth > 0) continue;
+    // The first top-level sentence end stops the scan.
+    if ((ch === "." && /\s/.test(text[i + 1] ?? " ")) || ch === ";") break;
+    const m = /^ADR-(\d{3,}(?:-follow-up)?)((?:\/\d{3,})*)('s)?/.exec(
+      text.slice(i),
+    );
+    if (!m || /[\w-]/.test(text[i - 1] ?? "")) continue;
+    const end = i + m[0].length;
+    for (const id of [m[1]!, ...m[2]!.split("/").filter(Boolean)]) {
+      refs.push({ id, possessive: !!m[3], at: i, end, paren: "" });
+    }
+    i = end - 1;
+  }
+  // Each distinct ref position's lead: the text since the previous target, minus list glue.
+  const starts = [...new Set(refs.map((r) => r.at))];
+  const leadIsPartial = new Map<number, boolean>();
+  starts.forEach((at, k) => {
+    const prevEnd =
+      k === 0
+        ? 0
+        : Math.max(
+            ...refs.filter((r) => r.at === starts[k - 1]).map((r) => r.end),
+          );
+    const lead = text
+      .slice(prevEnd, at)
+      .replace(/^[\s,]*(?:and|or|&)?[\s,]*/i, "");
+    leadIsPartial.set(at, /[a-z]/i.test(lead));
+  });
+  return refs.map((r) => ({
+    target: r.id,
+    partial:
+      allPartial ||
+      r.possessive ||
+      leadIsPartial.get(r.at)! ||
+      PARTIAL_PAREN_RE.test(r.paren),
+  }));
+}
+
+/**
+ * Supersession, where parseable: the title's "(supersedes ADR-X)" / "(reverses part of ADR-X)",
+ * and a `**Supersedes:**` field or a legacy spelling of one (see parseSupersedesValue).
  */
 export function supersessions(
   e: Pick<Entry, "title" | "text">,
 ): Supersession[] {
   const found = new Map<string, Supersession>();
-  const add = (clause: string, partialClause: boolean) => {
-    for (const m of clause.matchAll(/ADR-(\d{3,}(?:-follow-up)?)('s)?/g)) {
-      const partial = partialClause || !!m[2];
-      const prev = found.get(m[1]!);
-      found.set(m[1]!, {
-        target: m[1]!,
-        partial: prev ? prev.partial && partial : partial,
-      });
-    }
+  const add = (s: Supersession) => {
+    const prev = found.get(s.target);
+    found.set(s.target, {
+      target: s.target,
+      partial: prev ? prev.partial && s.partial : s.partial,
+    });
   };
   for (const m of e.title.matchAll(
-    /\b(supersedes|reverses(?: part of)?|replaces)\s+(ADR-\d{3,}(?:'s)?)/gi,
+    /\b(supersedes|reverses(?: part of)?|replaces)\s+ADR-(\d{3,}(?:-follow-up)?)('s)?/gi,
   )) {
-    add(m[2]!, /part of/i.test(m[1]!));
+    add({ target: m[2]!, partial: /part of/i.test(m[1]!) || !!m[3] });
   }
-  const field = fieldValue(e.text, "Supersedes");
-  if (field) add(field.split(/[(;.]|\sand\s/)[0]!, false);
+  for (const label of SUPERSEDES_LABELS) {
+    const f = field(e.text, label);
+    if (f)
+      for (const s of parseSupersedesValue(f.body, label !== "Supersedes"))
+        add(s);
+  }
   return [...found.values()];
 }
 
@@ -867,65 +727,11 @@ ${rows.join("\n")}
 `;
 }
 
-const INDEX_PREAMBLE = `<!-- GENERATED by scripts/decisions.ts — do not edit by hand. The decisions-index workflow
-     regenerates this hourly from main; run \`make adr-index\` to preview it locally. -->
+const INDEX_HEADING = "# Architectural Decision Records: index";
+const INDEX_PREAMBLE = `${INDEX_HEADING}
 
-# Architectural Decision Records
-
-One file per decision. The old single-file log (\`docs/DECISIONS.md\`) was split
-here so that parallel PRs stop conflicting on it.
-
-## Adding a decision
-
-\`\`\`sh
-make adr NEW="Short decision title"   # takes the next free number (main + open PRs), writes a template
-\`\`\`
-
-Fill in every field; \`make check\` (and CI) rejects a new ADR missing any of
-**Date** (YYYY-MM-DD), **Decided by**, **Context**, **Decision**, **Rationale**,
-**Alternatives considered** or **Source**. Optional: **Status:** (defaults to
-Accepted) and **Supersedes:** ADR-NNN (feeds the Superseded-by column below).
-
-Don't edit this index in your PR; a bot PR regenerates it within the hour after yours merges.
-
-**Number collision?** Two parallel PRs can pick the same number. If CI flags it
-on your PR, you're the later one: run \`make adr-renumber FILE=docs/decisions/ADR-NNN-….md\`,
-which moves the file to the next free number and rewrites its header. Main doesn't
-require up-to-date branches, so both PRs can also merge. The decisions-index workflow
-then opens a "renumber colliding ADR" PR that moves the one merged later and lists
-its \`ADR-NNN\` mentions in code for that PR's owner to update (ADR-150).
-
-## A PR that still appends to \`docs/DECISIONS.md\`
-
-Branches opened before the split carry their ADR inside the old file. Move it once:
-
-\`\`\`sh
-git fetch origin && git merge origin/main       # conflicts only in docs/DECISIONS.md
-make adr-import REF=HEAD                         # writes your entry to docs/decisions/ADR-NNN-….md
-git checkout origin/main -- docs/DECISIONS.md    # keep main's stub
-git add docs/decisions docs/DECISIONS.md && git commit --no-edit && make adr-check
-\`\`\`
-
-\`adr-import\` keeps your number if it's free and otherwise takes the next free one (it
-says so; update any references to the old number in your PR). It refuses to guess: an
-ADR-like header it can't parse, or a past entry your branch edited in place, is reported
-rather than dropped. Already committed the merge? Use \`REF=HEAD^1\`.
-
-## Rules
-
-- **Append-only.** Never edit or delete a past decision. To reverse one, add a new
-  ADR that references it. Migrated entries are hash-locked in
-  [\`legacy-manifest.json\`](legacy-manifest.json), and CI fails on any edit.
-- **Historical quirks are kept, not fixed.** Migrated entries keep their exact text,
-  including older field formats and header styles (\`ADR-073 — …\`). A number that
-  appears twice in history gets a letter suffix in its FILENAME only: the second
-  ADR-029 (\`ADR-029-follow-up\`) is \`ADR-029b-….md\`. Letter suffixes are reserved
-  for migrated entries; new ADRs are always \`ADR-NNN-kebab-slug.md\`.
-- **Status / supersession** below are derived where parseable (a title's
-  "supersedes ADR-X" / "reverses part of ADR-X", or a \`**Supersedes:**\` field). For
-  anything subtler, read the entry.
-
-## Index
+Generated by \`make adr-index\` from docs/decisions/ADR-*.md. Status and supersession are
+derived where parseable; read the entry for anything subtler.
 
 `;
 
@@ -984,26 +790,22 @@ const GH_FILES_CAP = 100;
  * Every number already claimed: this checkout, origin/main, and open PRs (new files, plus
  * legacy `+## ADR-NNN` appends to docs/DECISIONS.md during the transition). A source that is
  * unavailable (offline, no gh) is skipped with a warning saying why, never fatal: CI's
- * duplicate check is the backstop. ADR_OFFLINE=1 skips the network sources (tests).
+ * duplicate check is the backstop; each warning goes to stderr. ADR_OFFLINE=1 skips the
+ * network sources (tests).
  */
-export function claimedNumbers(
-  root: string,
-  opts: { excludeFile?: string; ignoreHead?: string } = {},
-): { nums: number[]; warnings: string[] } {
-  const warnings: string[] = [];
+function claimedNumbers(root: string, excludeFile?: string): number[] {
+  const warn = (w: string) => console.warn(`warning: ${w}`);
   const nums = adrFiles(join(root, DECISIONS_DIR))
-    .filter((f) => f !== opts.excludeFile)
+    .filter((f) => f !== excludeFile)
     .flatMap((f) => numbersIn(f));
   if (process.env.ADR_OFFLINE === "1") {
-    return {
-      nums,
-      warnings: ["ADR_OFFLINE=1: origin/main and open PRs not checked"],
-    };
+    warn("ADR_OFFLINE=1: origin/main and open PRs not checked");
+    return nums;
   }
   try {
     git(root, ["fetch", "--quiet", "origin", "main"]);
   } catch (err) {
-    warnings.push(
+    warn(
       `could not fetch origin/main (${why(err)}); using the local origin/main ref`,
     );
   }
@@ -1020,18 +822,17 @@ export function claimedNumbers(
       ),
     );
   } catch (err) {
-    warnings.push(`origin/main's ${DECISIONS_DIR}/ not read (${why(err)})`);
+    warn(`origin/main's ${DECISIONS_DIR}/ not read (${why(err)})`);
   }
   try {
     // Count main's legacy-log headers as if they were `+## ADR-NNN` diff lines.
     const mainLog = git(root, ["show", `origin/main:${LEGACY_LOG}`]);
     nums.push(...numbersIn(mainLog.replace(/^## /gm, "+## ")));
   } catch (err) {
-    warnings.push(`origin/main's ${LEGACY_LOG} not read (${why(err)})`);
+    warn(`origin/main's ${LEGACY_LOG} not read (${why(err)})`);
   }
   let prs: {
     number: number;
-    headRefName: string;
     changedFiles: number;
     files: { path: string }[];
   }[];
@@ -1045,24 +846,19 @@ export function claimedNumbers(
         "--limit",
         String(PR_LIST_LIMIT),
         "--json",
-        "number,headRefName,changedFiles,files",
+        "number,changedFiles,files",
       ]),
     );
   } catch (err) {
-    warnings.push(
-      `open PRs NOT checked (${why(err)}); CI still catches a collision`,
-    );
-    return { nums, warnings };
+    warn(`open PRs NOT checked (${why(err)}); CI still catches a collision`);
+    return nums;
   }
   if (prs.length >= PR_LIST_LIMIT) {
-    warnings.push(
+    warn(
       `${prs.length} open PRs: only the newest ${PR_LIST_LIMIT} were checked`,
     );
   }
   for (const pr of prs) {
-    // The collision bot's own open PR holds the very number it would recompute: skip it, or
-    // every rerun would bump the file one higher.
-    if (opts.ignoreHead && pr.headRefName === opts.ignoreHead) continue;
     let paths = pr.files.map((f) => f.path);
     if (pr.changedFiles > GH_FILES_CAP) {
       try {
@@ -1073,7 +869,7 @@ export function claimedNumbers(
           "--name-only",
         ]).split("\n");
       } catch (err) {
-        warnings.push(
+        warn(
           `PR #${pr.number} has ${pr.changedFiles} files; only ${GH_FILES_CAP} checked (${why(err)})`,
         );
       }
@@ -1090,25 +886,13 @@ export function claimedNumbers(
       });
       nums.push(...numbersIn(diff));
     } catch (err) {
-      warnings.push(
-        `could not read the diff of PR #${pr.number} (${why(err)})`,
-      );
+      warn(`could not read the diff of PR #${pr.number} (${why(err)})`);
     }
   }
-  return { nums, warnings };
-}
-
-/** claimedNumbers, printing each warning to stderr. */
-function claimedNumbersLogged(
-  root: string,
-  opts: { excludeFile?: string } = {},
-): number[] {
-  const { nums, warnings } = claimedNumbers(root, opts);
-  for (const w of warnings) console.warn(`warning: ${w}`);
   return nums;
 }
 
-export function nextNumber(nums: number[]): number {
+function nextNumber(nums: number[]): number {
   return (nums.length ? Math.max(...nums) : 0) + 1;
 }
 
@@ -1127,37 +911,25 @@ export function template(num: number, title: string, today: string): string {
 
 // ── commands ────────────────────────────────────────────────────────────────
 
-function writeIndex(root: string, checkOnly: boolean): boolean {
-  const dir = join(root, DECISIONS_DIR);
-  const want = renderIndex(loadEntries(dir, loadManifest(dir)));
-  const path = join(dir, INDEX_FILE);
-  const have = existsSync(path) ? readFileSync(path, "utf8") : "";
-  if (checkOnly) return have === want;
-  if (have !== want) writeFileSync(path, want);
-  return true;
+function isTracked(root: string, file: string): boolean {
+  try {
+    git(root, ["ls-files", "--error-unmatch", relPath(file)]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
+/** Move a colliding ADR to the next free number: rewrite its header, then git mv (staged). */
 export function renumber(root: string, fileArg: string): string {
+  const dir = join(root, DECISIONS_DIR);
   const file = fileArg.split("/").pop()!;
-  if (!NEW_FILE_RE.test(file)) {
+  const m = NEW_FILE_RE.exec(file);
+  if (!m) {
     throw new Error(`${fileArg}: not a new-style ADR file (ADR-NNN-slug.md)`);
   }
-  return renumberTo(
-    root,
-    file,
-    nextNumber(claimedNumbersLogged(root, { excludeFile: file })),
-  );
-}
-
-/** Move `docs/decisions/<file>` to number `n`: rewrite its header, then git mv (staged). */
-export function renumberTo(root: string, file: string, n: number): string {
-  const dir = join(root, DECISIONS_DIR);
-  const m = NEW_FILE_RE.exec(file);
-  if (!m)
-    throw new Error(
-      `${relPath(file)}: not a new-style ADR file (ADR-NNN-slug.md)`,
-    );
-  const target = `ADR-${pad(n)}-${m[2]}.md`;
+  const n = pad(nextNumber(claimedNumbers(root, file)));
+  const target = `ADR-${n}-${m[2]}.md`;
   const before = readFileSync(join(dir, file), "utf8");
   const header = new RegExp(`^## ADR-${m[1]}: `);
   if (!header.test(before)) {
@@ -1165,7 +937,7 @@ export function renumberTo(root: string, file: string, n: number): string {
       `${relPath(file)}: its first line isn't "## ADR-${m[1]}: …", so the header can't be renumbered. Fix the header first.`,
     );
   }
-  writeFileSync(join(dir, file), before.replace(header, `## ADR-${pad(n)}: `));
+  writeFileSync(join(dir, file), before.replace(header, `## ADR-${n}: `));
   // A tracked file must move in the index too, or the commit would lose it; surface git's error.
   if (isTracked(root, file)) {
     git(root, ["mv", relPath(file), relPath(target)]);
@@ -1256,7 +1028,7 @@ export function importFrom(
     const taken = adrFiles(dir).flatMap((f) => numbersIn(f));
     let num = numberOf(entry.id);
     if (taken.includes(num) || !/^\d+$/.test(entry.id)) {
-      num = nextNumber([...claimedNumbersLogged(root), ...taken]);
+      num = nextNumber([...claimedNumbers(root), ...taken]);
       notes.push(
         `ADR-${entry.id} is taken; imported as ADR-${pad(num)}. Update references to ADR-${entry.id} in your PR.`,
       );
@@ -1288,17 +1060,8 @@ function main(argv: string[]): number {
       return 1;
     }
     case "index": {
-      const checkOnly = args.includes("--check");
-      const ok = writeIndex(root, checkOnly);
-      if (checkOnly && !ok) {
-        console.error(
-          `✗ ${DECISIONS_DIR}/${INDEX_FILE} is stale; run: make adr-index`,
-        );
-        return 1;
-      }
-      console.log(
-        checkOnly ? "✓ index is fresh" : `wrote ${DECISIONS_DIR}/${INDEX_FILE}`,
-      );
+      const dir = join(root, DECISIONS_DIR);
+      process.stdout.write(renderIndex(loadEntries(dir, loadManifest(dir))));
       return 0;
     }
     case "new": {
@@ -1307,7 +1070,7 @@ function main(argv: string[]): number {
         console.error('usage: make adr NEW="Short decision title"');
         return 2;
       }
-      const num = nextNumber(claimedNumbersLogged(root));
+      const num = nextNumber(claimedNumbers(root));
       const file = join(DECISIONS_DIR, `ADR-${pad(num)}-${slugify(title)}.md`);
       writeFileSync(
         join(root, file),
@@ -1350,45 +1113,6 @@ function main(argv: string[]): number {
       for (const f of result.written) console.log(`wrote ${f}`);
       return 0;
     }
-    case "fix-collisions": {
-      // In CI: RENUMBER_BRANCH / RENUMBER_TITLE name the bot's own PR (see decisions-index.yml).
-      const bodyFlag = args.indexOf("--body");
-      const bodyAt = bodyFlag === -1 ? undefined : args[bodyFlag + 1];
-      let fixes: CollisionFix[];
-      let warnings: string[] = [];
-      try {
-        const dir = join(root, DECISIONS_DIR);
-        if (collidingGroups(loadEntries(dir, loadManifest(dir))).length === 0) {
-          console.log("no duplicate ADR numbers to fix");
-          return 0;
-        }
-        const claimed = claimedNumbers(root, {
-          ignoreHead: process.env.RENUMBER_BRANCH,
-        });
-        warnings = claimed.warnings;
-        // Picking a number blind to open PRs could hand one a collision of its own.
-        const blind = warnings.filter((w) =>
-          /open PRs NOT checked|ADR_OFFLINE/.test(w),
-        );
-        if (blind.length && !args.includes("--allow-blind")) {
-          throw new Error(
-            `refusing to pick a number without the open-PR list: ${blind.join("; ")}`,
-          );
-        }
-        fixes = fixCollisions(root, {
-          claimed: claimed.nums,
-          renumberTitle: process.env.RENUMBER_TITLE,
-        });
-      } catch (err) {
-        console.error(`✗ ${why(err)}`);
-        return 1;
-      }
-      for (const w of warnings) console.warn(`warning: ${w}`);
-      for (const f of fixes)
-        console.log(`renumbered ${relPath(f.renumber)} → ${f.to}`);
-      if (bodyAt) writeFileSync(bodyAt, renderCollisionBody(fixes, warnings));
-      return 0;
-    }
     case "migrate": {
       // Re-run on the latest main before merging the split, so entries appended meanwhile
       // are migrated as legacy too: migrate origin/main --force
@@ -1420,13 +1144,13 @@ function main(argv: string[]): number {
       writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       writeFileSync(join(root, LEGACY_LOG), LEGACY_STUB);
       console.log(
-        `migrated ${files.size} ADRs into ${DECISIONS_DIR}/ (source ${commit.slice(0, 7)}); run make adr-index`,
+        `migrated ${files.size} ADRs into ${DECISIONS_DIR}/ (source ${commit.slice(0, 7)})`,
       );
       return 0;
     }
     default:
       console.error(
-        "usage: decisions.ts check | index [--check] | new <title> | renumber <file> | import [<ref>] | fix-collisions [--body <file>] [--allow-blind] | migrate [<ref>] [--force]",
+        "usage: decisions.ts check | index | new <title> | renumber <file> | import [<ref>] | migrate [<ref>] [--force]",
       );
       return 2;
   }

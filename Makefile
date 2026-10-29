@@ -248,8 +248,8 @@ bundle-budget:
 
 # ── adr: architectural decision records, one file each (docs/decisions/) ───────
 # `make adr NEW="Title"` allocates the next free number across origin/main AND open
-# PRs (via gh, when available) and writes a template. A PR never edits the index;
-# the decisions-index workflow regenerates it after merge (`make adr-index` previews).
+# PRs (via gh, when available) and writes a template. `make adr-index` prints the
+# index table; it is never committed (ADR-157).
 # See docs/decisions/README.md. Arguments are read by the shell as "$$NEW" (make
 # exports command-line variables), so backticks and quotes in a title survive.
 adr:
@@ -260,7 +260,7 @@ adr-check:
 	$(TSX) scripts/decisions.ts check
 
 adr-index:
-	$(TSX) scripts/decisions.ts index
+	@$(TSX) scripts/decisions.ts index
 
 adr-renumber:
 	@test -n "$$FILE" || { echo 'usage: make adr-renumber FILE=docs/decisions/ADR-NNN-slug.md'; exit 2; }

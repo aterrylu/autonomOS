@@ -1,7 +1,7 @@
 # Architectural Decision Records → [`docs/decisions/`](decisions/)
 
 This log moved: **every decision is now its own file** in
-[`docs/decisions/`](decisions/), named `ADR-NNN-<slug>.md`, with a generated index in
+[`docs/decisions/`](decisions/), named `ADR-NNN-<slug>.md`, with a guide in
 [`docs/decisions/README.md`](decisions/README.md). ADR numbers did not change, so
 existing "ADR-NNN" references (code comments, PRs, notes) still point at the same
 decision: open `docs/decisions/ADR-NNN-*.md`.
