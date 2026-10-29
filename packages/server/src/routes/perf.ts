@@ -62,6 +62,7 @@ perfRouter.post("/session", async (c) => {
     name?: string;
     seedMb?: number;
     provider?: string;
+    workingDirectory?: string;
   };
   // Which runtime the synthetic session claims to be (its icon, its status
   // vocabulary). The README hero script uses this for a scripted Codex pane
@@ -78,7 +79,10 @@ perfRouter.post("/session", async (c) => {
     id,
     name,
     managerId: null,
-    workingDirectory: "/tmp",
+    workingDirectory:
+      typeof body.workingDirectory === "string" && body.workingDirectory
+        ? body.workingDirectory
+        : "/tmp",
     permissionMode: "ask",
     status: "running",
     provider: provider as Provider,

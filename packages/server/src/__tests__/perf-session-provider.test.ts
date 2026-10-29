@@ -53,6 +53,17 @@ describe("POST /api/perf/session provider", () => {
     }
   });
 
+  it("takes a working directory (so a hero agent row names its project)", async () => {
+    const id = "00000000-0000-4000-8000-0000000000a6";
+    await create({
+      id,
+      name: "w",
+      provider: "codex",
+      workingDirectory: "/x/demo",
+    });
+    assert.equal(getAgent(id)?.workingDirectory, "/x/demo");
+  });
+
   it("refuses an unknown provider", async () => {
     const r = await create({
       id: "00000000-0000-4000-8000-0000000000a4",

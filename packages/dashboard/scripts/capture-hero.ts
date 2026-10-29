@@ -25,22 +25,24 @@
  * PREREQUISITES:
  *   - playwright-core + a Chromium install (bundled via the dashboard's
  *     @playwright/test dependency; run `bunx playwright install chromium` once).
- *   - `claude` on PATH — REQUIRED. The base scene always renders with Claude.
+ *   - `claude` on PATH. The base scene renders real Claude Code TUIs.
  *   - The dashboard is auto-built (packages/dashboard/dist) if missing.
  *
- * PROVIDERS (Codex + Gemini are OPTIONAL — the tool degrades gracefully):
- *   - Claude  — REQUIRED binary. Real turns use the machine's Claude login
- *               (keychain OAuth token, else ~/.claude/.credentials.json). If NO
- *               Claude credentials are found, it falls back to a local MOCK
- *               Anthropic backend serving canned replies, so the base scene
- *               still renders (zero tokens).
- *   - Codex   — OPTIONAL (`codex` binary + ~/.codex/auth.json). When present,
- *               the bottom-right terminal is a REAL Codex turn. When absent, that
- *               pane falls back to a second Claude terminal (real or mock).
- *   - Gemini  — OPTIONAL (`gemini` binary). When present, a Gemini agent is
- *               spawned ORG-CHART-ONLY (no terminal) so its provider icon shows;
- *               it needs no auth (posed to a clean "working" status). When
- *               absent, it's simply omitted from the cast.
+ * NO REAL LOGIN, EVER (#551). The capture never reads or copies a credential:
+ *   - Claude   — the real `claude` binary, against a local MOCK Anthropic
+ *                backend serving canned replies (zero tokens). Its throwaway
+ *                HOME has no credentials, and a `security` shim first on PATH
+ *                answers every keychain read with "not found" (and logs it).
+ *   - Codex    — a SCRIPTED pane: a perf-mode synthetic session (provider
+ *                codex) fed a committed transcript. No codex binary runs.
+ *   - Gemini   — a synthetic org-chart node (provider gemini-cli), posed to
+ *                "working". No gemini binary runs.
+ *   - Usage    — both usage bars are route-mocked with fixed demo numbers.
+ *   The server runs with AUTONOMOS_DISABLE_CREDENTIAL_READS=1, and
+ *   scripts/hero-credential-guard.ts fails the run if any credential lands in
+ *   the fake HOME (checked after boot and again before the screenshot).
+ *   An older version copied ~/.codex/auth.json and the Claude OAuth token in:
+ *   a token refresh inside the copy rotates the operator's real login out.
  *
  * CAPTURE-TIME TWEAKS (Playwright only — NOT product-code edits):
  *   - Un-dim: injects `.dv-pane-fill { opacity: 1 !important }` so inactive
@@ -73,16 +75,11 @@
  */
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
-  appendFileSync,
-  chmodSync,
-  copyFileSync,
-  cpSync,
-  type Dirent,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -95,9 +92,10 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BrowserContext, chromium } from "@playwright/test";
+import { assertNoCredentials } from "../../../scripts/hero-credential-guard.js";
 
 // ── Paths — derived from the script location so this works from ANY checkout ──
 // This file lives at <repo>/packages/dashboard/scripts/capture-hero.ts.
@@ -107,10 +105,7 @@ const SERVER_ENTRY = join(REPO_ROOT, "packages/server/src/index.ts");
 const TSX_BIN = join(REPO_ROOT, "packages/server/node_modules/.bin/tsx");
 const OUT_DIR = process.env.HERO_OUT_DIR ?? join(REPO_ROOT, "docs/assets");
 
-const REAL_HOME = homedir();
-const REAL_CODEX_DIR = join(REAL_HOME, ".codex");
-const REAL_GEMINI_DIR = join(REAL_HOME, ".gemini");
-const REAL_CLAUDE_CREDS = join(REAL_HOME, ".claude", ".credentials.json");
+
 
 const argv = process.argv.slice(2);
 const KEEP_ALIVE = argv.includes("--keep");
@@ -120,73 +115,24 @@ const HERO_H = Number(process.env.HERO_H ?? 920);
 const HERO_DSF = Number(process.env.HERO_DSF ?? 1);
 const HERO_ZOOM = Number(process.env.HERO_ZOOM ?? 1);
 
-// ── Provider capabilities (drives graceful degradation) ──────────────────────
+// ── Providers ────────────────────────────────────────────────────────────────
 type Provider = "claude-code" | "codex" | "gemini-cli";
-
-interface Caps {
-  /** Claude can do REAL turns (keychain token or on-disk creds present). When
-   *  false, Claude agents run against a local mock backend instead. */
-  claudeCreds: boolean;
-  /** `codex` binary + ~/.codex/auth.json present → real Codex terminal. */
-  codex: boolean;
-  /** `gemini` binary present → Gemini org-chart node (no auth needed). */
-  gemini: boolean;
-}
 
 const onPath = (bin: string): boolean =>
   spawnSync("which", [bin], { encoding: "utf-8" }).status === 0;
 
-/** Read the current Claude OAuth token from the macOS keychain (does NOT prompt
- *  for the Claude item). Returns the trimmed JSON blob, or null if absent. */
-function readClaudeKeychainToken(): string | null {
-  const kc = spawnSync(
-    "security",
-    [
-      "find-generic-password",
-      "-s",
-      "Claude Code-credentials",
-      "-a",
-      process.env.USER ?? "",
-      "-w",
-    ],
-    { encoding: "utf-8", timeout: 3_000 },
-  );
-  if (kc.status !== 0) return null;
-  const out = kc.stdout.trim();
-  return out.startsWith("{") ? out : null;
-}
-
-function detectCaps(): Caps {
+/** `claude` is the one real CLI the capture runs, and only against the local
+ *  mock backend: no login is read, so none can be rotated (#551). */
+function requireClaude(): void {
   if (!onPath("claude")) {
     throw new Error("`claude` not on PATH — required to render the base scene.");
   }
-  // Claude creds: a keychain read (does NOT prompt for the Claude item) or the
-  // on-disk credentials file. Either is enough for a real turn.
-  const claudeCreds =
-    readClaudeKeychainToken() !== null || existsSync(REAL_CLAUDE_CREDS);
-  const codex = onPath("codex") && existsSync(join(REAL_CODEX_DIR, "auth.json"));
-  const gemini = onPath("gemini");
-
   console.log(
-    `Providers: claude=real${claudeCreds ? "" : "→MOCK (no creds)"} ` +
-      `codex=${codex ? "real" : "unavailable→Claude fallback"} ` +
-      `gemini=${gemini ? "org-chart-only" : "unavailable→omitted"}`,
-  );
-  if (!claudeCreds)
-    console.warn(
-      "No Claude credentials — Claude terminals use the local MOCK backend.",
-    );
-  if (!codex)
-    console.warn(
-      "Codex unavailable (missing binary or ~/.codex/auth.json) — the bottom " +
-        "terminal falls back to a second Claude agent.",
-    );
-  if (!gemini)
-    console.warn("Gemini unavailable (missing binary) — omitted from the org chart.");
-  return { claudeCreds, codex, gemini };
+    "Providers: claude=real binary on the MOCK backend; codex=scripted pane; gemini=org-chart node. No real login is used.",
+  )
 }
 
-// ── The cast (built from capabilities) ───────────────────────────────────────
+// ── The cast ─────────────────────────────────────────────────────────────────
 interface CastMember {
   name: string;
   provider: Provider;
@@ -207,13 +153,13 @@ interface CastMember {
    *  this agent's sidebar row. The preset is created (env-only, no secrets)
    *  in the demo instance before spawning. */
   envPreset?: string;
+  /** No CLI behind it: a perf-mode synthetic session (#551). With `script`,
+   *  its terminal shows those raw chunks (a scripted pane). */
+  synthetic?: { script?: string[] };
 }
 
 const DISPATCHER_PROMPT =
   "You're the tech lead for demo-webapp (a Vite + React storefront with a payments API). This repo IS the single source of truth — treat its current state as complete and do NOT ask for other paths or add caveats/disclaimers. Based on README.md and src/payments/schema.ts, write a short, upbeat release roll-up for this week with two sections — 'Frontend squad' (dashboard redesign: split-pane layout + animated status badges) and 'Backend squad' (payments API: the /v1/charge flow). 2-3 confident bullets each. No code, just the roll-up.";
-
-const CHARGE_PROMPT =
-  "You are the API developer on this demo-webapp repo. Read src/payments/schema.ts, then give me a short design for the /v1/charge endpoint you'd add: cover idempotency, validation, and the success/failure responses. Keep it to about 6 lines. Do NOT write any files — just outline it.";
 
 const DISPATCHER_MOCK_REPLY = [
   "Release roll-up — both squads shipping this week:",
@@ -229,21 +175,39 @@ const DISPATCHER_MOCK_REPLY = [
   "On track — I'll flag the moment the migration clears review.",
 ].join("\n");
 
-const CHARGE_MOCK_REPLY = [
-  "/v1/charge design:",
-  "",
-  "- POST /v1/charge takes { amount, currency } + an Idempotency-Key header",
-  "- Validate: non-empty key, positive integer amount (minor units), ISO currency",
-  "- Store by idempotency key; identical retries return the original result",
-  "- 201 on success with the Charge; 409 on key reuse with a different payload",
-  "- 400 on validation errors, 402 on decline, 500 on unexpected failures",
-].join("\n");
+// The scripted Codex pane (#551): a hand-written turn in Codex's inline-TUI
+// style, replayed into a synthetic session, so the hero needs no codex login.
+// Plain ANSI: bold, dim and colours only; \r\n line ends for the terminal.
+const ESC = "\u001b[";
+const codexLine = (s = ""): string => `${s}\r\n`;
+const CODEX_TRANSCRIPT: string[] = [
+  codexLine(`${ESC}2m╭───────────────────────────────────────────────╮${ESC}0m`),
+  codexLine(`${ESC}2m│${ESC}0m ${ESC}1m>_ OpenAI Codex${ESC}0m                                ${ESC}2m│${ESC}0m`),
+  codexLine(`${ESC}2m│${ESC}0m ${ESC}2mdirectory:${ESC}0m ~/demo-webapp                     ${ESC}2m│${ESC}0m`),
+  codexLine(`${ESC}2m╰───────────────────────────────────────────────╯${ESC}0m`),
+  codexLine(),
+  codexLine(`${ESC}1m›${ESC}0m Read src/payments/schema.ts and outline the /v1/charge endpoint:`),
+  codexLine(`  idempotency, validation, success and failure responses. ~6 lines.`),
+  codexLine(),
+  codexLine(`${ESC}36m•${ESC}0m ${ESC}1mExplored${ESC}0m`),
+  codexLine(`  ${ESC}2m└${ESC}0m Read schema.ts`),
+  codexLine(),
+  codexLine(`${ESC}36m•${ESC}0m /v1/charge design:`),
+  codexLine(),
+  codexLine(`  - POST /v1/charge takes { amount, currency } + an Idempotency-Key header`),
+  codexLine(`  - Validate: non-empty key, positive integer amount (minor units), ISO currency`),
+  codexLine(`  - Store by idempotency key; identical retries return the original result`),
+  codexLine(`  - ${ESC}32m201${ESC}0m with the Charge; ${ESC}33m409${ESC}0m on key reuse with a different payload`),
+  codexLine(`  - ${ESC}31m400${ESC}0m on validation errors, ${ESC}31m402${ESC}0m on decline`),
+  codexLine(),
+  codexLine(`${ESC}2m─ Worked for 38s ───────────────────────────────${ESC}0m`),
+  codexLine(),
+  `${ESC}1m›${ESC}0m `,
+];
 
-/** Build the cast for the detected capabilities. Always: Dispatcher (visible
- *  Claude) + three org-only Claude leads/devs. Second visible terminal is Codex
- *  when available, else a Claude fallback. Gemini is appended org-chart-only
- *  when its binary is present. */
-function buildCast(caps: Caps): CastMember[] {
+/** The cast: Dispatcher (visible Claude, mock turn) + three org-only Claude
+ *  leads/devs, a scripted Codex pane, and a Gemini org-chart node. */
+function buildCast(): CastMember[] {
   const cast: CastMember[] = [
     {
       name: "Dispatcher",
@@ -289,41 +253,27 @@ function buildCast(caps: Caps): CastMember[] {
     },
   ];
 
-  // Second visible terminal: real Codex, else a Claude fallback (real or mock).
-  if (caps.codex) {
-    cast.push({
-      name: "APIDeveloper",
-      provider: "codex",
-      manager: "BackendLead",
-      cols: 96,
-      rows: 34,
-      visible: true,
-      prompt: CHARGE_PROMPT,
-    });
-  } else {
-    cast.push({
-      name: "APIDeveloper",
-      provider: "claude-code",
-      manager: "BackendLead",
-      cols: 96,
-      rows: 34,
-      visible: true,
-      prompt: CHARGE_PROMPT,
-      mock: { matchKey: "/v1/charge endpoint", reply: CHARGE_MOCK_REPLY },
-    });
-  }
+  // Second visible terminal: a SCRIPTED Codex pane (no codex binary, no
+  // login). It replays CODEX_TRANSCRIPT, a hand-written Codex-style turn.
+  cast.push({
+    name: "APIDeveloper",
+    provider: "codex",
+    manager: "BackendLead",
+    cols: 96,
+    rows: 34,
+    visible: true,
+    synthetic: { script: CODEX_TRANSCRIPT },
+  });
 
-  // Gemini — ORG CHART ONLY. Prompt-less so it registers with the Gemini icon
-  // and needs no auth; posed to "working" via the Gemini-native `BeforeAgent`
-  // event (→ UserPromptSubmit → working) so it reads clean, not errored.
-  if (caps.gemini) {
-    cast.push({
-      name: "QAEngineer",
-      provider: "gemini-cli",
-      manager: "BackendLead",
-      pose: [{ hook_event_name: "BeforeAgent" }],
-    });
-  }
+  // Gemini — ORG CHART ONLY, synthetic (no gemini binary, no login), posed to
+  // "working" via the Gemini-native `BeforeAgent` event.
+  cast.push({
+    name: "QAEngineer",
+    provider: "gemini-cli",
+    manager: "BackendLead",
+    pose: [{ hook_event_name: "BeforeAgent" }],
+    synthetic: {},
+  });
 
   return cast;
 }
@@ -484,29 +434,9 @@ interface Resources {
 
 let shuttingDown = false;
 
-/** Copy the current Claude keychain OAuth token into the fake home's
- *  credentials file (the on-disk file can be weeks stale). Read-only in the
- *  real store. Best-effort: warns and continues if nothing is found. */
-function seedClaudeToken(fakeHome: string): void {
-  const dst = join(fakeHome, ".claude", ".credentials.json");
-  const fresh = readClaudeKeychainToken();
-  if (fresh) {
-    writeFileSync(dst, fresh);
-    chmodSync(dst, 0o600);
-    console.log("Seeded fake HOME with the current keychain OAuth token (Claude)");
-  } else if (existsSync(REAL_CLAUDE_CREDS)) {
-    copyFileSync(REAL_CLAUDE_CREDS, dst);
-    chmodSync(dst, 0o600);
-    console.warn("Keychain token unavailable — copied on-disk creds (may be stale).");
-  } else {
-    console.warn("No Claude OAuth token — relying on the mock backend.");
-  }
-}
-
 async function bootServer(
   workspace: string,
-  caps: Caps,
-  mockUrl: string | undefined,
+  mockUrl: string,
   resources: Resources,
 ): Promise<DemoServer> {
   const configDir = mkdtempSync(join(tmpdir(), "autonomos-demo-"));
@@ -538,45 +468,18 @@ async function bootServer(
       bypassPermissionsModeAccepted: true,
     }),
   );
-  seedClaudeToken(fakeHome);
-
-  // Codex auth (auth.json + config.toml) → fakeHome/.codex — only if available.
-  if (caps.codex) {
-    const fakeCodex = join(fakeHome, ".codex");
-    mkdirSync(fakeCodex, { recursive: true });
-    for (const f of ["auth.json", "config.toml"]) {
-      const src = join(REAL_CODEX_DIR, f);
-      if (existsSync(src)) {
-        const dst = join(fakeCodex, f);
-        copyFileSync(src, dst);
-        chmodSync(dst, 0o600);
-      }
-    }
-    appendFileSync(
-      join(fakeCodex, "config.toml"),
-      `\n[projects.${JSON.stringify(workspace)}]\ntrust_level = "trusted"\n`,
-    );
-    console.log("Seeded fake HOME with ~/.codex auth");
-  }
-
-  // Gemini home (whole ~/.gemini) → only if available. Gemini is org-chart-only
-  // so this is best-effort; a missing/partial copy just means it may prompt for
-  // a key in its (hidden) terminal — its org-chart node + posed status are fine.
-  if (caps.gemini && existsSync(REAL_GEMINI_DIR)) {
-    try {
-      // Config and auth only — NOT tmp/ (the operator's per-project session
-      // history). Since Projects lists Gemini sessions (ADR-118), a copied
-      // tmp/ put the operator's REAL directory names into the public hero.
-      const history = join(REAL_GEMINI_DIR, "tmp");
-      cpSync(REAL_GEMINI_DIR, join(fakeHome, ".gemini"), {
-        recursive: true,
-        filter: (src) => src !== history && !src.startsWith(`${history}/`),
-      });
-      console.log("Seeded fake HOME with ~/.gemini");
-    } catch (err) {
-      console.warn(`Could not copy ~/.gemini (non-fatal): ${err}`);
-    }
-  }
+  // A `security` shim FIRST on PATH: Claude Code reads its login from the
+  // macOS keychain through the `security` CLI (a generic-password lookup). Every such
+  // read gets "item not found" (exit 44), so no real token is ever read, and
+  // each attempt is logged for the run's own check (#551).
+  const shimDir = join(fakeHome, ".hero-bin");
+  mkdirSync(shimDir, { recursive: true });
+  const securityShim = join(shimDir, "security");
+  writeFileSync(
+    securityShim,
+    `#!/bin/sh\necho "$*" >> "${join(fakeHome, ".hero-security-calls.log")}"\nexit 44\n`,
+    { mode: 0o755 },
+  );
 
   const claudeBin = spawnSync("which", ["claude"], {
     encoding: "utf-8",
@@ -589,41 +492,32 @@ async function bootServer(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: fakeHome,
+    PATH: `${shimDir}:${process.env.PATH ?? ""}`,
     AUTONOMOS_CONFIG_DIR: configDir,
     AUTONOMOS_TOKEN: token,
+    // Perf mode mounts /api/perf (the scripted Codex pane and the Gemini node)
+    // and engages only on a loopback bind.
+    AUTONOMOS_PERF: "1",
+    AUTONOMOS_HOST: "127.0.0.1",
+    // The server's own usage plugins read no login either.
+    AUTONOMOS_DISABLE_CREDENTIAL_READS: "1",
+    // Claude talks only to the local mock backend (zero tokens).
+    ANTHROPIC_BASE_URL: mockUrl,
+    ANTHROPIC_AUTH_TOKEN: "sk-demo",
   };
   delete env.TMUX;
   delete env.TMUX_PANE;
-  delete env.CODEX_HOME; // force Codex to read fakeHome/.codex
-  delete env.CLAUDE_CONFIG_DIR; // force claude-usage file fallback to fakeHome/.claude
-
-  if (mockUrl) {
-    // No Claude creds → point Claude at the local mock backend (zero tokens).
-    env.ANTHROPIC_BASE_URL = mockUrl;
-    env.ANTHROPIC_AUTH_TOKEN = "sk-demo";
-    console.log(`Claude → mock backend at ${mockUrl}`);
-  } else {
-    // Real Claude subscription OAuth — strip any inherited override.
-    delete env.ANTHROPIC_BASE_URL;
-    delete env.ANTHROPIC_AUTH_TOKEN;
-    delete env.ANTHROPIC_API_KEY;
-  }
-
-  // Gemini auth passthrough (org-chart-only, so non-fatal). This install may
-  // store the key in the keychain behind an ACL prompt that headless reads
-  // can't satisfy; pass GEMINI_API_KEY through if present, else try a short
-  // keychain read that only succeeds once "Always Allow" was approved.
-  if (caps.gemini && !env.GEMINI_API_KEY) {
-    const g = spawnSync(
-      "security",
-      ["find-generic-password", "-s", "gemini-cli-api-key", "-w"],
-      { encoding: "utf-8", timeout: 4_000 },
-    );
-    if (g.status === 0 && g.stdout.trim()) {
-      env.GEMINI_API_KEY = g.stdout.trim();
-      console.log("Injected GEMINI_API_KEY from keychain (Gemini auth)");
-    }
-  }
+  // Nothing may point back at a real config dir or key.
+  for (const k of [
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENAI_API_KEY",
+  ])
+    delete env[k];
+  console.log(`Claude → mock backend at ${mockUrl}`);
 
   const child = spawn(TSX_BIN, [SERVER_ENTRY, "--port=0"], {
     env,
@@ -668,23 +562,6 @@ async function bootServer(
       console.error(`server exited unexpectedly (code=${code})\n${out.join("")}`);
     }
   });
-
-  // Strip the autonomos MCP server from the Gemini settings file the server
-  // wrote on boot — leave hooks (status) intact. Without this, Gemini would try
-  // to connect the channel server → gateway auth reconnect loop pollutes its TUI.
-  if (caps.gemini) {
-    const geminiSettings = join(configDir, "gemini-settings.json");
-    if (existsSync(geminiSettings)) {
-      try {
-        const s = JSON.parse(readFileSync(geminiSettings, "utf-8"));
-        delete s.mcpServers;
-        writeFileSync(geminiSettings, JSON.stringify(s, null, 2), { mode: 0o600 });
-        console.log("Stripped mcpServers from Gemini settings (MCP disabled)");
-      } catch (err) {
-        console.warn(`Could not strip Gemini mcpServers: ${err}`);
-      }
-    }
-  }
 
   return {
     port,
@@ -743,69 +620,6 @@ async function warmUsage(server: DemoServer, label: string): Promise<void> {
   }
 }
 
-async function warmCodexUsage(server: DemoServer, label: string): Promise<void> {
-  try {
-    const { status, body } = await api<Record<string, unknown>>(
-      server,
-      "/api/plugins/codex-usage",
-    );
-    const b = body as {
-      error?: string;
-      needsData?: boolean;
-      primary?: unknown;
-      secondary?: unknown;
-    };
-    let summary: string;
-    if (b.error) summary = `error: ${b.error}`;
-    else if (b.needsData) summary = "needsData";
-    else if (b.primary || b.secondary)
-      summary = `primary=${JSON.stringify(b.primary)} secondary=${JSON.stringify(b.secondary)}`;
-    else summary = "no-windows";
-    console.log(`  codex-usage[${label}] ${status}: ${summary}`);
-  } catch (err) {
-    console.warn(`  codex-usage[${label}] failed: ${err}`);
-  }
-}
-
-/** Scan a fake-home JSONL tree for a substring proving a real assistant turn. */
-function jsonlTreeHas(root: string, needle: string): boolean {
-  if (!existsSync(root)) return false;
-  const stack = [root];
-  while (stack.length) {
-    const dir = stack.pop() as string;
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) {
-      const full = join(dir, e.name);
-      if (e.isDirectory()) stack.push(full);
-      else if (e.name.endsWith(".jsonl")) {
-        try {
-          if (readFileSync(full, "utf-8").includes(needle)) return true;
-        } catch {
-          /* mid-write */
-        }
-      }
-    }
-  }
-  return false;
-}
-
-// A coarse "did codex produce a visible reply?" gate for the hero capture.
-// codex 0.15x writes the reply as a response_item/message/assistant line whose
-// content is `output_text`; older codex (≤0.144) used `agent_message`. Match
-// either. The STRUCTURED, canonical parser for this shape is
-// `extractAssistantReply` (packages/server/src/gateway/codexRollout.ts) — this
-// substring heuristic must track it, so re-check both on any codex schema bump.
-const codexProducedOutput = (fakeHome: string): boolean => {
-  const dir = join(fakeHome, ".codex", "sessions");
-  return jsonlTreeHas(dir, "output_text") || jsonlTreeHas(dir, "agent_message");
-};
-const claudeProducedOutput = (fakeHome: string): boolean =>
-  jsonlTreeHas(join(fakeHome, ".claude", "projects"), '"type":"assistant"');
 
 // ── Scene staging ────────────────────────────────────────────────────────────
 interface AgentInfo {
@@ -878,12 +692,10 @@ function poseHook(
 async function stageScene(
   server: DemoServer,
   cast: CastMember[],
-  caps: Caps,
   mock: DemoMock,
   workspace: string,
 ): Promise<AgentInfo[]> {
   await warmUsage(server, "boot");
-  if (caps.codex) await warmCodexUsage(server, "boot");
 
   // Create any env presets the cast references (env-only, no secrets — a
   // declared-but-unset secret would refuse the spawn). Must exist BEFORE the
@@ -913,6 +725,33 @@ async function stageScene(
   console.log(`Spawning ${cast.length} agents…`);
   await Promise.all(
     cast.map(async (m) => {
+      if (m.synthetic) {
+        // No CLI: a perf-mode synthetic session (#551), optionally replaying a
+        // scripted transcript into its terminal.
+        const id = randomUUID();
+        const created = await api<{ error?: string }>(server, "/api/perf/session", {
+          method: "POST",
+          body: JSON.stringify({
+            id,
+            name: m.name,
+            provider: m.provider,
+            workingDirectory: workspace,
+          }),
+        });
+        if (created.status !== 200)
+          throw new Error(
+            `synthetic ${m.name} failed (${created.status}): ${JSON.stringify(created.body)}`,
+          );
+        if (m.synthetic.script) {
+          const emitted = await api(server, `/api/perf/emit-raw/${id}`, {
+            method: "POST",
+            body: JSON.stringify({ data: m.synthetic.script }),
+          });
+          if (emitted.status !== 200)
+            throw new Error(`script ${m.name} → ${emitted.status}`);
+        }
+        return;
+      }
       const { status, body } = await api<{ id?: string; error?: string }>(
         server,
         "/api/agents",
@@ -954,12 +793,10 @@ async function stageScene(
   //      any-assistant-JSONL / any-codex-rollout scan (a coarse OR across agents).
   //   #4 assert the terminal panes actually rendered non-empty CONTENT (not just
   //      that a turn was recorded server-side) before capturing.
-  const visible = cast.filter((m) => m.visible);
-  const turnOk = (m: CastMember): boolean => {
-    if (m.provider === "codex") return codexProducedOutput(server.fakeHome);
-    if (caps.claudeCreds) return claudeProducedOutput(server.fakeHome);
-    return (mock.served().get(m.name) ?? 0) >= 1; // mock-backed Claude
-  };
+  // Scripted panes are already painted; only mock-backed Claude turns render.
+  const visible = cast.filter((m) => m.visible && !m.synthetic);
+  const turnOk = (m: CastMember): boolean =>
+    (mock.served().get(m.name) ?? 0) >= 1;
   console.log(`Waiting for ${visible.length} shown turns to render…`);
   const start = Date.now();
   const deadline = start + 200_000;
@@ -1023,7 +860,6 @@ async function stageScene(
   }
 
   await warmUsage(server, "pre-capture");
-  if (caps.codex) await warmCodexUsage(server, "pre-capture");
 
   return cast.map((m) => byName.get(m.name) as AgentInfo);
 }
@@ -1160,6 +996,42 @@ async function shoot(
       const t = msg.text();
       if (t.includes("dockview workspace restore failed")) dockviewError = t;
     });
+
+    // Usage bars: fixed demo numbers. The demo server reads no login
+    // (AUTONOMOS_DISABLE_CREDENTIAL_READS), so the real endpoints would show
+    // "set up" states; the hero shows the bars as an operator sees them (#551).
+    const inHours = (h: number): string =>
+      new Date(Date.now() + h * 3_600_000).toISOString();
+    await page.route("**/api/plugins/claude-usage", (route) =>
+      route.fulfill({
+        status: 200,
+        json: {
+          fiveHour: { utilization: 34, resetsAt: inHours(2.6) },
+          sevenDay: { utilization: 61, resetsAt: inHours(70) },
+          sevenDaySonnet: null,
+          sevenDayOpus: null,
+          extraUsage: null,
+          account: { subscriptionType: "max" },
+          credentialSource: "oauth",
+          fetchedAt: new Date().toISOString(),
+        },
+      }),
+    );
+    await page.route("**/api/plugins/codex-usage", (route) =>
+      route.fulfill({
+        status: 200,
+        json: {
+          primary: { usedPercent: 22, windowMinutes: 300, resetsAt: inHours(3.1) },
+          secondary: { usedPercent: 47, windowMinutes: 10_080, resetsAt: inHours(96) },
+          additionalLimits: [],
+          credits: null,
+          planType: "pro",
+          account: {},
+          source: "live",
+          fetchedAt: new Date().toISOString(),
+        },
+      }),
+    );
 
     // Rewrite /api/host → generic "dev-server" (preserve the rest of the shape
     // so the health probe stays green and dashboardFreshness matches).
@@ -1567,8 +1439,8 @@ async function bestEffortReap(r: Resources): Promise<void> {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
-  const caps = detectCaps();
-  const cast = buildCast(caps);
+  requireClaude();
+  const cast = buildCast();
 
   // These are populated as boot proceeds; cleanup reads whatever exists so an
   // interrupt during boot never leaks temp dirs (with seeded creds) or orphans.
@@ -1625,20 +1497,18 @@ async function main(): Promise<void> {
 
     const workspace = makeDemoWorkspace();
     resources.workspace = workspace;
-    // Mock is booted whenever Claude has no creds (drives Claude's canned turns).
-    mock = caps.claudeCreds ? null : await startDemoMock(cast);
-    server = await bootServer(workspace, caps, mock?.url, resources);
+    // The mock always drives Claude's turns: no real login is ever used.
+    mock = await startDemoMock(cast);
+    server = await bootServer(workspace, mock.url, resources);
+    assertNoCredentials(server.fakeHome, "the hero's fake HOME (after boot)");
     console.log(
       `Demo server: http://127.0.0.1:${server.port} (config: ${server.configDir})`,
     );
 
-    agents = await stageScene(
-      server,
-      cast,
-      caps,
-      mock ?? { url: "", served: () => new Map(), close: async () => {} },
-      workspace,
-    );
+    agents = await stageScene(server, cast, mock, workspace);
+    // Again right before the screenshot: nothing the agents did may have
+    // pulled a credential in.
+    assertNoCredentials(server.fakeHome, "the hero's fake HOME (before capture)");
     await captureWeb(server, agents, cast);
     if (KEEP_ALIVE) {
       console.log(
