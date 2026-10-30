@@ -52,6 +52,9 @@ beforeEach(() => {
       }) as unknown as MediaQueryList,
   );
   localStorage.clear();
+  // These tests measure Top-down geometry; Left-right (the default) is pinned
+  // by its own describe.
+  localStorage.setItem("autonomos.orgchart.layout", "td");
 });
 afterEach(() => {
   if (origW) Object.defineProperty(proto, "clientWidth", origW);
@@ -93,18 +96,22 @@ const session = (id: string) =>
     provider: "claude-code",
   }) as never;
 
-/** A lead with `n` reports: wide enough not to fit at the 60% floor. */
-function bigFleet(n = 16) {
-  const ids = Array.from({ length: n }, (_, i) => `W${i}`);
-  stubTree([
-    node(
-      "Lead",
-      ids.map((i) => node(i)),
-    ),
-  ]);
+/**
+ * `n` teams side by side under one root. Reports STACK (density pick C), so a
+ * chart grows wide with TEAMS: 8 teams are too wide for the 60% floor but fit
+ * above 30%; 16 are too wide even at 30%.
+ */
+function bigFleet(n = 8) {
+  const leads = Array.from({ length: n }, (_, i) =>
+    node(`L${i}`, [node(`L${i}a`), node(`L${i}b`)]),
+  );
+  stubTree([node("Lead", leads)]);
   useStore.setState({
     theme: "void",
-    sessions: ["Lead", ...ids].map(session),
+    sessions: [
+      "Lead",
+      ...leads.flatMap((l) => [l.id, ...l.children.map((c) => c.id)]),
+    ].map(session),
     exitedSessions: [],
     agentStatuses: {},
     notificationCounts: {},
@@ -221,7 +228,7 @@ describe("opening view (pick 4A: fit, never below 60%)", () => {
     expect(pct()).toBe("60%");
     expect($("[data-org-minimap]")).not.toBeNull();
     expect(document.querySelectorAll("[data-org-minimap-card]").length).toBe(
-      17,
+      1 + 8 * 3,
     );
   });
 });
@@ -229,14 +236,14 @@ describe("opening view (pick 4A: fit, never below 60%)", () => {
 describe("pan (drag EMPTY canvas)", () => {
   it("dragging empty canvas pans; the selection and inspector stay (the #425 rule)", async () => {
     await mount(bigFleet);
-    fireEvent.click(card("W0") as HTMLElement);
+    fireEvent.click(card("L0a") as HTMLElement);
     expect($("[data-org-inspector]")).not.toBeNull();
     const before = view();
     drag(stage(), -120, 40);
     const after = view();
     expect(after.x).toBeCloseTo(before.x - 120, 6);
     expect(after.y).toBeCloseTo(before.y + 40, 6);
-    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("W0");
+    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("L0a");
   });
 
   it("a press that moves under 4 px is a click: the view doesn't move", async () => {
@@ -249,7 +256,7 @@ describe("pan (drag EMPTY canvas)", () => {
   it("a drag that starts ON a card doesn't pan (reserved for PR 4's reassign)", async () => {
     await mount(bigFleet);
     const before = view();
-    drag(card("W0") as HTMLElement, -150, 0);
+    drag(card("L0a") as HTMLElement, -150, 0);
     expect(view()).toEqual(before);
   });
 
@@ -257,7 +264,7 @@ describe("pan (drag EMPTY canvas)", () => {
     // A drag already closes it (the menu's own outside-pointerdown); a wheel
     // sends no pointerdown, so the canvas must close it itself.
     await mount(bigFleet);
-    fireEvent.contextMenu(card("W0") as HTMLElement, {
+    fireEvent.contextMenu(card("L0a") as HTMLElement, {
       clientX: 10,
       clientY: 10,
     });
@@ -297,7 +304,7 @@ describe("zoom (pick 1A: scroll pans, pinch / ⌘ zooms)", () => {
   });
 
   it("buttons: + zooms in, the % resets to 100, Fit shows everyone and the map hides", async () => {
-    // 8 reports: too wide for the 60% floor, but Fit can show them all.
+    // 8 teams: too wide for the 60% floor, but Fit can show them all.
     await mount(() => bigFleet(8));
     expect(pct()).toBe("60%");
     expect($("[data-org-minimap]")).not.toBeNull();
@@ -361,7 +368,7 @@ describe("the viewport never moves on its own (nox, #430)", () => {
     await mount(() => bigFleet());
     const before = view();
     act(() => {
-      (card("W15") as HTMLElement).focus();
+      (card("L7") as HTMLElement).focus();
     });
     expect(view().x).toBeLessThan(before.x);
     expect(view().k).toBe(before.k);
@@ -385,16 +392,16 @@ describe("the map and following the selection", () => {
   });
 
   it("arrow-walking to an off-screen card pans just enough to show it", async () => {
-    await mount(bigFleet);
-    fireEvent.click(card("W0") as HTMLElement);
+    await mount(() => bigFleet(8));
+    fireEvent.click(card("L0") as HTMLElement);
     const before = view();
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 7; i++) {
       const sel = $("[data-org-inspector]")?.dataset.orgInspector as string;
       fireEvent.keyDown(card(sel) as HTMLElement, { key: "ArrowRight" });
     }
-    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("W8");
+    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("L7");
     // The invariant: the selected card is ON SCREEN (the view followed it).
-    const c = card("W8") as HTMLElement;
+    const c = card("L7") as HTMLElement;
     const v = view();
     const sx = v.x + Number.parseFloat(c.style.left) * v.k;
     const sy = v.y + Number.parseFloat(c.style.top) * v.k;
@@ -402,16 +409,20 @@ describe("the map and following the selection", () => {
     expect(sx + 200 * v.k).toBeLessThanOrEqual(VP.w);
     expect(sy).toBeGreaterThanOrEqual(0);
     expect(sy + 60 * v.k).toBeLessThanOrEqual(VP.h);
-    // …and it had to move to get there (W8 starts off-screen).
+    // …and it had to move to get there (L7 starts off-screen).
     expect(v).not.toEqual(before);
   }, 15_000);
 });
 
 describe("two top-level teams: both stay in view as agents come and go (Terry's bug)", () => {
+  // Each report leads one agent of its own, so the team spreads sideways
+  // (leaf reports would stack into one narrow column).
   const team = (lead: string, n: number) =>
     node(
       lead,
-      Array.from({ length: n }, (_, i) => node(`${lead}-${i}`)),
+      Array.from({ length: n }, (_, i) =>
+        node(`${lead}-${i}`, [node(`${lead}-${i}r`)]),
+      ),
     );
   const ids = (roots: AgentTreeNode[]): string[] =>
     roots.flatMap((r) => [r.id, ...ids(r.children)]);
@@ -455,6 +466,20 @@ describe("two top-level teams: both stay in view as agents come and go (Terry's 
     // Precondition: the view it opened with would strand the new team.
     expect(fullyOnScreenUnder(opened, "Other")).toBe(false);
     expect(fullyOnScreen("Lead")).toBe(true);
+    expect(fullyOnScreen("Other")).toBe(true);
+    expect(fullyOnScreen("Other-0")).toBe(true);
+  });
+
+  // Left-right (the default) stacks the teams top to bottom, so the second
+  // team lands BELOW the first: the same fix has to hold on that axis. (A
+  // removal needs no Left-right twin: the next team reflows up into view.)
+  it("Left-right: a second team that arrives below the first is shown", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    await mount(() => setFleet([team("Lead", 6)]));
+    const opened = view();
+    await swap([team("Lead", 6), team("Other", 1)]);
+    await waitFor(() => expect(card("Other")).not.toBeNull());
+    expect(fullyOnScreenUnder(opened, "Other")).toBe(false);
     expect(fullyOnScreen("Other")).toBe(true);
     expect(fullyOnScreen("Other-0")).toBe(true);
   });

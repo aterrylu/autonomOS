@@ -85,6 +85,9 @@ const card = (id: string) =>
 beforeEach(() => {
   lastTreeUrl = "";
   localStorage.clear();
+  // These tests measure Top-down geometry; Left-right (the default) is pinned
+  // by its own describe.
+  localStorage.setItem("autonomos.orgchart.layout", "td");
   useStore.setState({
     theme: "void",
     sessions: [],
@@ -585,19 +588,28 @@ describe("selection + inspector", () => {
     expect(inspector()).toBeNull();
   });
 
-  it("arrow keys walk the chart: ↑ manager, ↓ first report, → sibling", async () => {
+  it("arrow keys walk the chart: ↓ into the stacked column, ↑/↓ along it, ↑ off the top to the manager, → the next team", async () => {
     fleet();
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("O1")).not.toBeNull());
+    const key = (id: string, k: string) =>
+      fireEvent.keyDown(card(id) as HTMLElement, { key: k });
+    const sel = () => inspector()?.dataset.orgInspector;
     fireEvent.click(card("Mgr") as HTMLElement);
-    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowDown" });
-    expect(inspector()?.dataset.orgInspector).toBe("R1");
-    fireEvent.keyDown(card("R1") as HTMLElement, { key: "ArrowRight" });
-    expect(inspector()?.dataset.orgInspector).toBe("R2");
-    fireEvent.keyDown(card("R2") as HTMLElement, { key: "ArrowUp" });
-    expect(inspector()?.dataset.orgInspector).toBe("Mgr");
-    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowRight" });
-    expect(inspector()?.dataset.orgInspector).toBe("Other");
+    key("Mgr", "ArrowDown");
+    expect(sel()).toBe("R1"); // the column's top
+    key("R1", "ArrowDown");
+    expect(sel()).toBe("R2"); // down the column (R1, R2 stack)
+    key("R2", "ArrowDown");
+    expect(sel()).toBe("R2"); // the column's end: stays
+    key("R2", "ArrowUp");
+    expect(sel()).toBe("R1"); // back up the column
+    key("R1", "ArrowUp");
+    expect(sel()).toBe("Mgr"); // off the top → the manager
+    key("Mgr", "ArrowRight");
+    expect(sel()).toBe("Other"); // the next team on the same row
+    key("Other", "ArrowDown");
+    expect(sel()).toBe("O1");
   });
 });
 
@@ -906,5 +918,155 @@ describe("same-named agents are distinct (keyed by id, never by name)", () => {
     expect(card("m1")?.style.opacity).toBe("");
     expect(card("m2")?.style.opacity).toBe("0.45");
     expect(card("bbbb2222")?.style.opacity).toBe("0.45");
+  });
+});
+
+describe("Layout: Top-down / Left-right (Terry: 'an org chart from LEFT TO RIGHT')", () => {
+  const fleet = () => {
+    tree([
+      node("Root", "running", [
+        node("Mgr", "running", [node("R1", "running"), node("R2", "running")]),
+        node("Other", "running", [node("O1", "running")]),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["Root", "Mgr", "R1", "R2", "Other", "O1"].map((id) =>
+        session(id),
+      ),
+    });
+  };
+  const at = (id: string) => {
+    const el = card(id) as HTMLElement;
+    return {
+      x: Number.parseFloat(el.style.left),
+      y: Number.parseFloat(el.style.top),
+    };
+  };
+  const inspector = () =>
+    document.querySelector("[data-org-inspector]") as HTMLElement | null;
+
+  const pressed = (v: string) =>
+    document
+      .querySelector(`[data-org-layout="${v}"]`)
+      ?.getAttribute("aria-pressed");
+
+  it("opens Left-right by default (Terry's pick): managers to the LEFT of their reports", async () => {
+    localStorage.removeItem("autonomos.orgchart.layout");
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    expect(pressed("lr")).toBe("true");
+    expect(at("Root").x).toBeLessThan(at("Mgr").x);
+    expect(at("Mgr").x).toBeLessThan(at("R1").x);
+    expect(at("R1").x).toBe(at("R2").x); // one column
+    expect(at("R1").y).toBeLessThan(at("R2").y); // stacked top to bottom
+  });
+
+  it("switching to Top-down puts reports below their manager, and the choice is remembered", async () => {
+    localStorage.removeItem("autonomos.orgchart.layout");
+    fleet();
+    const { unmount } = render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    fireEvent.click(
+      document.querySelector('[data-org-layout="td"]') as HTMLElement,
+    );
+    expect(pressed("td")).toBe("true");
+    expect(at("Mgr").y).toBeLessThan(at("R1").y);
+    unmount();
+    // A fresh mount keeps Top-down.
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    expect(at("Mgr").y).toBeLessThan(at("R1").y);
+    fireEvent.click(
+      document.querySelector('[data-org-layout="lr"]') as HTMLElement,
+    );
+    expect(at("Mgr").x).toBeLessThan(at("R1").x);
+  });
+
+  it("arrow keys rotate with it: → first report, ↑/↓ the column, ← the manager", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    const key = (id: string, k: string) =>
+      fireEvent.keyDown(card(id) as HTMLElement, { key: k });
+    const sel = () => inspector()?.dataset.orgInspector;
+    fireEvent.click(card("Mgr") as HTMLElement);
+    key("Mgr", "ArrowRight");
+    expect(sel()).toBe("R1");
+    key("R1", "ArrowDown");
+    expect(sel()).toBe("R2");
+    key("R2", "ArrowDown");
+    expect(sel()).toBe("O1"); // the same column continues into the next team
+    key("O1", "ArrowLeft");
+    expect(sel()).toBe("Other");
+    key("Other", "ArrowUp");
+    expect(sel()).toBe("Mgr");
+    key("Mgr", "ArrowLeft");
+    expect(sel()).toBe("Root");
+  });
+
+  it("Left-right: ←/→ walk the Unassigned shelf (it is still a row)", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    tree([
+      node("Mgr", "running", [node("R1", "running")]),
+      node("S1", "running"),
+      node("S2", "running"),
+      node("S3", "running"),
+    ]);
+    useStore.setState({
+      sessions: ["Mgr", "R1", "S1", "S2", "S3"].map((id) => session(id)),
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("S3")).not.toBeNull());
+    // Precondition: the shelf is a row below the team, not a column.
+    expect(at("S1").y).toBe(at("S3").y);
+    expect(at("S1").y).toBeGreaterThan(at("R1").y);
+    const key = (id: string, k: string) =>
+      fireEvent.keyDown(card(id) as HTMLElement, { key: k });
+    const sel = () => inspector()?.dataset.orgInspector;
+    fireEvent.click(card("S1") as HTMLElement);
+    key("S1", "ArrowRight");
+    expect(sel()).toBe("S2");
+    key("S2", "ArrowRight");
+    expect(sel()).toBe("S3");
+    key("S3", "ArrowLeft");
+    expect(sel()).toBe("S2");
+  });
+
+  it("a lit chain is drawn over its stacked siblings' connectors (they share one spine)", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    tree([
+      node("Mgr", "running", [
+        node("R1", "running"),
+        node("R2", "running"),
+        node("R3", "running"),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["Mgr", "R1", "R2", "R3"].map((id) => session(id)),
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R3")).not.toBeNull());
+    const order = () =>
+      [...document.querySelectorAll("[data-org-edge]")].map((e) =>
+        e.getAttribute("data-org-edge"),
+      );
+    // Precondition: unselected, the column draws top to bottom.
+    expect(order()).toEqual(["Mgr>R1", "Mgr>R2", "Mgr>R3"]);
+    fireEvent.click(card("R1") as HTMLElement);
+    expect(order().at(-1)).toBe("Mgr>R1");
+  });
+
+  it("a lead's fold toggle sits on its RIGHT edge (where its connector leaves) in Left-right", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R1")).not.toBeNull());
+    const t = document.querySelector(
+      '[data-org-collapse="Mgr"]',
+    ) as HTMLElement;
+    expect(Number.parseFloat(t.style.left)).toBe(at("Mgr").x + 200 - 11);
+    expect(Number.parseFloat(t.style.top)).toBe(at("Mgr").y + 30 - 9);
   });
 });
