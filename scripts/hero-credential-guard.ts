@@ -94,3 +94,44 @@ export function assertNoCredentials(root: string, label: string): void {
     `${label} holds ${found.length} credential(s); the hero capture must run on NO real login (#551):\n${list}`,
   );
 }
+
+/**
+ * Env-var families a CLI can take a login, a key or its config dir from:
+ * Claude (incl. Bedrock/Vertex switches), Codex/OpenAI, Gemini and Google
+ * (ADC, Vertex, GEMINI_CLI_HOME, system settings path), AWS (Bedrock). Purged
+ * by PREFIX, not by name: a list of names misses the next variable a CLI adds,
+ * and one exported by the operator would point the real binary at their real
+ * login dir (nox on #554: GEMINI_CLI_HOME). Linux has no sandbox to catch it.
+ */
+const CREDENTIAL_ENV = /^(?:ANTHROPIC_|CLAUDE_|CODEX_|OPENAI_|GEMINI_|GOOGLE_|AWS_|CLOUD_SHELL$)/;
+
+/**
+ * The hero server's env: the operator's env with every credential-bearing
+ * family removed, then each CLI pinned to the throwaway HOME and the local
+ * mock with dummy keys. Everything set here is set AFTER the purge.
+ */
+export function heroCliEnv(
+  base: NodeJS.ProcessEnv,
+  fakeHome: string,
+  mockUrl: string,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base))
+    if (!CREDENTIAL_ENV.test(k)) env[k] = v;
+  env.HOME = fakeHome;
+  // Claude: the mock backend (zero tokens).
+  env.ANTHROPIC_BASE_URL = mockUrl;
+  env.ANTHROPIC_AUTH_TOKEN = "sk-demo";
+  // No self-update mid-shoot ("Update installed" in the pane). The operator's
+  // CLAUDE_* vars, now purged, used to decide this, and also the render mode
+  // (CLAUDE_CODE_NO_FLICKER): Claude now draws in its default inline mode.
+  env.DISABLE_AUTOUPDATER = "1";
+  // Codex: the throwaway CODEX_HOME, whose only provider reads this key.
+  env.CODEX_HOME = join(fakeHome, ".codex");
+  env.HERO_MOCK_OPENAI_KEY = "sk-hero-mock";
+  // Gemini: the throwaway settings dir, a dummy key, the base-URL override.
+  env.GEMINI_CLI_HOME = fakeHome;
+  env.GEMINI_API_KEY = "hero-mock-gemini-key";
+  env.GOOGLE_GEMINI_BASE_URL = mockUrl;
+  return env;
+}

@@ -3,15 +3,21 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertNoCredentials, findCredentials } from "./hero-credential-guard.js";
+import {
+  assertNoCredentials,
+  findCredentials,
+  heroCliEnv,
+} from "./hero-credential-guard.js";
 
 /**
  * The README hero capture must run on NO real login (#551). Two guards:
@@ -134,5 +140,123 @@ describe("make hero runs the capture sandboxed away from real credentials on mac
     assert.match(sb, /\(deny file-read\* file-write\*/);
     assert.match(sb, /\(deny process-exec \(literal "\/usr\/bin\/security"\)\)/);
   });
+  it("its one exception is READ-only, to codex's installed binaries; the keychain service is closed", () => {
+    const sb = read("../packages/dashboard/scripts/hero-no-credentials.sb");
+    const code = sb.replace(/;;.*$/gm, "");
+    // Every allow rule, as written. Anything wider than read access to
+    // ~/.codex/packages (all of ~/.codex, or any write) reopens the login.
+    const allows: string[] = [];
+    for (let i = code.indexOf("(allow"); i >= 0; i = code.indexOf("(allow", i + 1)) {
+      let depth = 0;
+      let j = i;
+      do depth += code[j] === "(" ? 1 : code[j] === ")" ? -1 : 0;
+      while (depth > 0 && ++j < code.length);
+      allows.push(code.slice(i, j + 1).replace(/\s+/g, " "));
+    }
+    assert.deepEqual(allows, [
+      "(allow default)",
+      '(allow file-read* (subpath (string-append (param "HOME") "/.codex/packages")))',
+    ]);
+    // The allow must come AFTER the deny it narrows (the later rule wins).
+    assert.ok(code.indexOf("(allow file-read*") > code.indexOf("(deny file-read* file-write*"));
+    assert.match(code, /\(deny mach-lookup[^)]*"com\.apple\.securityd"/);
+  });
+  it(
+    "on macOS, the profile really denies a login in ~/.codex while the binaries stay readable",
+    { skip: process.platform !== "darwin" && "sandbox-exec is macOS only" },
+    () => {
+      // The sandbox matches resolved paths: tmpdir() is under the /var symlink.
+      const h = realpathSync(home());
+      mkdirSync(join(h, ".codex", "packages"), { recursive: true });
+      writeFileSync(join(h, ".codex", "login.json"), "secret");
+      writeFileSync(join(h, ".codex", "packages", "codex"), "binary");
+      const profile = fileURLToPath(
+        new URL("../packages/dashboard/scripts/hero-no-credentials.sb", import.meta.url),
+      );
+      const sandboxed = (cmd: string) =>
+        spawnSync("sandbox-exec", ["-D", `HOME=${h}`, "-f", profile, "/bin/sh", "-c", cmd], {
+          encoding: "utf8",
+        });
+      assert.equal(sandboxed(`cat "${h}/.codex/packages/codex"`).stdout, "binary");
+      assert.notEqual(sandboxed(`cat "${h}/.codex/login.json"`).status, 0, "login read denied");
+      assert.notEqual(
+        sandboxed(`echo x > "${h}/.codex/packages/codex"`).status,
+        0,
+        "packages stay read-only",
+      );
+    },
+  );
 });
 
+describe("the hero shows the REAL CLIs' terminals, never a scripted pane", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL("../packages/dashboard/scripts/capture-hero.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  it("stages no synthetic session or replayed transcript", () => {
+    // A hand-written transcript replayed into a perf session looks like a CLI
+    // but isn't one: each terminal must be the binary's own TUI on the mock.
+    for (const forbidden of [/\/api\/perf\b/, /emit-raw/, /synthetic\s*:/, /AUTONOMOS_PERF/])
+      assert.ok(!forbidden.test(source), `capture-hero.ts matches ${forbidden}`);
+  });
+  it("points Codex and Gemini at the local mock, with dummy keys only", () => {
+    assert.match(source, /wire_api = "responses"/);
+    assert.match(source, /base_url = "\$\{mockUrl\}\/v1"/);
+    assert.match(source, /heroCliEnv\(process\.env, fakeHome, mockUrl\)/);
+    assert.match(source, /selectedType: "gemini-api-key"/);
+  });
+});
+
+
+describe("heroCliEnv: no operator login reaches a CLI through the env", () => {
+  // The operator's shell can export where each CLI keeps its login (nox on
+  // #554: GEMINI_CLI_HOME). On Linux nothing sandboxes the hero, so the env
+  // itself must point every CLI at the fake HOME and the mock.
+  const operator: NodeJS.ProcessEnv = {
+    PATH: "/usr/bin",
+    LANG: "en_US.UTF-8",
+    HOME: "/Users/operator",
+    GEMINI_CLI_HOME: "/Users/operator",
+    GEMINI_API_KEY: "real-gemini-key",
+    GEMINI_CLI_SYSTEM_SETTINGS_PATH: "/etc/gemini/settings.json",
+    GOOGLE_APPLICATION_CREDENTIALS: "/Users/operator/adc.json",
+    GOOGLE_GENAI_USE_VERTEXAI: "true",
+    GOOGLE_GENAI_USE_GCA: "true",
+    GOOGLE_CLOUD_PROJECT: "operator-project",
+    CLOUD_SHELL: "true",
+    CODEX_HOME: "/Users/operator/.codex",
+    OPENAI_API_KEY: "sk-real",
+    OPENAI_BASE_URL: "https://api.openai.com/v1",
+    ANTHROPIC_API_KEY: "sk-ant-real",
+    CLAUDE_CODE_OAUTH_TOKEN: "real-oauth",
+    CLAUDE_CONFIG_DIR: "/Users/operator/.claude",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    AWS_PROFILE: "operator",
+  };
+  const env = heroCliEnv(operator, "/tmp/hero-home", "http://127.0.0.1:4100");
+  it("drops every login, key and config-dir pointer the operator exported", () => {
+    for (const [k, v] of Object.entries(operator)) {
+      if (k === "PATH" || k === "LANG") continue;
+      assert.notEqual(env[k], v, `${k} kept the operator's value`);
+    }
+    for (const k of Object.keys(env))
+      assert.ok(!/^(AWS_|CLOUD_SHELL$|OPENAI_|GOOGLE_(?!GEMINI_BASE_URL$)|CLAUDE_)/.test(k), `${k} survived`);
+  });
+  it("pins each CLI to the fake HOME and the mock, with dummy keys", () => {
+    assert.equal(env.HOME, "/tmp/hero-home");
+    assert.equal(env.CODEX_HOME, join("/tmp/hero-home", ".codex"));
+    assert.equal(env.GEMINI_CLI_HOME, "/tmp/hero-home");
+    assert.equal(env.GOOGLE_GEMINI_BASE_URL, "http://127.0.0.1:4100");
+    assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:4100");
+    assert.equal(env.GEMINI_API_KEY, "hero-mock-gemini-key");
+    assert.equal(env.ANTHROPIC_AUTH_TOKEN, "sk-demo");
+    assert.equal(env.HERO_MOCK_OPENAI_KEY, "sk-hero-mock");
+    assert.equal(env.DISABLE_AUTOUPDATER, "1");
+  });
+  it("keeps the rest of the operator's env", () => {
+    assert.equal(env.PATH, "/usr/bin");
+    assert.equal(env.LANG, "en_US.UTF-8");
+  });
+});
