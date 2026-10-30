@@ -96,7 +96,10 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BrowserContext, chromium } from "@playwright/test";
-import { assertNoCredentials } from "../../../scripts/hero-credential-guard.js";
+import {
+  assertNoCredentials,
+  heroCliEnv,
+} from "../../../scripts/hero-credential-guard.js";
 
 // ── Paths — derived from the script location so this works from ANY checkout ──
 // This file lives at <repo>/packages/dashboard/scripts/capture-hero.ts.
@@ -706,36 +709,19 @@ async function bootServer(
     symlinkSync(claudeBin, join(fakeHome, ".local", "bin", "claude"));
   }
 
+  // The operator's env minus every credential-bearing family, with each CLI
+  // pinned to the fake HOME and the mock (heroCliEnv, tested in CI).
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    HOME: fakeHome,
+    ...heroCliEnv(process.env, fakeHome, mockUrl),
     PATH: `${shimDir}:${process.env.PATH ?? ""}`,
     AUTONOMOS_CONFIG_DIR: configDir,
     AUTONOMOS_TOKEN: token,
     AUTONOMOS_HOST: "127.0.0.1",
     // The server's own usage plugins read no login either.
     AUTONOMOS_DISABLE_CREDENTIAL_READS: "1",
-    // Claude talks only to the local mock backend (zero tokens).
-    ANTHROPIC_BASE_URL: mockUrl,
-    ANTHROPIC_AUTH_TOKEN: "sk-demo",
   };
   delete env.TMUX;
   delete env.TMUX_PANE;
-  // Nothing may point back at a real config dir or key.
-  for (const k of [
-    "CODEX_HOME",
-    "CLAUDE_CONFIG_DIR",
-    "ANTHROPIC_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "OPENAI_API_KEY",
-  ])
-    delete env[k];
-  // Dummy keys for the mock (set AFTER the purge above): Codex reads its
-  // provider's env_key, Gemini its API key plus the base-URL override.
-  env.HERO_MOCK_OPENAI_KEY = "sk-hero-mock";
-  env.GEMINI_API_KEY = "hero-mock-gemini-key";
-  env.GOOGLE_GEMINI_BASE_URL = mockUrl;
   // The dashboard's xterm renders 24-bit colour; say so, as a server started
   // from a modern terminal would (else Gemini prints a "no true color" warning
   // that depends on where `make hero` happened to run).

@@ -13,7 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertNoCredentials, findCredentials } from "./hero-credential-guard.js";
+import {
+  assertNoCredentials,
+  findCredentials,
+  heroCliEnv,
+} from "./hero-credential-guard.js";
 
 /**
  * The README hero capture must run on NO real login (#551). Two guards:
@@ -200,8 +204,58 @@ describe("the hero shows the REAL CLIs' terminals, never a scripted pane", () =>
   it("points Codex and Gemini at the local mock, with dummy keys only", () => {
     assert.match(source, /wire_api = "responses"/);
     assert.match(source, /base_url = "\$\{mockUrl\}\/v1"/);
-    assert.match(source, /env\.GOOGLE_GEMINI_BASE_URL = mockUrl;/);
+    assert.match(source, /heroCliEnv\(process\.env, fakeHome, mockUrl\)/);
     assert.match(source, /selectedType: "gemini-api-key"/);
   });
 });
 
+
+describe("heroCliEnv: no operator login reaches a CLI through the env", () => {
+  // The operator's shell can export where each CLI keeps its login (nox on
+  // #554: GEMINI_CLI_HOME). On Linux nothing sandboxes the hero, so the env
+  // itself must point every CLI at the fake HOME and the mock.
+  const operator: NodeJS.ProcessEnv = {
+    PATH: "/usr/bin",
+    LANG: "en_US.UTF-8",
+    HOME: "/Users/operator",
+    GEMINI_CLI_HOME: "/Users/operator",
+    GEMINI_API_KEY: "real-gemini-key",
+    GEMINI_CLI_SYSTEM_SETTINGS_PATH: "/etc/gemini/settings.json",
+    GOOGLE_APPLICATION_CREDENTIALS: "/Users/operator/adc.json",
+    GOOGLE_GENAI_USE_VERTEXAI: "true",
+    GOOGLE_GENAI_USE_GCA: "true",
+    GOOGLE_CLOUD_PROJECT: "operator-project",
+    CLOUD_SHELL: "true",
+    CODEX_HOME: "/Users/operator/.codex",
+    OPENAI_API_KEY: "sk-real",
+    OPENAI_BASE_URL: "https://api.openai.com/v1",
+    ANTHROPIC_API_KEY: "sk-ant-real",
+    CLAUDE_CODE_OAUTH_TOKEN: "real-oauth",
+    CLAUDE_CONFIG_DIR: "/Users/operator/.claude",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    AWS_PROFILE: "operator",
+  };
+  const env = heroCliEnv(operator, "/tmp/hero-home", "http://127.0.0.1:4100");
+  it("drops every login, key and config-dir pointer the operator exported", () => {
+    for (const [k, v] of Object.entries(operator)) {
+      if (k === "PATH" || k === "LANG") continue;
+      assert.notEqual(env[k], v, `${k} kept the operator's value`);
+    }
+    for (const k of Object.keys(env))
+      assert.ok(!/^(AWS_|CLOUD_SHELL$|OPENAI_|GOOGLE_(?!GEMINI_BASE_URL$)|CLAUDE_)/.test(k), `${k} survived`);
+  });
+  it("pins each CLI to the fake HOME and the mock, with dummy keys", () => {
+    assert.equal(env.HOME, "/tmp/hero-home");
+    assert.equal(env.CODEX_HOME, join("/tmp/hero-home", ".codex"));
+    assert.equal(env.GEMINI_CLI_HOME, "/tmp/hero-home");
+    assert.equal(env.GOOGLE_GEMINI_BASE_URL, "http://127.0.0.1:4100");
+    assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:4100");
+    assert.equal(env.GEMINI_API_KEY, "hero-mock-gemini-key");
+    assert.equal(env.ANTHROPIC_AUTH_TOKEN, "sk-demo");
+    assert.equal(env.HERO_MOCK_OPENAI_KEY, "sk-hero-mock");
+  });
+  it("keeps the rest of the operator's env", () => {
+    assert.equal(env.PATH, "/usr/bin");
+    assert.equal(env.LANG, "en_US.UTF-8");
+  });
+});
