@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  arcPath,
   CARD_H,
   CARD_W,
   COL_GAP,
@@ -179,6 +180,46 @@ describe("edgePath", () => {
 
   it("unknown ids draw nothing", () => {
     expect(edgePath(layoutOrg([n("A")]), "A", "ghost")).toBe("");
+  });
+});
+
+describe("arcPath (a message that isn't a manager edge)", () => {
+  // The control point is the Q's first coordinate pair.
+  const control = (d: string) =>
+    (/Q(-?[\d.]+),(-?[\d.]+)/.exec(d) ?? []).slice(1).map(Number);
+
+  it("top-down: bows ABOVE both cards", () => {
+    const L = layoutOrg([n("M", n("Sub", n("s1")), n("Sub2", n("s2")))]);
+    const a = L.pos.get("Sub");
+    const b = L.pos.get("Sub2");
+    if (!a || !b) throw new Error("cards not placed");
+    const [, cy] = control(arcPath(L, a, b));
+    expect(cy).toBeLessThan(Math.min(a.y, b.y));
+  });
+
+  it("top-down: siblings in a stacked column share an x, so it bows to their RIGHT", () => {
+    const L = layoutOrg([n("M", n("r1"), n("r2"), n("r3"))]);
+    const a = L.pos.get("r1");
+    const b = L.pos.get("r3");
+    if (!a || !b) throw new Error("cards not placed");
+    expect(a.x).toBe(b.x); // precondition: one column
+    const [cx] = control(arcPath(L, a, b));
+    expect(cx).toBeGreaterThan(a.x + CARD_W);
+  });
+
+  it("left-right: peers share a column, so it bows to their RIGHT, clear of the cards between", () => {
+    const L = layoutOrg([n("M", n("r1"), n("r2"), n("r3"))], {
+      direction: "lr",
+    });
+    const a = L.pos.get("r1");
+    const b = L.pos.get("r3");
+    if (!a || !b) throw new Error("cards not placed");
+    expect(a.x).toBe(b.x); // precondition: one column
+    const d = arcPath(L, a, b);
+    const [cx] = control(d);
+    expect(cx).toBeGreaterThan(a.x + CARD_W);
+    expect(d.startsWith(`M${a.x + CARD_W},${a.y + CARD_H / 2}`)).toBe(true);
+    expect(d.endsWith(`${b.x + CARD_W},${b.y + CARD_H / 2}`)).toBe(true);
   });
 });
 

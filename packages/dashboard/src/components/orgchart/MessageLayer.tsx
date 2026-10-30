@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { agentsApi } from "../../api/agents";
 import { agentsSocket, type RoutedMessage } from "../../api/agentsSocket";
 import { ProviderAgentIcon } from "../ui/provider-icon";
-import { CARD_H, CARD_W, edgePath, type OrgLayout } from "./layout";
+import { arcPath, CARD_H, edgePath, type OrgLayout } from "./layout";
 import type { OrgChartTokens } from "./theme";
 
 /**
@@ -319,15 +319,12 @@ export function MessageLayer({
       let reverse = false;
       let arc = false;
       if (fromAnchor && mgr(anchor) === fromAnchor)
-        d = edgePath(live.current.layout, fromAnchor, anchor);
+        d = edgePath(L, fromAnchor, anchor);
       else if (fromAnchor && mgr(fromAnchor) === anchor) {
-        d = edgePath(live.current.layout, anchor, fromAnchor);
+        d = edgePath(L, anchor, fromAnchor);
         reverse = true;
       } else {
-        const x1 = a.x + CARD_W / 2;
-        const x2 = b.x + CARD_W / 2;
-        const cy = Math.min(a.y, b.y) - 46;
-        d = `M${x1},${a.y}Q${(x1 + x2) / 2},${cy} ${x2},${b.y}`;
+        d = arcPath(L, a, b);
         arc = true;
       }
       inFlight.current += 1;

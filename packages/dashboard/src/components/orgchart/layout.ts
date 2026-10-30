@@ -94,11 +94,7 @@ function measure(
       w: STACK_INDENT + CARD_W,
       h: stack.length * CARD_H + (stack.length - 1) * STACK_GAP,
     });
-  for (const b of branches) {
-    const m = measure(b, isTeam, out);
-    parts.push({ w: m.w, h: m.h });
-  }
-  for (const c of stack) measure(c, isTeam, out);
+  for (const b of branches) parts.push(measure(b, isTeam, out));
   const rowW =
     parts.reduce((sum, p) => sum + p.w, 0) +
     H_GAP * Math.max(0, parts.length - 1);
@@ -313,6 +309,27 @@ export function edgePath(layout: OrgLayout, from: string, to: string): string {
 }
 
 /**
+ * The dotted arc for a message that doesn't follow a manager edge (peers, or
+ * across teams). It bows above the cards when they sit side by side, and to
+ * their right when they share a column (always in left-right, and in a
+ * top-down stack), where an arc over their tops would cut through the cards
+ * between them.
+ */
+export function arcPath(layout: OrgLayout, from: Box, to: Box): string {
+  // A top-down stacked column is also one x: bow sideways there too.
+  if (layout.direction === "lr" || Math.abs(from.x - to.x) < 1) {
+    const x1 = from.x + CARD_W;
+    const x2 = to.x + CARD_W;
+    const y1 = from.y + CARD_H / 2;
+    const y2 = to.y + CARD_H / 2;
+    return `M${x1},${y1}Q${Math.max(x1, x2) + 46},${(y1 + y2) / 2} ${x2},${y2}`;
+  }
+  const x1 = from.x + CARD_W / 2;
+  const x2 = to.x + CARD_W / 2;
+  return `M${x1},${from.y}Q${(x1 + x2) / 2},${Math.min(from.y, to.y) - 46} ${x2},${to.y}`;
+}
+
+/**
  * The connector from a manager's bottom-center to a report's top-center: down,
  * across at the gap's midpoint with rounded corners, then down. A straight
  * vertical when they're aligned.
@@ -334,7 +351,7 @@ export function elbowPath(from: Box, to: Box): string {
  * left-middle, across to the gap's midpoint, then down (or up) with rounded
  * corners. A straight line when they're level.
  */
-export function sidewaysPath(from: Box, to: Box): string {
+function sidewaysPath(from: Box, to: Box): string {
   const x1 = from.x + CARD_W;
   const y1 = from.y + CARD_H / 2;
   const x2 = to.x;

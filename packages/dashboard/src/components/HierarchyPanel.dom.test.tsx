@@ -1006,6 +1006,58 @@ describe("Layout: Top-down / Left-right (Terry: 'an org chart from LEFT TO RIGHT
     expect(sel()).toBe("Root");
   });
 
+  it("Left-right: ←/→ walk the Unassigned shelf (it is still a row)", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    tree([
+      node("Mgr", "running", [node("R1", "running")]),
+      node("S1", "running"),
+      node("S2", "running"),
+      node("S3", "running"),
+    ]);
+    useStore.setState({
+      sessions: ["Mgr", "R1", "S1", "S2", "S3"].map((id) => session(id)),
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("S3")).not.toBeNull());
+    // Precondition: the shelf is a row below the team, not a column.
+    expect(at("S1").y).toBe(at("S3").y);
+    expect(at("S1").y).toBeGreaterThan(at("R1").y);
+    const key = (id: string, k: string) =>
+      fireEvent.keyDown(card(id) as HTMLElement, { key: k });
+    const sel = () => inspector()?.dataset.orgInspector;
+    fireEvent.click(card("S1") as HTMLElement);
+    key("S1", "ArrowRight");
+    expect(sel()).toBe("S2");
+    key("S2", "ArrowRight");
+    expect(sel()).toBe("S3");
+    key("S3", "ArrowLeft");
+    expect(sel()).toBe("S2");
+  });
+
+  it("a lit chain is drawn over its stacked siblings' connectors (they share one spine)", async () => {
+    localStorage.setItem("autonomos.orgchart.layout", "lr");
+    tree([
+      node("Mgr", "running", [
+        node("R1", "running"),
+        node("R2", "running"),
+        node("R3", "running"),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["Mgr", "R1", "R2", "R3"].map((id) => session(id)),
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("R3")).not.toBeNull());
+    const order = () =>
+      [...document.querySelectorAll("[data-org-edge]")].map((e) =>
+        e.getAttribute("data-org-edge"),
+      );
+    // Precondition: unselected, the column draws top to bottom.
+    expect(order()).toEqual(["Mgr>R1", "Mgr>R2", "Mgr>R3"]);
+    fireEvent.click(card("R1") as HTMLElement);
+    expect(order().at(-1)).toBe("Mgr>R1");
+  });
+
   it("a lead's fold toggle sits on its RIGHT edge (where its connector leaves) in Left-right", async () => {
     localStorage.setItem("autonomos.orgchart.layout", "lr");
     fleet();

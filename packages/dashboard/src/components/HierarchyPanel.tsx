@@ -545,7 +545,7 @@ function OrgCanvas({
     // Top→down opens on the first root; left→right's root is at the far
     // left, so it opens on the chart's middle instead.
     anchorX:
-      direction === "td" && firstRoot
+      layout.direction === "td" && firstRoot
         ? firstRoot.x + CARD_W / 2
         : layout.width / 2,
     onGestureStart: onViewGesture,
@@ -576,20 +576,26 @@ function OrgCanvas({
       const me = flat.find((f) => f.node.id === id);
       const at = layout.pos.get(id);
       if (!me || !at) return;
+      // The neighbor along `axis` among the cards level with this one.
+      const along = (axis: "x" | "y", step: -1 | 1) => {
+        const cross = axis === "x" ? "y" : "x";
+        const line = flat
+          .map((f) => ({ id: f.node.id, p: layout.pos.get(f.node.id) }))
+          .filter((r) => r.p && r.p[cross] === at[cross])
+          .sort((a, b) => (a.p?.[axis] ?? 0) - (b.p?.[axis] ?? 0));
+        return line[line.findIndex((r) => r.id === id) + step]?.id;
+      };
+      const onShelf = layout.shelf !== null && at.y > layout.shelf.y;
       let to: string | undefined;
       if (layout.direction === "lr") {
         // Left→right: ← manager, → first report, ↑/↓ the neighbor in the
-        // same column (the same depth), across teams.
-        if (dir === "left") to = me.managerId;
+        // same column (the same depth), across teams. The Unassigned shelf
+        // is still a row, so ←/→ walk it.
+        if (onShelf && (dir === "left" || dir === "right"))
+          to = along("x", dir === "left" ? -1 : 1);
+        else if (dir === "left") to = me.managerId;
         else if (dir === "right") to = me.node.children[0]?.id;
-        else {
-          const column = flat
-            .map((f) => ({ id: f.node.id, p: layout.pos.get(f.node.id) }))
-            .filter((r) => r.p && r.p.x === at.x)
-            .sort((a, b) => (a.p?.y ?? 0) - (b.p?.y ?? 0));
-          const i = column.findIndex((r) => r.id === id);
-          to = column[i + (dir === "up" ? -1 : 1)]?.id;
-        }
+        else to = along("y", dir === "up" ? -1 : 1);
       } else {
         // In a stacked column, ↑ / ↓ walk the column (↑ off its top goes to
         // the manager); ↓ from a lead enters its column first, since the
@@ -597,22 +603,14 @@ function OrgCanvas({
         const col = layout.stacked.get(id)?.column;
         const i = col ? col.indexOf(id) : -1;
         const firstReport = me.node.children[0]?.id;
-        const ownColumn = firstReport
-          ? me.node.children
-              .map((c) => layout.stacked.get(c.id)?.column[0])
-              .find(Boolean)
-          : undefined;
+        // Every stacked report shares one column, so the first is its head.
+        const ownColumn = me.node.children.find((c) =>
+          layout.stacked.has(c.id),
+        )?.id;
         if (dir === "up") to = col && i > 0 ? col[i - 1] : me.managerId;
         else if (dir === "down")
           to = col ? col[i + 1] : (ownColumn ?? firstReport);
-        else {
-          const row = flat
-            .map((f) => ({ id: f.node.id, p: layout.pos.get(f.node.id) }))
-            .filter((r) => r.p && r.p.y === at.y)
-            .sort((a, b) => (a.p?.x ?? 0) - (b.p?.x ?? 0));
-          const i = row.findIndex((r) => r.id === id);
-          to = row[i + (dir === "left" ? -1 : 1)]?.id;
-        }
+        else to = along("x", dir === "left" ? -1 : 1);
       }
       if (!to) return;
       onSelect(to);
@@ -675,28 +673,36 @@ function OrgCanvas({
             width={layout.width}
             height={layout.height}
           >
-            {layout.edges.map(({ from, to }) => {
-              const a = layout.pos.get(from);
-              const b = layout.pos.get(to);
-              if (!a || !b) return null;
-              const dashed = exitedIds.has(from) || exitedIds.has(to);
-              const lit = chain?.has(from) && chain.has(to);
-              return (
-                <path
-                  key={`${from}>${to}`}
-                  data-org-edge={`${from}>${to}`}
-                  d={edgePath(layout, from, to)}
-                  fill="none"
-                  className="org-edge"
-                  stroke={lit ? tokens.status.active : tokens.edge}
-                  strokeWidth={lit ? 2 : 1.6}
-                  opacity={chain && !lit ? tokens.dimOpacity : undefined}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeDasharray={dashed ? "4 4" : undefined}
-                />
-              );
-            })}
+            {/* Lit edges last: a stacked column's connectors share one
+                spine, and a dimmed sibling's would paint over the chain. */}
+            {[...layout.edges]
+              .sort(
+                (e, f) =>
+                  Number(!!chain?.has(e.from) && chain.has(e.to)) -
+                  Number(!!chain?.has(f.from) && chain.has(f.to)),
+              )
+              .map(({ from, to }) => {
+                const a = layout.pos.get(from);
+                const b = layout.pos.get(to);
+                if (!a || !b) return null;
+                const dashed = exitedIds.has(from) || exitedIds.has(to);
+                const lit = chain?.has(from) && chain.has(to);
+                return (
+                  <path
+                    key={`${from}>${to}`}
+                    data-org-edge={`${from}>${to}`}
+                    d={edgePath(layout, from, to)}
+                    fill="none"
+                    className="org-edge"
+                    stroke={lit ? tokens.status.active : tokens.edge}
+                    strokeWidth={lit ? 2 : 1.6}
+                    opacity={chain && !lit ? tokens.dimOpacity : undefined}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={dashed ? "4 4" : undefined}
+                  />
+                );
+              })}
           </svg>
           {layout.shelf && (
             <div
