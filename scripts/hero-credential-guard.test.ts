@@ -253,6 +253,7 @@ describe("heroCliEnv: no operator login reaches a CLI through the env", () => {
     assert.equal(env.GEMINI_API_KEY, "hero-mock-gemini-key");
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, "sk-demo");
     assert.equal(env.HERO_MOCK_OPENAI_KEY, "sk-hero-mock");
+    assert.equal(env.DISABLE_AUTOUPDATER, "1");
   });
   it("keeps the rest of the operator's env", () => {
     assert.equal(env.PATH, "/usr/bin");

@@ -122,6 +122,10 @@ export function heroCliEnv(
   // Claude: the mock backend (zero tokens).
   env.ANTHROPIC_BASE_URL = mockUrl;
   env.ANTHROPIC_AUTH_TOKEN = "sk-demo";
+  // No self-update mid-shoot ("Update installed" in the pane). The operator's
+  // CLAUDE_* vars, now purged, used to decide this, and also the render mode
+  // (CLAUDE_CODE_NO_FLICKER): Claude now draws in its default inline mode.
+  env.DISABLE_AUTOUPDATER = "1";
   // Codex: the throwaway CODEX_HOME, whose only provider reads this key.
   env.CODEX_HOME = join(fakeHome, ".codex");
   env.HERO_MOCK_OPENAI_KEY = "sk-hero-mock";
