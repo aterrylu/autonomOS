@@ -45,7 +45,7 @@ jobs:
   on-main:
     name: Tag is on main
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -71,7 +71,7 @@ jobs:
   main-ci:
     name: Main CI is green at the tag
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
       actions: read
@@ -124,7 +124,7 @@ jobs:
     name: Publish release
     needs: [build, on-main, main-ci]
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       # Provenance attestation needs an OIDC token + the attestations scope.

@@ -58,7 +58,7 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # p95 22s over the last 12 runs.
     timeout-minutes: 10
     environment:

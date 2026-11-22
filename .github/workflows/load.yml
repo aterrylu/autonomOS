@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   statusline-load:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The test itself takes ~3-4 min (boot, 20 spawns, 2 × 60s phases).
     timeout-minutes: 15
     steps:
