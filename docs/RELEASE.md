@@ -298,7 +298,7 @@ That's it. No manual `npm version`, no manual tag, no manual upload.
 
 | Stage | Runner | Output |
 |---|---|---|
-| `build-server` (matrix) | macos-14, macos-15-intel, ubuntu, ubuntu-arm | 4 server tarballs (`install.sh` consumes these) |
+| `build-server` (matrix) | macos-15, macos-15-intel, ubuntu, ubuntu-arm | 4 server tarballs (`install.sh` consumes these) |
 | `release` | ubuntu | assembles the tarballs + SHA256SUMS, GitHub Release body = CHANGELOG section |
 
 Each tarball is a self-contained per-platform server bundle (the dashboard is
