@@ -1286,41 +1286,70 @@ export class LiveTerminal {
   }
 
   // Fit the terminal to its host and push the size to the PTY — but ONLY if
-  // the fit produced a PLAUSIBLE geometry. A freshly (re)created WebGL
-  // renderer may not have measured its character cell yet, so fit() can
-  // compute a wildly-too-small cols/rows (isPlausibleFit's headline case).
+  // the fit would produce a PLAUSIBLE geometry. A freshly (re)created WebGL
+  // renderer may not have measured its character cell yet, so the proposed
+  // cols/rows can be wildly too small (isPlausibleFit's headline case).
   // isDegenerate alone only blocks the 2×1 floor, so such a mis-measure would
   // otherwise reach the PTY and wedge the remote tty until a manual refresh
-  // (the idle self-shrink). On an implausible fit we skip the send, invalidate
-  // the cache (so a later box change still retries), and let scheduleFit retry
-  // on a settled frame. Returns true once applied.
+  // (the idle self-shrink). On an implausible proposal we skip both the fit
+  // and the send, invalidate the cache (so a later box change still retries),
+  // and let scheduleFit retry on a settled frame. Returns true when there is
+  // nothing left to retry: the fit was applied, or it waits for focus.
+  //
+  // INVARIANT (ADR-161): xterm's size changes only together with the PTY's.
+  // A pane resized on its own parses the agent's output at the wrong size,
+  // and on an alternate-screen TUI (Claude no_flicker) that is LOSSY: the
+  // alternate screen doesn't reflow, so a shrink drops the top rows and
+  // growing back leaves blank rows at the bottom. The PTY never changed, so no
+  // SIGWINCH reaches the agent and its differential renderer never repaints:
+  // the bottom half sits at the top until a hard refresh. Two rules keep it:
+  //  - The proposal is vetted BEFORE fit(), so a rejected size never reaches
+  //    xterm.
+  //  - While the window is unfocused the PTY isn't told (#125: only the
+  //    focused window drives the PTY's single size, so a second dashboard
+  //    window can't fight over it), so xterm isn't resized either; the fit
+  //    waits for handleFocus, which re-fits and sends. Until then the pane
+  //    keeps the size it last fitted while focused (the PTY's size, unless
+  //    another window resized the PTY since).
+  // A focused fit with no OPEN socket still applies, and sendResize sends
+  // nothing. That gap closes on the reconnect: the server always sends the
+  // PTY's size first (replay-begin), the pane parses the replay at it, and
+  // the end marker re-fits and sends.
   private applyFit(): boolean {
     if (this.disposed || !this.isHostVisible()) return false;
+    const w = this.host.offsetWidth;
+    const h = this.host.offsetHeight;
+    let dims: { cols: number; rows: number } | undefined;
+    try {
+      dims = this.fitAddon.proposeDimensions();
+    } catch (err) {
+      console.warn("fitAddon.proposeDimensions() failed:", err);
+      return false;
+    }
+    if (!dims || !isPlausibleFit(dims.cols, dims.rows, w, h)) {
+      this.lastFitW = 0;
+      this.lastFitH = 0;
+      return false;
+    }
+    // A plausible proposal means the renderer has settled: consume the
+    // recreate refresh even when the fit itself waits for focus. A background
+    // window (where WebGL context losses happen) would otherwise keep any
+    // rows the unsettled first refresh got wrong. Client-only, zero bytes to
+    // the PTY.
+    if (this.pendingRecreateRefresh) {
+      this.pendingRecreateRefresh = false;
+      this.terminal.refresh(0, this.terminal.rows - 1);
+    }
+    if (!document.hasFocus()) return true; // waits for handleFocus
     try {
       this.fitAddon.fit();
     } catch (err) {
       console.warn("fitAddon.fit() failed:", err);
       return false;
     }
-    const w = this.host.offsetWidth;
-    const h = this.host.offsetHeight;
-    if (!isPlausibleFit(this.terminal.cols, this.terminal.rows, w, h)) {
-      this.lastFitW = 0;
-      this.lastFitH = 0;
-      return false;
-    }
     this.lastFitW = w;
     this.lastFitH = h;
-    if (this.pendingRecreateRefresh) {
-      // Renderer provably settled (plausible fit). One more viewport-only
-      // re-rasterization in case the recreate-time refresh ran against an
-      // unsettled atlas AND no resize followed to force a repaint.
-      this.pendingRecreateRefresh = false;
-      this.terminal.refresh(0, this.terminal.rows - 1);
-    }
-    if (this.wsRef.current && document.hasFocus()) {
-      sendResize(this.wsRef.current, this.terminal);
-    }
+    if (this.wsRef.current) sendResize(this.wsRef.current, this.terminal);
     return true;
   }
 

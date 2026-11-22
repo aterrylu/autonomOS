@@ -26,6 +26,22 @@ import type { TerminalBackend } from "./types";
  * calls so the tests can assert they DIDN'T happen.
  */
 
+// document.hasFocus(), controllable per test. Default false, like jsdom's own:
+// most suites count exact socket sends and must not gain the focused-only
+// reconnect nudge. A fit waits for focus (#125: only the focused window
+// drives the PTY's size), so a test that needs a fit to apply sets this.
+let windowFocused = false;
+let hasFocusSpy: ReturnType<typeof vi.spyOn>;
+beforeEach(() => {
+  windowFocused = false;
+  hasFocusSpy = vi
+    .spyOn(document, "hasFocus")
+    .mockImplementation(() => windowFocused);
+});
+afterEach(() => {
+  hasFocusSpy.mockRestore();
+});
+
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
   // All four readyState constants — production code compares against
@@ -141,13 +157,29 @@ function makeFakeBackend(): TerminalBackend & {
     buffer: { active: buf },
     textarea: null,
   };
+  // What the "renderer" would propose for the pane's box. null = propose the
+  // terminal's current size (a fit that changes nothing), the default.
+  let proposed: { cols: number; rows: number } | null = null;
+  const proposeDimensions = () =>
+    proposed ?? { cols: terminal.cols, rows: terminal.rows };
   const backend = {
     terminal: terminal as unknown as TerminalBackend["terminal"],
     fitAddon: {
+      // Same contract as @xterm/addon-fit: fit() applies exactly what
+      // proposeDimensions() returns, resizing only on a change.
       fit: () => {
         state.fits++;
+        const d = proposeDimensions();
+        if (d.cols !== terminal.cols || d.rows !== terminal.rows)
+          terminal.resize(d.cols, d.rows);
       },
+      proposeDimensions,
+      dispose: () => {},
     } as TerminalBackend["fitAddon"],
+    /** Set what the next fit proposes (the pane's box changed). */
+    propose: (cols: number, rows: number) => {
+      proposed = { cols, rows };
+    },
     createWebglAddon: () => null,
     get disposed() {
       return state.disposed;
@@ -180,6 +212,7 @@ function makeFakeBackend(): TerminalBackend & {
     scrolls: number;
     resizes: [number, number][];
     fits: number;
+    propose: (cols: number, rows: number) => void;
     buf: { baseY: number; viewportY: number };
     fireScroll: (n: number) => void;
     type: (d: string) => void;
@@ -533,6 +566,7 @@ describe("follow indicator (jump-to-latest pill)", () => {
   });
 
   it("window refocus never sends the cols-1 fake-resize pair (the codex 3J-rebuild trigger)", () => {
+    windowFocused = true; // a refocused window: the fit really runs
     const { entry } = mountF("f6");
     // Make the host measurable so handleFocus takes its active branch.
     Object.defineProperty(entry.host, "offsetWidth", {
@@ -665,12 +699,36 @@ describe("WebGL-recreate full-viewport refresh (blackout HARDENING, not a fix)",
   });
 
   it("settled-fit consumes the recreate flag for ONE more refresh, then never again", () => {
+    windowFocused = true; // a fit applies only in the focused window
     mountVisible("w5");
     expect(refreshes).toBe(1); // recreate-time refresh (possibly unsettled atlas)
     window.dispatchEvent(new Event("focus")); // handleFocus → applyFit succeeds
     expect(refreshes).toBe(2); // settled-path refresh consumed the flag
     window.dispatchEvent(new Event("focus"));
     expect(refreshes).toBe(2); // flag single-use — no refresh-per-fit
+  });
+
+  it("an UNFOCUSED window still gets the settled refresh after a context loss, with zero bytes to the PTY", () => {
+    mountVisible("w6"); // unfocused: the fit itself waits for focus
+    expect(refreshes).toBe(1);
+    const ws = FakeWebSocket.instances[0];
+    const sent0 = ws.sent.length;
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+    try {
+      contextLossCb?.(); // a background window is where contexts get dropped
+    } finally {
+      raf.mockRestore();
+    }
+    // recreate-time refresh + the settled one (a plausible proposal = settled)
+    expect(refreshes).toBe(3);
+    expect(ws.sent.slice(sent0).filter((d) => d.includes('"resize"'))).toEqual(
+      [],
+    );
   });
 
   it("detach/re-attach cycle refreshes exactly once per recreation", () => {
@@ -680,6 +738,150 @@ describe("WebGL-recreate full-viewport refresh (blackout HARDENING, not a fix)",
     document.body.appendChild(c2);
     entry.attach(c2, null); // recreates → one more refresh
     expect(refreshes).toBe(2);
+  });
+});
+
+/**
+ * xterm's size moves only together with the PTY's (ADR-161). A pane resized on
+ * its own parses the agent's output at the wrong size; on an alternate-screen
+ * TUI (Claude no_flicker) that is lossy, because the alternate screen doesn't
+ * reflow. And since the PTY never changed, the agent gets no SIGWINCH and its
+ * differential renderer never repaints: the screen stays with its bottom half
+ * at the top until a hard refresh. Measured live: an unfocused 49→34→49 row
+ * box change resized xterm both ways with 0 resize messages sent.
+ * These drive the REAL ResizeObserver callback and focus handler.
+ */
+describe("pane size never diverges from the PTY", () => {
+  let backend: ReturnType<typeof makeFakeBackend>;
+  let observe: (() => void) | null = null;
+  let box = { w: 1144, h: 795 };
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    observe = null;
+    box = { w: 1144, h: 795 };
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: () => void) {
+          observe = cb;
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    // Frames are irrelevant here; a retried fit must not recurse forever.
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    _setBackendFactoryForTesting(() => {
+      backend = makeFakeBackend();
+      return backend;
+    });
+    useStore.setState({ fetchSessions: vi.fn() as never });
+  });
+
+  afterEach(() => {
+    _disposeAllTerminals();
+    _setBackendFactoryForTesting(null);
+    vi.unstubAllGlobals();
+  });
+
+  /** A visible pane, fitted (focused) to 141x49 in a 1144x795 box. */
+  function mountFitted(id: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const entry = acquireTerminal(id);
+    if (!entry) throw new Error("null entry");
+    Object.defineProperty(entry.host, "offsetWidth", {
+      configurable: true,
+      get: () => box.w,
+    });
+    Object.defineProperty(entry.host, "offsetHeight", {
+      configurable: true,
+      get: () => box.h,
+    });
+    entry.attach(container, null);
+    windowFocused = true;
+    backend.propose(141, 49);
+    observe?.();
+    expect([backend.terminal.cols, backend.terminal.rows]).toEqual([141, 49]);
+    return { entry, ws: FakeWebSocket.instances[0] };
+  }
+
+  /** The pane's box changes; the renderer would now propose cols x rows. */
+  function resizeBox(w: number, h: number, cols: number, rows: number) {
+    box = { w, h };
+    backend.propose(cols, rows);
+    observe?.();
+  }
+
+  const resizeMsgs = (ws: FakeWebSocket) =>
+    ws.sent
+      .filter((d) => d.includes('"resize"'))
+      .map((d) => JSON.parse(d) as { cols: number; rows: number });
+
+  it("unfocused: a shrink and grow-back never touches xterm, so the alternate screen keeps its rows", () => {
+    const { ws } = mountFitted("sz1");
+    const resized0 = backend.resizes.length;
+    const sent0 = resizeMsgs(ws).length;
+    windowFocused = false;
+    resizeBox(1144, 600, 141, 37); // e.g. the window shrinks behind another app
+    resizeBox(1144, 795, 141, 49); // …and comes back
+    // The PTY wasn't told (#125), so xterm must not have moved either: a
+    // round trip on the alternate screen loses the top rows for good.
+    expect(backend.resizes.slice(resized0)).toEqual([]);
+    expect(resizeMsgs(ws).length).toBe(sent0);
+  });
+
+  it("unfocused: a deferred fit applies on focus, and xterm and the PTY get the SAME size", () => {
+    const { ws } = mountFitted("sz2");
+    windowFocused = false;
+    resizeBox(1000, 600, 123, 37);
+    expect([backend.terminal.cols, backend.terminal.rows]).toEqual([141, 49]);
+    windowFocused = true;
+    window.dispatchEvent(new Event("focus"));
+    expect([backend.terminal.cols, backend.terminal.rows]).toEqual([123, 37]);
+    expect(resizeMsgs(ws).at(-1)).toMatchObject({ cols: 123, rows: 37 });
+  });
+
+  it("#125 multi-window: an unfocused window neither sends its size nor resizes its own xterm, then reclaims the PTY on focus", () => {
+    const { ws } = mountFitted("sz3");
+    const resized0 = backend.resizes.length;
+    const sent0 = resizeMsgs(ws).length;
+    windowFocused = false; // the operator is typing in ANOTHER dashboard window
+    resizeBox(800, 500, 98, 31);
+    resizeBox(700, 450, 86, 28);
+    expect(resizeMsgs(ws).length).toBe(sent0); // no fight over the PTY's one size
+    // …and no local resize either: this window's alternate screen would
+    // drop rows the agent (never SIGWINCHed) won't repaint.
+    expect(backend.resizes.slice(resized0)).toEqual([]);
+    expect([backend.terminal.cols, backend.terminal.rows]).toEqual([141, 49]);
+    windowFocused = true; // they come back to this window
+    window.dispatchEvent(new Event("focus"));
+    expect(resizeMsgs(ws).at(-1)).toMatchObject({ cols: 86, rows: 28 });
+  });
+
+  it("a rejected (implausible) proposal never resizes xterm", () => {
+    const { ws } = mountFitted("sz4");
+    const resized0 = backend.resizes.length;
+    const sent0 = resizeMsgs(ws).length;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // An unsettled renderer: 20 cols in a 1144px box implies a 57px cell.
+      resizeBox(1144, 700, 20, 43);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(backend.resizes.slice(resized0)).toEqual([]);
+    expect(resizeMsgs(ws).length).toBe(sent0);
+  });
+
+  it("focused: a real box change resizes xterm and sends the same size to the PTY", () => {
+    const { ws } = mountFitted("sz5");
+    resizeBox(1144, 600, 141, 37);
+    expect([backend.terminal.cols, backend.terminal.rows]).toEqual([141, 37]);
+    expect(resizeMsgs(ws).at(-1)).toMatchObject({ cols: 141, rows: 37 });
   });
 });
 
@@ -1213,6 +1415,7 @@ describe("acked input — per-keystroke detection", () => {
         configurable: true,
         get: () => 700,
       });
+      windowFocused = true; // the end-marker re-fit applies only when focused
       const fits0 = backend.fits;
       expect(
         backend.parseOsc(7777, "autonomos-replay-begin;cols=203;rows=61"),
