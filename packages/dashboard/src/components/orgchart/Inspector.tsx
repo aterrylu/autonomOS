@@ -424,6 +424,7 @@ export function OrgInspector({
   onOpen,
   onResume,
   onRestart,
+  onChangePermission,
   onMenu,
 }: {
   node: AgentTreeNode;
@@ -438,6 +439,8 @@ export function OrgInspector({
   onOpen: (node: AgentTreeNode) => void;
   onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
   onRestart: (id: string) => void;
+  /** Opens the Permission… dialog (restart with a chosen value). */
+  onChangePermission?: (id: string) => void;
   onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
 }) {
   const exited = node.status !== "running";
@@ -587,6 +590,17 @@ export function OrgInspector({
           >
             never asks
           </span>
+        )}
+        {onChangePermission && (
+          <button
+            type="button"
+            data-org-action="permission"
+            className="cursor-pointer rounded px-1.5 py-px text-[10.5px]"
+            style={{ border: `1px solid ${tokens.cardBorder}` }}
+            onClick={() => onChangePermission(node.id)}
+          >
+            Change…
+          </button>
         )}
       </span>,
     ]);

@@ -1096,6 +1096,7 @@ export function HierarchyPanel({
   const notificationCounts = useStore((s) => s.notificationCounts);
   const resumeSession = useStore((s) => s.resumeSession);
   const restartSession = useStore((s) => s.restartSession);
+  const openPermissionDialog = useStore((s) => s.openPermissionDialog);
   const [showAllExited, setShowAllExited] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [engaged, setEngaged] = useState(false);
@@ -1353,6 +1354,7 @@ export function HierarchyPanel({
             onOpen={openAgent}
             onResume={resumeAgent}
             onRestart={(id) => void restartSession(id)}
+            onChangePermission={(id) => openPermissionDialog(id)}
             onMenu={openMenu}
           />
         )}

@@ -3,6 +3,7 @@ import { agentsApi } from "./api/agents";
 import { ApiError } from "./api/core";
 import { ActionToast } from "./components/ActionToast";
 import { Header } from "./components/Header";
+import { PermissionDialog } from "./components/PermissionDialog";
 import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -222,6 +223,7 @@ export function App() {
         </div>
         <StatusBar />
         <ActionToast />
+        <PermissionDialog />
         <ShortcutHelpOverlay />
         <QuickSwitcher />
       </div>
