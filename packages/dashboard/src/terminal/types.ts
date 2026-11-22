@@ -103,6 +103,10 @@ export interface ITerminalAddon {
 
 export interface IFitAddon extends ITerminalAddon {
   fit(): void;
+  /** The size fit() would apply, WITHOUT applying it (undefined while the
+   *  renderer hasn't measured its cell). applyFit vets this before fit() so a
+   *  rejected size never reaches xterm. */
+  proposeDimensions(): { cols: number; rows: number } | undefined;
 }
 
 export interface IWebglAddon extends ITerminalAddon {
