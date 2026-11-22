@@ -9,7 +9,14 @@ import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { OrgInspector } from "./orgchart/Inspector";
-import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
+import {
+  CARD_H,
+  CARD_W,
+  edgePath,
+  layoutOrg,
+  type OrgDirection,
+  PAD,
+} from "./orgchart/layout";
 import { MessageLayer, type MessageMode } from "./orgchart/MessageLayer";
 import { type MapCard, Minimap, ZoomControls } from "./orgchart/Minimap";
 import { pruneExited } from "./orgchart/pruneExited";
@@ -432,6 +439,7 @@ function OrgCanvas({
   selectionChainIds,
   onSelect,
   messageMode,
+  direction,
   anchorOf,
   onOpen,
   onResume,
@@ -455,6 +463,8 @@ function OrgCanvas({
   selectionChainIds: Set<string> | null;
   onSelect: (id: string | null) => void;
   messageMode: MessageMode;
+  /** Top→down or left→right (the toolbar's Layout switch). */
+  direction: OrgDirection;
   /** The drawn card that stands for an agent (itself, or its nearest visible
    *  ancestor when its team is folded). */
   anchorOf: (id: string) => string | undefined;
@@ -467,8 +477,9 @@ function OrgCanvas({
     () =>
       layoutOrg(roots, {
         isTeam: (n) => collapsed.has(n.id) && rollups.has(n.id),
+        direction,
       }),
-    [roots, collapsed, rollups],
+    [roots, collapsed, rollups, direction],
   );
   const flat = useMemo(() => flatten(roots), [roots]);
   // Names drawn more than once get an id hint on every card that shares them.
@@ -531,7 +542,12 @@ function OrgCanvas({
     stageRef,
     content,
     cards,
-    anchorX: firstRoot ? firstRoot.x + CARD_W / 2 : layout.width / 2,
+    // Top→down opens on the first root; left→right's root is at the far
+    // left, so it opens on the chart's middle instead.
+    anchorX:
+      layout.direction === "td" && firstRoot
+        ? firstRoot.x + CARD_W / 2
+        : layout.width / 2,
     onGestureStart: onViewGesture,
   });
   const mapCards = useMemo<MapCard[]>(
@@ -560,16 +576,41 @@ function OrgCanvas({
       const me = flat.find((f) => f.node.id === id);
       const at = layout.pos.get(id);
       if (!me || !at) return;
-      let to: string | undefined;
-      if (dir === "up") to = me.managerId;
-      else if (dir === "down") to = me.node.children[0]?.id;
-      else {
-        const row = flat
+      // The neighbor along `axis` among the cards level with this one.
+      const along = (axis: "x" | "y", step: -1 | 1) => {
+        const cross = axis === "x" ? "y" : "x";
+        const line = flat
           .map((f) => ({ id: f.node.id, p: layout.pos.get(f.node.id) }))
-          .filter((r) => r.p && r.p.y === at.y)
-          .sort((a, b) => (a.p?.x ?? 0) - (b.p?.x ?? 0));
-        const i = row.findIndex((r) => r.id === id);
-        to = row[i + (dir === "left" ? -1 : 1)]?.id;
+          .filter((r) => r.p && r.p[cross] === at[cross])
+          .sort((a, b) => (a.p?.[axis] ?? 0) - (b.p?.[axis] ?? 0));
+        return line[line.findIndex((r) => r.id === id) + step]?.id;
+      };
+      const onShelf = layout.shelf !== null && at.y > layout.shelf.y;
+      let to: string | undefined;
+      if (layout.direction === "lr") {
+        // Left→right: ← manager, → first report, ↑/↓ the neighbor in the
+        // same column (the same depth), across teams. The Unassigned shelf
+        // is still a row, so ←/→ walk it.
+        if (onShelf && (dir === "left" || dir === "right"))
+          to = along("x", dir === "left" ? -1 : 1);
+        else if (dir === "left") to = me.managerId;
+        else if (dir === "right") to = me.node.children[0]?.id;
+        else to = along("y", dir === "up" ? -1 : 1);
+      } else {
+        // In a stacked column, ↑ / ↓ walk the column (↑ off its top goes to
+        // the manager); ↓ from a lead enters its column first, since the
+        // column is the leftmost thing under it.
+        const col = layout.stacked.get(id)?.column;
+        const i = col ? col.indexOf(id) : -1;
+        const firstReport = me.node.children[0]?.id;
+        // Every stacked report shares one column, so the first is its head.
+        const ownColumn = me.node.children.find((c) =>
+          layout.stacked.has(c.id),
+        )?.id;
+        if (dir === "up") to = col && i > 0 ? col[i - 1] : me.managerId;
+        else if (dir === "down")
+          to = col ? col[i + 1] : (ownColumn ?? firstReport);
+        else to = along("x", dir === "left" ? -1 : 1);
       }
       if (!to) return;
       onSelect(to);
@@ -632,28 +673,36 @@ function OrgCanvas({
             width={layout.width}
             height={layout.height}
           >
-            {layout.edges.map(({ from, to }) => {
-              const a = layout.pos.get(from);
-              const b = layout.pos.get(to);
-              if (!a || !b) return null;
-              const dashed = exitedIds.has(from) || exitedIds.has(to);
-              const lit = chain?.has(from) && chain.has(to);
-              return (
-                <path
-                  key={`${from}>${to}`}
-                  data-org-edge={`${from}>${to}`}
-                  d={elbowPath(a, b)}
-                  fill="none"
-                  className="org-edge"
-                  stroke={lit ? tokens.status.active : tokens.edge}
-                  strokeWidth={lit ? 2 : 1.6}
-                  opacity={chain && !lit ? tokens.dimOpacity : undefined}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeDasharray={dashed ? "4 4" : undefined}
-                />
-              );
-            })}
+            {/* Lit edges last: a stacked column's connectors share one
+                spine, and a dimmed sibling's would paint over the chain. */}
+            {[...layout.edges]
+              .sort(
+                (e, f) =>
+                  Number(!!chain?.has(e.from) && chain.has(e.to)) -
+                  Number(!!chain?.has(f.from) && chain.has(f.to)),
+              )
+              .map(({ from, to }) => {
+                const a = layout.pos.get(from);
+                const b = layout.pos.get(to);
+                if (!a || !b) return null;
+                const dashed = exitedIds.has(from) || exitedIds.has(to);
+                const lit = chain?.has(from) && chain.has(to);
+                return (
+                  <path
+                    key={`${from}>${to}`}
+                    data-org-edge={`${from}>${to}`}
+                    d={edgePath(layout, from, to)}
+                    fill="none"
+                    className="org-edge"
+                    stroke={lit ? tokens.status.active : tokens.edge}
+                    strokeWidth={lit ? 2 : 1.6}
+                    opacity={chain && !lit ? tokens.dimOpacity : undefined}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={dashed ? "4 4" : undefined}
+                  />
+                );
+              })}
           </svg>
           {layout.shelf && (
             <div
@@ -739,6 +788,7 @@ function OrgCanvas({
                 y={p.y}
                 rollup={rollup}
                 folded={folded}
+                direction={layout.direction}
                 tokens={tokens}
                 onToggle={onToggleCollapse}
               />
@@ -771,6 +821,7 @@ function TeamControls({
   y,
   rollup,
   folded,
+  direction,
   tokens,
   onToggle,
 }: {
@@ -779,6 +830,7 @@ function TeamControls({
   y: number;
   rollup: TeamRollup;
   folded: boolean;
+  direction: OrgDirection;
   tokens: OrgChartTokens;
   onToggle: (id: string) => void;
 }) {
@@ -875,8 +927,10 @@ function TeamControls({
         title={folded ? `Show ${rollup.total} in team` : "Collapse team"}
         className="org-card absolute flex h-[18px] min-w-[22px] cursor-pointer items-center justify-center rounded-full px-1.5 text-[10px] leading-none tabular-nums focus-visible:outline-2 focus-visible:outline-offset-1"
         style={{
-          left: x + CARD_W / 2 - 11,
-          top: y + CARD_H - 9,
+          // On the connector where it leaves the card: its bottom edge top→down,
+          // its right edge left→right.
+          left: direction === "lr" ? x + CARD_W - 11 : x + CARD_W / 2 - 11,
+          top: direction === "lr" ? y + CARD_H / 2 - 9 : y + CARD_H - 9,
           color: tokens.muted,
           // Opaque page color so the toggle sits cleanly ON the connector.
           background: tokens.bg,
@@ -909,6 +963,8 @@ function Toolbar({
   onOpen,
   messageMode,
   onMessageMode,
+  direction,
+  onDirection,
   tokens,
 }: {
   /** Where the canvas portals its zoom controls. */
@@ -920,6 +976,8 @@ function Toolbar({
   onOpen: (node: AgentTreeNode) => void;
   messageMode: MessageMode;
   onMessageMode: (m: MessageMode) => void;
+  direction: OrgDirection;
+  onDirection: (d: OrgDirection) => void;
   tokens: OrgChartTokens;
 }) {
   const showToggle = hiddenExited > 0 || showAllExited;
@@ -960,6 +1018,36 @@ function Toolbar({
         data-org-zoom-slot
         className="flex items-center"
       />
+      <fieldset
+        data-org-layout-mode
+        className="m-0 flex items-center gap-1.5 border-0 p-0"
+      >
+        <legend className="float-left mr-1" style={{ color: tokens.muted }}>
+          Layout
+        </legend>
+        <span
+          className="inline-flex overflow-hidden rounded"
+          style={{ border: `1px solid ${tokens.cardBorder}` }}
+        >
+          {LAYOUT_MODES.map(({ value, label, hint }) => (
+            <button
+              key={value}
+              type="button"
+              data-org-layout={value}
+              aria-pressed={direction === value}
+              title={hint}
+              className="cursor-pointer px-2 py-0.5"
+              style={{
+                color: direction === value ? tokens.fg : tokens.muted,
+                background: direction === value ? tokens.chip : "transparent",
+              }}
+              onClick={() => onDirection(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+      </fieldset>
       <fieldset
         data-org-message-mode
         className="m-0 flex items-center gap-1.5 border-0 p-0"
@@ -1017,6 +1105,42 @@ function rollupBucket(node: AgentTreeNode, info?: AgentInfo): RollupBucket {
   // "Working" is the sidebar's shimmer set — one definition (ADR-090).
   if (statusLabelStyle(status, false).shimmer) return "working";
   return "idle";
+}
+
+const LAYOUT_MODES: Array<{
+  value: OrgDirection;
+  label: string;
+  hint: string;
+}> = [
+  { value: "td", label: "Top-down", hint: "Managers above their reports" },
+  {
+    value: "lr",
+    label: "Left-right",
+    hint: "Managers to the left of their reports",
+  },
+];
+
+const LAYOUT_KEY = "autonomos.orgchart.layout";
+
+/** Layout direction, remembered per browser. Left-right unless the browser
+ * saved Top-down (Terry's pick). */
+function useLayoutDirection(): [OrgDirection, (d: OrgDirection) => void] {
+  const [dir, setDir] = useState<OrgDirection>(() => {
+    try {
+      return localStorage.getItem(LAYOUT_KEY) === "td" ? "td" : "lr";
+    } catch {
+      return "lr";
+    }
+  });
+  const set = useCallback((d: OrgDirection) => {
+    setDir(d);
+    try {
+      localStorage.setItem(LAYOUT_KEY, d);
+    } catch {
+      // Not persisted; the choice still applies this session.
+    }
+  }, []);
+  return [dir, set];
 }
 
 const MESSAGES_KEY = "autonomos.orgchart.messages";
@@ -1117,6 +1241,7 @@ export function HierarchyPanel({
   );
   const [collapsed, toggleCollapsed] = useCollapsedTeams();
   const [messageMode, setMessageMode] = useMessageMode();
+  const [direction, setDirection] = useLayoutDirection();
   // Rollups count the tree as DRAWN (after pruning) but BEFORE folding, so a
   // collapsed lead still says who in its team needs you.
   const rollups = useMemo(
@@ -1296,6 +1421,7 @@ export function HierarchyPanel({
         selectionChainIds={selectionChainIds}
         onSelect={select}
         messageMode={messageMode}
+        direction={direction}
         anchorOf={anchorOf}
         tokens={tokens}
         page={page}
@@ -1324,6 +1450,8 @@ export function HierarchyPanel({
           onOpen={openAgent}
           messageMode={messageMode}
           onMessageMode={setMessageMode}
+          direction={direction}
+          onDirection={setDirection}
           tokens={tokens}
         />
       )}
