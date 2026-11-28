@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import type { NotificationFeed } from "@autonomos/core";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { statusApi } from "../api/status";
 import { focusTerminal } from "../hooks/useTerminal";
 import {
@@ -58,25 +59,36 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
 
   const [notifications, setNotifications] = useState<PanelNotification[]>([]);
   const [totalUnread, setTotalUnread] = useState(0);
+  // Unread the server counted but no longer holds (each agent keeps only its
+  // latest notifications), so the header's count can exceed the rows shown.
+  const [unreadNotShown, setUnreadNotShown] = useState(0);
+  const [unreadBySession, setUnreadBySession] = useState<
+    Record<string, number>
+  >({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [markingRead, setMarkingRead] = useState(false);
   const [visible, setVisible] = useState(PAGE_SIZE);
   const lockNoticeShown = useLockNoticeShown();
 
+  // Setters only, so stable: the mount effect below still runs once.
+  const applyFeed = useCallback((data: NotificationFeed | null) => {
+    setNotifications(data?.notifications ?? []);
+    setTotalUnread(data?.totalUnread ?? 0);
+    setUnreadNotShown(data?.unreadNotShown ?? 0);
+    setUnreadBySession(data?.unreadBySession ?? {});
+  }, []);
+
   useEffect(() => {
     statusApi
       .feed()
-      .then((data) => {
-        setNotifications(data?.notifications ?? []);
-        setTotalUnread(data?.totalUnread ?? 0);
-      })
+      .then(applyFeed)
       .catch((err) => {
         setError("Failed to load notifications");
         console.warn("[NotificationPanel] fetch error:", err);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [applyFeed]);
 
   // Latest-closer ref: the bell passes an inline arrow, and re-registering on
   // identity churn (it re-renders on every notification) would move this panel
@@ -104,8 +116,14 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
   async function handleMarkAllRead() {
     if (markingRead) return;
     setMarkingRead(true);
+    // Every session the SERVER counts as unread, plus any listed row: the
+    // feed lists only the newest rows, so a session whose unread are all older
+    // has no row here and would otherwise never be marked.
     const unreadSessionIds = [
-      ...new Set(notifications.filter((n) => !n.read).map((n) => n.sessionId)),
+      ...new Set([
+        ...Object.keys(unreadBySession),
+        ...notifications.filter((n) => !n.read).map((n) => n.sessionId),
+      ]),
     ];
     // Per-session fan-out, settled independently: one session failing to mark
     // read must not strand the rest as unread.
@@ -115,24 +133,34 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
         return id;
       }),
     );
-    const succeeded = new Set(
-      results
-        .filter(
-          (r): r is PromiseFulfilledResult<string> => r.status === "fulfilled",
-        )
-        .map((r) => r.value),
-    );
+    const succeeded = new Set<string>();
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") succeeded.add(r.value);
+      else
+        console.warn(
+          `[NotificationPanel] mark read failed for ${unreadSessionIds[i]}:`,
+          r.reason,
+        );
+    });
     setNotifications((prev) =>
       prev.map((n) => (succeeded.has(n.sessionId) ? { ...n, read: true } : n)),
     );
-    setTotalUnread((prev) =>
-      Math.max(
-        0,
-        prev -
-          notifications.filter((n) => !n.read && succeeded.has(n.sessionId))
-            .length,
-      ),
-    );
+    // Re-read the true total instead of subtracting the rows marked here: a
+    // session's count includes unread it no longer retains.
+    try {
+      applyFeed(await statusApi.feed({ fresh: true }));
+    } catch (err) {
+      console.warn("[NotificationPanel] refresh after mark-all failed:", err);
+      // Each succeeded session is now 0 on the server, its unread no longer
+      // kept included, so drop its whole count, not just its listed rows.
+      const remaining = Object.fromEntries(
+        Object.entries(unreadBySession).filter(([id]) => !succeeded.has(id)),
+      );
+      const left = Object.values(remaining).reduce((a, b) => a + b, 0);
+      setUnreadBySession(remaining);
+      setTotalUnread(left);
+      setUnreadNotShown((prev) => Math.min(prev, left));
+    }
     // Kept as the store action rather than a bare `statusPoll.refresh()`: the
     // poll's only subscriber is the Sidebar, which is unmounted whenever the
     // sidebar is collapsed — a bare refresh would then update the poll's
@@ -264,6 +292,20 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
           >
             Load more ({notifications.length - visible} remaining)
           </button>
+        )}
+
+        {!hasMore && unreadNotShown > 0 && (
+          <div
+            data-testid="unread-not-shown"
+            className="px-3 py-2 text-center text-[10px]"
+            style={{
+              color: page.statusFg,
+              borderTop: `1px solid ${page.border}`,
+            }}
+          >
+            Showing the latest notifications · {unreadNotShown} older unread not
+            shown
+          </div>
         )}
       </div>
     </div>

@@ -75,6 +75,20 @@ const CLEAR_TOOL = {
 
 // In-memory stores — keyed by autonomOS session ID
 const notifications = new Map<string, SessionNotification[]>();
+/** How many notifications each session RETAINS for display. A memory bound
+ *  only: it must never bound the unread count (see `evictedUnread`). */
+export const NOTIFICATION_RETENTION = 50;
+/** Per session: unread user-facing notifications the retention cap dropped
+ *  since the last markRead. The unread count is retained-unread PLUS `count`,
+ *  so it stays true past the cap; the count used to top out at 50 because it
+ *  was derived from the capped list alone. `retractable` keeps the ids of the
+ *  evicted unread SystemWarnings (bounded like retention) so a late
+ *  retraction still takes its one off the count. */
+interface EvictedUnread {
+  count: number;
+  retractable: Set<string>;
+}
+const evictedUnread = new Map<string, EvictedUnread>();
 const agentStates = new Map<string, AgentState>();
 
 /** Events that can transition OUT of idle/stopped state.
@@ -156,10 +170,24 @@ export function isUserFacingNotification(n: SessionNotification): boolean {
   return n.event !== "Stop";
 }
 
+function isUnread(n: SessionNotification): boolean {
+  return !n.read && isUserFacingNotification(n);
+}
+
+/** The TRUE unread count since the last markRead — includes the ones the
+ *  retention cap no longer keeps. */
 export function getUnreadCount(sessionId: string): number {
-  return getNotifications(sessionId).filter(
-    (n) => !n.read && isUserFacingNotification(n),
-  ).length;
+  return (
+    getNotifications(sessionId).filter(isUnread).length +
+    (evictedUnread.get(sessionId)?.count ?? 0)
+  );
+}
+
+/** Every session that holds notifications or an evicted unread count. A
+ *  session's retained list can empty (retraction) while it still owes evicted
+ *  unread, so `notifications` alone is not the set to count over. */
+function notificationSessionIds(): Set<string> {
+  return new Set([...notifications.keys(), ...evictedUnread.keys()]);
 }
 
 /**
@@ -199,24 +227,46 @@ export function getAgentStatusSnapshot(): Record<
 
 export function markRead(sessionId: string): void {
   const items = notifications.get(sessionId);
-  if (items) {
-    for (const n of items) n.read = true;
-    emitStatusDelta(sessionId);
-  }
+  const hadEvicted = evictedUnread.delete(sessionId);
+  if (items) for (const n of items) n.read = true;
+  if (items || hadEvicted) emitStatusDelta(sessionId);
 }
 
 export function clearNotifications(sessionId: string): void {
   notifications.delete(sessionId);
+  evictedUnread.delete(sessionId);
 }
 
-/** Append a notification for a session, capped at the 50 most recent. */
+/** Append a notification for a session, retaining the NOTIFICATION_RETENTION
+ *  most recent. Unread ones the cap drops are still counted (evictedUnread). */
 function appendNotification(
   sessionId: string,
   item: SessionNotification,
 ): void {
   const items = notifications.get(sessionId) ?? [];
   items.push(item);
-  if (items.length > 50) items.splice(0, items.length - 50);
+  if (items.length > NOTIFICATION_RETENTION) {
+    const dropped = items.splice(0, items.length - NOTIFICATION_RETENTION);
+    const droppedUnread = dropped.filter(isUnread);
+    if (droppedUnread.length > 0) {
+      const ev = evictedUnread.get(sessionId) ?? {
+        count: 0,
+        retractable: new Set<string>(),
+      };
+      ev.count += droppedUnread.length;
+      for (const n of droppedUnread) {
+        if (n.event === "SystemWarning" && n.id) ev.retractable.add(n.id);
+      }
+      // Bounded like retention: past it the oldest id is forgotten and that
+      // warning can no longer be retracted (it stays counted until read).
+      while (ev.retractable.size > NOTIFICATION_RETENTION) {
+        const oldest = ev.retractable.values().next().value;
+        if (oldest === undefined) break;
+        ev.retractable.delete(oldest);
+      }
+      evictedUnread.set(sessionId, ev);
+    }
+  }
   notifications.set(sessionId, items);
   emitStatusDelta(sessionId);
 }
@@ -260,8 +310,9 @@ export function pushServerNotification(message: string): string {
   return pushSystemNotification(SERVER_NOTICE_KEY, message);
 }
 
-/** Withdraw a previously pushed SystemWarning. No-op if it already scrolled
- *  out of the 50-item cap, was cleared, or the id is unknown. The event guard
+/** Withdraw a previously pushed SystemWarning. One that already scrolled out
+ *  of the retention cap while unread is withdrawn from the evicted count.
+ *  No-op if it was read, cleared, or the id is unknown. The event guard
  *  makes the "retractable = SystemWarning" contract self-enforcing — if a
  *  second notification type ever mints ids, this must not become a
  *  cross-type delete. */
@@ -270,13 +321,20 @@ export function retractSystemNotification(
   notificationId: string,
 ): boolean {
   const items = notifications.get(sessionId);
-  if (!items) return false;
-  const idx = items.findIndex(
-    (n) => n.id === notificationId && n.event === "SystemWarning",
-  );
-  if (idx === -1) return false;
-  items.splice(idx, 1);
-  if (items.length === 0) notifications.delete(sessionId);
+  const idx =
+    items?.findIndex(
+      (n) => n.id === notificationId && n.event === "SystemWarning",
+    ) ?? -1;
+  if (items && idx !== -1) {
+    items.splice(idx, 1);
+    if (items.length === 0) notifications.delete(sessionId);
+  } else {
+    // Scrolled out of retention while unread: take it off the evicted count.
+    const ev = evictedUnread.get(sessionId);
+    if (!ev?.retractable.delete(notificationId)) return false;
+    ev.count--;
+    if (ev.count <= 0) evictedUnread.delete(sessionId);
+  }
   emitStatusDelta(sessionId);
   return true;
 }
@@ -747,8 +805,15 @@ const notificationFeedHandler = (c: Context) => {
     SessionNotification & { sessionId: string; sessionName: string }
   > = [];
   let totalUnread = 0;
+  const unreadBySession: Record<string, number> = {};
 
-  for (const [sessionId, items] of notifications) {
+  for (const sessionId of notificationSessionIds()) {
+    // The same true count the sidebar badge reads, NOT the retained unread
+    // items: those top out at the retention cap.
+    const unread = getUnreadCount(sessionId);
+    if (unread > 0) unreadBySession[sessionId] = unread;
+    totalUnread += unread;
+    const items = notifications.get(sessionId) ?? [];
     const name =
       sessionId === SERVER_NOTICE_KEY
         ? "autonomOS"
@@ -761,16 +826,18 @@ const notificationFeedHandler = (c: Context) => {
       // can't disagree (F3). Only a raw turn-end Stop is withheld as activity.
       if (!isUserFacingNotification(n)) continue;
       all.push({ ...n, sessionId, sessionName: name });
-      if (!n.read) totalUnread++;
     }
   }
 
   // Newest first
   all.sort((a, b) => b.timestamp - a.timestamp);
 
+  const shown = all.slice(0, 100);
   const payload: NotificationFeed = {
-    notifications: all.slice(0, 100),
+    notifications: shown,
     totalUnread,
+    unreadNotShown: totalUnread - shown.filter((n) => !n.read).length,
+    unreadBySession,
   };
   return c.json(payload);
 };
