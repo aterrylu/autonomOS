@@ -7,7 +7,7 @@ What the installer does, how to manage the background service, how to update, an
 | Requirement | How to check | If missing |
 |---|---|---|
 | macOS or Linux | | Windows is not supported. |
-| Node.js 20+ | `node --version` | Mac: `brew install node`. Linux: [nodejs.org package manager instructions](https://nodejs.org/en/download/package-manager). |
+| Node.js 22.22.2+ | `node --version` | Mac: `brew install node`. Linux: [nodejs.org package manager instructions](https://nodejs.org/en/download/package-manager). |
 | Claude Code, logged in | `claude --version`, then `claude` starts without asking you to log in | Install from [claude.com/claude-code](https://claude.com/claude-code), run `claude` once, complete the login. |
 | Codex CLI (optional) | `codex --version` | Only if you want Codex agents. See [Other runtimes](08-other-runtimes.md). |
 | Gemini CLI (optional) | `gemini --version` | Only if you want Gemini agents. See [Other runtimes](08-other-runtimes.md). |
@@ -22,7 +22,7 @@ curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
 
 Step by step, it:
 
-1. Detects your operating system and CPU, and checks that Node 20+ and Claude Code are present.
+1. Detects your operating system and CPU, and checks that Node 22.22.2 or newer and Claude Code are present.
 2. Downloads the matching autonomOS bundle from the latest GitHub release and verifies its checksum. You will see "[install] ✓ Checksum OK".
 3. Puts the bundle in `~/.local/share/autonomos/` and a small `autonomos` command in `~/.local/bin/`.
 4. Registers a background service: a launchd agent on macOS, a systemd user service on Linux. On Linux it also enables "lingering" so the service survives logging out.
@@ -118,7 +118,7 @@ Removing `~/.autonomos` is what makes the next install fresh. It does not touch 
 
 ## Running it on another machine
 
-autonomOS is a server, so it can live on an always-on box you own, such as a home server or a small VPS, and you use it from any browser. That setup is a git checkout managed by the same `upgrade` and `rollback` commands. The machine needs `git` and [bun](https://bun.sh) as well as Node 20+ and Claude Code:
+autonomOS is a server, so it can live on an always-on box you own, such as a home server or a small VPS, and you use it from any browser. That setup is a git checkout managed by the same `upgrade` and `rollback` commands. The machine needs `git` and [bun](https://bun.sh) as well as Node 22.22.2+ and Claude Code:
 
 ```bash
 git clone https://github.com/aterrylu/autonomOS && cd autonomOS

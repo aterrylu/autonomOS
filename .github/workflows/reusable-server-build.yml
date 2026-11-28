@@ -39,11 +39,13 @@ jobs:
       # stable across Node majors, so the bundle this job ships runs on every
       # Node >= MIN_NODE and on future releases. (The old 1.0.0 nan binding
       # forced a Node 22 pin here, and that pin is what produced bundles that
-      # died with ERR_DLOPEN_FAILED on a user's newer Node.) Build on current
-      # LTS; the resulting artifact is not tied to it.
+      # died with ERR_DLOPEN_FAILED on a user's newer Node.) The artifact is
+      # not tied to the build's Node, but the build still runs on the SAME
+      # pinned major the tests run on (.node-version, ADR-163): `lts/*`
+      # floated to 26 under a test suite pinned at 22.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "lts/*"
+          node-version-file: .node-version
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest

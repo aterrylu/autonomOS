@@ -27,35 +27,15 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version-file: .node-version
 
       - name: Install dependencies
         run: bun install
 
-      # Install the real Claude Code CLI so the L3 real-agent integration
-      # suites (agent-spawn-prompt + usage-queue, via helpers/test-server.ts)
-      # can spawn a real `claude` PTY against a mock Anthropic backend.
-      # Installing needs NO auth — they never call the real API
-      # (ANTHROPIC_BASE_URL points at the mock). Pinned for reproducibility;
-      # bump deliberately.
+      # The real Claude Code CLI (pinned) + its onboarding seed, for the L3
+      # real-agent integration suites. Shared with node-floor below.
       - name: Install Claude Code CLI (for real-agent integration tests)
-        run: npm i -g @anthropic-ai/claude-code@2.1.168
-
-      # A freshly-installed claude shows a first-run onboarding/theme prompt that
-      # blocks the interactive PTY session (so SessionStart never fires). Seed the
-      # user config to mark onboarding complete — same fields a configured claude
-      # carries. Without this the L3 integration suite times out waiting for the
-      # first hook.
-      - name: Pre-seed Claude Code config (skip first-run onboarding)
-        run: |
-          cat > "$HOME/.claude.json" <<'JSON'
-          {
-            "hasCompletedOnboarding": true,
-            "numStartups": 5,
-            "theme": "dark",
-            "lastOnboardingVersion": "2.1.168"
-          }
-          JSON
+        run: bash scripts/ci-install-claude.sh
 
       - name: Lint, typecheck, test
         # AUTONOMOS_INTEGRATION=1 enables the real-`claude` L3 integration suites
@@ -96,3 +76,52 @@ jobs:
             sleep 1
           done
           bash scripts/oom-isolation-ci.sh
+
+  # The release bundle runs on the USER's Node: install.sh accepts any
+  # node >= MIN_NODE, with no ceiling (ADR-154). `check` above runs on the
+  # pinned primary (.node-version); this job runs the server/CLI/scripts
+  # suites, real-agent integration included, on EXACTLY the floor, so both
+  # ends of what we ship are tested (ADR-163). The version is READ from
+  # install.sh, never written here, so raising MIN_NODE moves this job with
+  # it. The dashboard runs in a browser, so its vitest suite isn't repeated.
+  node-floor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the install floor (install.sh MIN_NODE)
+        id: floor
+        run: |
+          version=$(sed -n 's/^MIN_NODE=\([0-9][0-9.]*\)$/\1/p' scripts/install.sh)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::scripts/install.sh needs exactly one MIN_NODE=<major>.<minor>.<patch> line (got '$version')"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ steps.floor.outputs.version }}
+
+      # The runner image has its own node in /usr/local/bin. If setup-node
+      # installed nothing, every step below would quietly test THAT one.
+      - name: Assert the tests will run on the floor
+        env:
+          FLOOR: ${{ steps.floor.outputs.version }}
+        run: |
+          running=$(node -p 'process.versions.node')
+          [ "$running" = "$FLOOR" ] || { echo "::error::node on PATH is $running, expected the install floor $FLOOR"; exit 1; }
+          echo "node $running ($(command -v node))"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install Claude Code CLI (for real-agent integration tests)
+        run: bash scripts/ci-install-claude.sh
+
+      - name: Server, CLI and scripts tests on the floor Node
+        env:
+          AUTONOMOS_INTEGRATION: "1"
+        run: make _node-tests

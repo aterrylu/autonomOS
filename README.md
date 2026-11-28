@@ -35,7 +35,7 @@ If you want to **use** autonomOS rather than build it, the [User Guide](docs/gui
 
 ## Install
 
-You need **Node 20+** and **Claude Code installed and logged in** (`claude` on PATH; run it once to sign in). Codex and Gemini CLI are optional. Then, one line:
+You need **Node 22.22.2 or newer** and **Claude Code installed and logged in** (`claude` on PATH; run it once to sign in). Codex and Gemini CLI are optional. Then, one line:
 
 ```bash
 curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash

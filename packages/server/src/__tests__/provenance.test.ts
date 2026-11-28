@@ -25,8 +25,9 @@ import {
   verifyReleaseProvenance,
 } from "../provenance.js";
 
-// Not import.meta.dirname: that needs Node 20.11, and this suite also runs
-// on the Node 20 floor to prove the verifier works there.
+// fileURLToPath, not import.meta.dirname: keeps this portable to any Node.
+// The suite also runs on the install floor (install.sh MIN_NODE, CI's
+// node-floor job) to prove the verifier works there.
 const FIX = join(
   dirname(fileURLToPath(import.meta.url)),
   "fixtures",

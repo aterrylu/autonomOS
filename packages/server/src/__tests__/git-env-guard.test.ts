@@ -40,12 +40,21 @@ describe("git environment guard", () => {
 
   it("make check strips them for every test recipe", () => {
     const mk = readFileSync(join(REPO_ROOT, "Makefile"), "utf8");
-    const recipe = mk.slice(mk.indexOf("\n_check:"));
-    const body = recipe.split("\n").slice(2); // skip "" and "_check:"
-    const end = body.findIndex((l) => !l.startsWith("\t"));
-    const testLines = body
-      .slice(0, end === -1 ? body.length : end)
-      .filter((l) => /--test |vitest run/.test(l));
+    /** A target's recipe lines, following `$(MAKE) <target>` into the
+     *  targets it delegates to (`_check` runs `_node-tests`, ADR-163). */
+    const recipeLines = (target: string): string[] => {
+      const at = mk.indexOf(`\n${target}:`);
+      assert.notEqual(at, -1, `no ${target}: target in the Makefile`);
+      const body = mk.slice(at).split("\n").slice(2); // skip "" and "<target>:"
+      const end = body.findIndex((l) => !l.startsWith("\t"));
+      return body.slice(0, end === -1 ? body.length : end).flatMap((l) => {
+        const sub = l.match(/^\t\$\(MAKE\) (_[\w-]+)\s*$/);
+        return sub ? recipeLines(sub[1]) : [l];
+      });
+    };
+    const testLines = recipeLines("_check").filter((l) =>
+      /--test |vitest run/.test(l),
+    );
     assert.equal(testLines.length, 2, "expected the node + vitest test lines");
     for (const l of testLines)
       assert.match(

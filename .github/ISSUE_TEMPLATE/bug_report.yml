@@ -41,7 +41,7 @@ body:
     attributes:
       label: Environment
       description: OS + arch, Node version (`node -v`), how you're running it (`make dev` / installed daemon / `make deploy`), and the autonomOS version or commit.
-      placeholder: macOS 15 arm64 · Node 20.11 · make dev · commit abc1234
+      placeholder: macOS 15 arm64 · Node 26.3 · make dev · commit abc1234
     validations:
       required: true
   - type: textarea

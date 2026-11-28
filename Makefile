@@ -1,4 +1,4 @@
-.PHONY: dev dev-lan prod stop restart logs down check _check load-test bundle-budget fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import verifier
+.PHONY: dev dev-lan prod stop restart logs down check _check _node-tests load-test bundle-budget fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import verifier
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -230,8 +230,15 @@ _check:
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) scripts/check-dashboard-dist.ts
 	$(TSX) scripts/build-verifier.ts --check
-	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --import ./scripts/test-home-sentinel.ts --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) $(NODE_TEST_FORCE_EXIT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	$(MAKE) _node-tests
 	cd packages/dashboard && $(GIT_CLEAN_ENV) node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
+
+# The node:test suites: server, CLI and scripts, i.e. the code that runs on the
+# USER's Node. CI also runs this alone on the install floor (install.sh
+# MIN_NODE, the `node-floor` job in test.yml, ADR-163). It takes no slot of its
+# own: called from _check it already holds one, and CI skips the lock.
+_node-tests:
+	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --import ./scripts/test-home-sentinel.ts --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) $(NODE_TEST_FORCE_EXIT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 
 # N-agent statusline load guard (CI: the `Load` workflow). Locally it takes the
 # machine-wide slot, and the test aborts itself if the box's load climbs.
