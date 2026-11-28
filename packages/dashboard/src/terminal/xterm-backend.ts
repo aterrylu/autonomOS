@@ -100,6 +100,58 @@ function execCommandCopy(text: string): boolean {
   return copied;
 }
 
+let warnedAltInternalsMoved = false;
+
+/** The private xterm.js internals resetInactiveAltBuffer reaches. */
+interface XtermAltInternals {
+  _core?: { buffers?: { alt?: { clear?: () => void } } };
+}
+
+/**
+ * Workaround for an xterm.js bug that rotated no_flicker Claude panes
+ * ("bottom half on top until a hard refresh", ADR-162).
+ *
+ * `Buffer.resize()` skips its whole adjustment block for an EMPTY buffer,
+ * including the shrink of its line list, but still records the new row count.
+ * The inactive alternate buffer is always empty (xterm clears it whenever the
+ * normal buffer is active). So shrinking the terminal's rows on the normal
+ * buffer leaves the alt buffer's list sized for the OLD row count. When an app
+ * then enters the alternate screen, xterm sees a list that isn't full, so
+ * every scroll at the bottom row grows it and moves `ybase` down. That's a
+ * scroll offset on a buffer that has no scrollback, and it never goes away:
+ * writes land `ybase` rows below where the viewport reads, wrapping around
+ * the list, so the bottom rows show at the top. Every later repaint goes
+ * through the same offset.
+ *
+ * The dashboard shrinks on the normal buffer on every first show and every
+ * reconnect: the pane fits its box, then the replay-begin marker (ADR-135)
+ * resizes to the PTY's size before the replay's `?1049h`.
+ *
+ * Clearing the inactive alt buffer rebuilds its list at the current size.
+ * It's exactly what xterm does itself on every exit from the alternate screen,
+ * and the inactive alt buffer holds nothing, so nothing is lost. It runs on
+ * every resize, whatever the source (fit, replay geometry, anything later).
+ * Returns false (and warns once per page) when xterm's internals no longer
+ * have this shape, and a test fails on the installed xterm, so an upgrade that
+ * moves them is caught in CI and never drops the fix silently at runtime.
+ */
+export function resetInactiveAltBuffer(terminal: Terminal): boolean {
+  if (terminal.buffer.active.type !== "normal") return true;
+  const alt = (terminal as unknown as XtermAltInternals)._core?.buffers?.alt;
+  if (typeof alt?.clear !== "function") {
+    // Once per page: onResize fires on every fit, and the cause doesn't change.
+    if (!warnedAltInternalsMoved) {
+      warnedAltInternalsMoved = true;
+      console.warn(
+        "[autonomOS] xterm internals moved: the ADR-162 alternate-buffer workaround is inactive (no_flicker panes may show rows rotated)",
+      );
+    }
+    return false;
+  }
+  alt.clear();
+  return true;
+}
+
 export function createXtermBackend(
   options: TerminalOptions,
   onClipboardCopy?: (info: { text: string; ok: boolean }) => void,
@@ -138,6 +190,10 @@ export function createXtermBackend(
     { prefix: "?", intermediates: "$", final: "p" },
     () => true,
   );
+
+  // xterm.js 6.0.0 (still in 6.1.0-beta) resizes an EMPTY buffer without
+  // shrinking its line list (ADR-162). See resetInactiveAltBuffer.
+  terminal.onResize(() => resetInactiveAltBuffer(terminal));
 
   // OSC 52 writes to the system clipboard. Read requests (`?`) are dropped so
   // a remote process can't exfiltrate the user's clipboard. The clipboard write

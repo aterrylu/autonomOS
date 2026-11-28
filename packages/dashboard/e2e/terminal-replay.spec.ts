@@ -80,17 +80,33 @@ function agent(id: string, name: string, provider: string): MockAgent {
   };
 }
 
+/** The live terminal socket per agent id, exposed on `window.__termSockets`. */
+type TermSockets = Record<
+  string,
+  { onmessage: ((ev: MessageEvent) => void) | null }
+>;
+
 /** A terminal socket that replays the given frames on open, acks every acked
  *  input frame, and records what the pane sent (decoded to text). Installed
  *  AFTER mockApi's always-closed stub, so it wins for /ws/terminal/ URLs. */
 async function installTerminalSocket(
   page: Page,
   replays: Record<string, string[]>,
+  // A real link opens later than the pane's first fit, so the pane has fitted
+  // its box before the replay arrives (the ADR-162 order). With a number, the
+  // socket opens only once the pane is TALLER than that many rows: the order
+  // is waited for as state, never assumed from a delay. The pane's row count
+  // at open is recorded in window.__termRowsAtOpen so a test can assert it.
+  // Unset opens on the next tick.
+  openWhenRowsAbove?: number,
 ) {
-  await page.addInitScript((replaysArg) => {
+  await page.addInitScript(([replaysArg, minRows]) => {
     const Stub = window.WebSocket;
     const sent: string[] = [];
     (window as unknown as { __termSent: string[] }).__termSent = sent;
+    // The live socket per agent, so a test can push output after the replay.
+    const sockets: TermSockets = {};
+    (window as unknown as { __termSockets: TermSockets }).__termSockets = sockets;
     class TerminalSocket extends EventTarget {
       static readonly CONNECTING = 0;
       static readonly OPEN = 1;
@@ -114,13 +130,27 @@ async function installTerminalSocket(
         super();
         this.url = String(url);
         const id = /\/ws\/terminal\/([^?]+)/.exec(this.url)?.[1] ?? "";
-        setTimeout(() => {
+        sockets[id] = this;
+        const rowsAtOpen = ((window as unknown as { __termRowsAtOpen: Record<string, number> }).__termRowsAtOpen ??= {});
+        const paneRows = () =>
+          (
+            window as unknown as {
+              __autonomosTerminal?: (id: string) => { terminal: { rows: number } } | undefined;
+            }
+          ).__autonomosTerminal?.(id)?.terminal.rows ?? 0;
+        const open = () => {
+          if (minRows !== undefined && paneRows() <= minRows) {
+            setTimeout(open, 20);
+            return;
+          }
+          rowsAtOpen[id] = paneRows();
           this.readyState = 1;
           this.onopen?.(new Event("open"));
           for (const data of replaysArg[id] ?? []) {
             this.onmessage?.(new MessageEvent("message", { data }));
           }
-        }, 0);
+        };
+        setTimeout(open, 0);
       }
       send(d: string | ArrayBufferView | ArrayBuffer) {
         if (typeof d === "string") {
@@ -153,7 +183,7 @@ async function installTerminalSocket(
       CLOSING: 2,
       CLOSED: 3,
     });
-  }, replays);
+  }, [replays, openWhenRowsAbove] as const);
 }
 
 /** Open the agent's pane at boot (persisted activePane), not via the sidebar:
@@ -357,4 +387,112 @@ test("B: fresh pane — a full-screen replay is parsed at the PTY's size, not xt
     grid.rows[5],
     "no_flicker blackout: the replay was parsed at the wrong width (content wrapped/garbled; the rest of the pane never repaints)",
   ).toBe("end");
+});
+
+/** The live terminal's grid as the user sees it: rows read from the viewport. */
+function screen(page: Page, id: string) {
+  return page.evaluate((agentId) => {
+    const get = (
+      window as unknown as {
+        __autonomosTerminal: (id: string) =>
+          | {
+              terminal: {
+                rows: number;
+                buffer: {
+                  active: {
+                    type: string;
+                    baseY: number;
+                    viewportY: number;
+                    getLine: (
+                      y: number,
+                    ) => { translateToString: (trim: boolean) => string } | undefined;
+                  };
+                };
+              };
+            }
+          | undefined;
+      }
+    ).__autonomosTerminal;
+    const t = get(agentId)?.terminal;
+    if (!t) return null;
+    const b = t.buffer.active;
+    const rows: string[] = [];
+    for (let y = 0; y < t.rows; y++)
+      rows.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? "");
+    return { type: b.type, baseY: b.baseY, rows: t.rows, lines: rows };
+  }, id);
+}
+
+test("D: first show on a PTY sized SMALLER than the pane — no_flicker rows stay where they're drawn (Terry's 'bottom half on top', ADR-162)", async ({
+  page,
+}) => {
+  // The PTY is 20 rows (sized by another window, a split, or the spawn
+  // default); the pane is taller. Its history holds a frame drawn when the PTY
+  // was taller, so the replay scrolls at the bottom row. The cursor ends
+  // mid-screen (like Claude's prompt), so a bad scroll offset survives the
+  // refit back to the pane's size.
+  const P = { cols: 100, rows: 20 };
+  const tall = `\x1b[H${Array.from({ length: 40 }, (_, r) => `old-${r}`).join("\r\n")}\x1b[12;1H`;
+  const id = "agent-claude-firstshow-01";
+  await mockApi(page, { agents: [agent(id, "Claude First Show", "claude-code")] });
+  await installTerminalSocket(
+    page,
+    { [id]: serverReplay(["\x1b[?1049h", tall], 0, P) },
+    P.rows,
+  );
+  await openPaneAtBoot(page, id);
+  await page.goto("/");
+  await expect(page.locator(".xterm").first()).toBeVisible();
+  // Wait on the replay's STATE, not on the size: the pane fits its box before
+  // the socket opens (that's the order under test), so "taller than the PTY"
+  // is already true before a single replayed byte. The replay is in once the
+  // alternate screen is up and the pane is back at its own size, and the
+  // replayed frame's first row is on screen.
+  await expect
+    .poll(
+      async () => {
+        const s0 = await screen(page, id);
+        return s0?.type === "alternate" && s0.rows > P.rows && s0.lines.some((l) => l.startsWith("old-"));
+      },
+      { message: "the replay never reached the alternate screen, or the pane never re-fitted after it" },
+    )
+    .toBe(true);
+  // Precondition, asserted rather than assumed: the pane had fitted taller than
+  // the PTY before the replay arrived. Without it the replay-begin resize is a
+  // grow, the bug can't happen, and this test would pass with or without the fix.
+  expect(
+    await page.evaluate(
+      (agentId) =>
+        (window as unknown as { __termRowsAtOpen: Record<string, number> }).__termRowsAtOpen[agentId],
+      id,
+    ),
+    "precondition: the pane must fit its box (taller than the PTY) BEFORE the replay arrives",
+  ).toBeGreaterThan(P.rows);
+  // The agent repaints at the pane's size (its SIGWINCH answer): ED2 + every
+  // row placed absolutely, the way Claude's renderer draws.
+  const rows = (await screen(page, id))!.rows;
+  const frame =
+    "\x1b[2J" +
+    Array.from({ length: rows }, (_, r) => `\x1b[${r + 1};1HR${String(r).padStart(2, "0")}`).join("") +
+    `\x1b[${rows - 5};3H`;
+  await page.evaluate(
+    ([agentId, data]) => {
+      const sockets = (window as unknown as { __termSockets: TermSockets }).__termSockets;
+      sockets[agentId]?.onmessage?.(new MessageEvent("message", { data }));
+    },
+    [id, frame] as const,
+  );
+  await expect
+    .poll(async () => (await screen(page, id))?.lines[0])
+    .toMatch(/^R\d\d/);
+  const s = (await screen(page, id))!;
+  expect(s.type).toBe("alternate");
+  expect(
+    s.baseY,
+    "half-swap: the alternate screen has a scroll offset, so every row is drawn below where it's shown",
+  ).toBe(0);
+  expect(
+    s.lines.map((l) => l.slice(0, 3)),
+    "half-swap: the screen is rotated (bottom rows at the top) after a full repaint at the right size",
+  ).toEqual(Array.from({ length: rows }, (_, r) => `R${String(r).padStart(2, "0")}`));
 });
