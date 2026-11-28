@@ -243,7 +243,10 @@ describe("terminatePty", { timeout: 180_000 }, () => {
     const line = warnings.find((w) => w.includes("outlived it"));
     assert.ok(line, `no straggler warning: ${warnings.join(" | ")}`);
     assert.match(line, /demo \[fake\] \(00000000\)/);
-    assert.match(line, /1 process\(es\).*\(node\)/);
+    // `comm` on Linux is the kernel task name, and Node 26 names its main
+    // thread `node-MainThread` (seen on CI's Linux runner, ADR-163). macOS
+    // reports the executable, so `node`. Either is the command name.
+    assert.match(line, /1 process\(es\).*\(node(-MainThread)?\)/);
     assert.doesNotMatch(line, /setInterval|-e/, "args leaked into the log");
   });
   it("is idempotent per PTY — a second call adds no escalation", async () => {

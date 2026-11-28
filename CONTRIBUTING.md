@@ -12,7 +12,7 @@ bun install
 make dev                  # API on :3101 + Vite HMR on :5173
 ```
 
-You'll need **Node 20+** and the `claude` binary on your PATH (autonomOS spawns agent CLIs; Codex and Gemini are optional).
+You'll need **Node 22.22.2 or newer** and the `claude` binary on your PATH (autonomOS spawns agent CLIs; Codex and Gemini are optional).
 
 ## Development workflow
 

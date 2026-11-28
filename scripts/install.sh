@@ -25,7 +25,7 @@
 #
 # What it does:
 #   1. Detect OS+arch via uname
-#   2. Require node >= 20 (the bundle is a Node-runtime JS bundle, not a static binary)
+#   2. Require node >= MIN_NODE (the bundle is a Node-runtime JS bundle, not a static binary)
 #   3. Download autonomos-<platform>.tar.gz from the release
 #   4. Verify SHA256 against SHA256SUMS in the same release, then the release's
 #      signed build record (Sigstore provenance, ADR-126): the tarball must have
@@ -70,24 +70,53 @@ echo "[install] Detected platform: $PLATFORM"
 # this installer. Do not reintroduce a ceiling or pin: the ERR_DLOPEN_FAILED
 # "compiled against a different Node.js version (NODE_MODULE_VERSION ...)" class
 # of bug came from the old nan-based node-pty@1.0.0, not from this check.
-MIN_NODE=20
-if [[ "${SKIP_NODE_CHECK:-0}" != "1" ]]; then
-  if ! command -v node >/dev/null 2>&1; then
-    cat >&2 <<'EOF'
-Error: Node.js is required.
+#
+# The floor is a FULL version, compared on major.minor.patch (ADR-163): it is
+# the lowest Node that every dependency bundled into the server and the
+# provenance verifier declares in `engines.node` (the @sigstore packages need
+# ^22.22.2). scripts/node-version.test.ts fails if a bundled dependency's
+# engines range stops including it, and CI's node-floor job runs the suites on
+# exactly this version, reading it from the line below. Keep it one literal.
+MIN_NODE=22.22.2
 
-The autonomOS bundle is a Node-runtime JS application (the static-binary path
-is blocked on a Bun/node-pty ABI issue, tracked separately). Install Node 20 or
-newer via your package manager — any newer major works:
+# True when version $1 is lower than version $2 (both major.minor.patch;
+# a missing part counts as 0, a pre-release suffix is ignored).
+version_lt() {
+  local IFS=.
+  local -a a b
+  read -r -a a <<<"${1%%-*}"
+  read -r -a b <<<"${2%%-*}"
+  local i
+  for i in 0 1 2; do
+    if (( 10#${a[i]:-0} < 10#${b[i]:-0} )); then return 0; fi
+    if (( 10#${a[i]:-0} > 10#${b[i]:-0} )); then return 1; fi
+  done
+  return 1
+}
+
+NODE_INSTALL_HELP="Install the current Node.js LTS (any newer release works too):
 
   macOS:    brew install node
-  Linux:    https://nodejs.org/en/download/package-manager
+  Linux:    https://nodejs.org/en/download/package-manager"
+
+if [[ "${SKIP_NODE_CHECK:-0}" != "1" ]]; then
+  if ! command -v node >/dev/null 2>&1; then
+    cat >&2 <<EOF
+Error: Node.js $MIN_NODE or newer is required.
+
+The autonomOS bundle is a Node-runtime JS application (the static-binary path
+is blocked on a Bun/node-pty ABI issue, tracked separately).
+$NODE_INSTALL_HELP
 EOF
     exit 1
   fi
-  NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])')
-  if [[ "$NODE_MAJOR" -lt "$MIN_NODE" ]]; then
-    echo "Error: node $MIN_NODE+ required (found $(node --version))" >&2
+  NODE_VERSION=$(node -p 'process.versions.node')
+  if version_lt "$NODE_VERSION" "$MIN_NODE"; then
+    cat >&2 <<EOF
+Error: Node.js $MIN_NODE or newer is required (found v$NODE_VERSION).
+Node 20, and Node 22 releases before $MIN_NODE, are no longer supported.
+$NODE_INSTALL_HELP
+EOF
     exit 1
   fi
 fi
@@ -261,7 +290,7 @@ EOF
 else
   if ! command -v node >/dev/null 2>&1; then
     provenance_refuse "node is needed to check the signed build record." \
-      "Install Node 20+ (the server needs it too), then re-run."
+      "Install Node $MIN_NODE or newer (the server needs it too), then re-run."
   fi
   VERIFIER="$TMP/verify-provenance.mjs"
   SELF="${BASH_SOURCE[0]:-}"
