@@ -11,6 +11,19 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.9.0] — 2026-11-28
+
+### Minor Changes
+
+- [#557](https://github.com/aterrylu/autonomOS/pull/557) `7f1f5a9` — feat(orgchart): opens left-right with stacked reports (Terry's pick, ADR-160)
+
+### Patch Changes
+
+- [#577](https://github.com/aterrylu/autonomOS/pull/577) `cf6b0e8` — fix(dashboard): a pane resizes xterm only together with the PTY (ADR-161)
+- [#584](https://github.com/aterrylu/autonomOS/pull/584) `23f0774` — fix(dashboard): no_flicker panes no longer rotate on first show (ADR-162)
+- [#585](https://github.com/aterrylu/autonomOS/pull/585) `1374b51` — fix(notifications): unread count no longer stops at 50
+
+
 ## [0.8.0] — 2026-10-29
 
 ### Minor Changes
