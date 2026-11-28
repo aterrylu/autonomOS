@@ -74,7 +74,16 @@ export interface FeedNotification {
 /** `GET /api/hooks/notifications` */
 export interface NotificationFeed {
   notifications: FeedNotification[];
+  /** TRUE unread count across sessions, including notifications no longer
+   *  retained (each session keeps only its most recent ones). */
   totalUnread: number;
+  /** How many of `totalUnread` are not in `notifications` (older than what is
+   *  retained, or past the feed's page). Absent from older servers. */
+  unreadNotShown?: number;
+  /** True unread count per session, for every session with any — including
+   *  ones with no row in `notifications`, so "Mark all read" can reach them.
+   *  Absent from older servers. */
+  unreadBySession?: Record<string, number>;
 }
 
 // ── Agent tree (`GET /api/agents/tree`) ───────────────────────────
